@@ -1,0 +1,7 @@
+defaults:
+  - _self_
+  - dataset: uganda
+
+degree_of_arm_noise: 0.15
+intervention_success_rate: 0.7
+variability_window: 5

@@ -1,0 +1,10 @@
+path: data/mimiciv-60-10--1-PULSE_RATE-RESPIRATORY_RATE-COVERED_SKIN_TEMPERATURE_full.csv
+min_entries: 10
+time_size: 60
+vital_signs:
+  - PULSE_RATE
+  - RESPIRATORY_RATE
+  - COVERED_SKIN_TEMPERATURE
+num_comp: 5
+sample_size: -1
+num_timesteps: 1

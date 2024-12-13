@@ -1,0 +1,10 @@
+path: data/uganda-60-10--1-SPO2-PULSE_RATE-RESPIRATORY_RATE_full.csv
+min_entries: 1
+time_size: 20
+vital_signs:
+  - PULSE_RATE
+  - RESPIRATORY_RATE
+  - SPO2
+num_comp: 5
+sample_size: -1
+num_timesteps: 1
