@@ -4,7 +4,6 @@ from typing import Any, Dict, Tuple, SupportsFloat
 import numpy as np
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType
-from langchain_together import TogetherEmbeddings
 from numpy import ndarray
 
 
@@ -165,6 +164,7 @@ class VitalSignsWrapper(LanguageWrapper):
 if __name__ == "__main__":
     # Example usage
     from weather2alert.env import HeatAlertEnv
+    from langchain_together import TogetherEmbeddings
 
     model = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
     env = HeatAlertEnv()
