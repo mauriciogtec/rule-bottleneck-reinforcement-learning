@@ -1,0 +1,7 @@
+langchain
+langchain-together
+gymnasium
+torch
+torchvision
+torchaudio
+git+https://github.com/NSAPH-Projects/weather2alert@dev
