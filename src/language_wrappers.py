@@ -20,7 +20,7 @@ class LanguageWrapper(Wrapper, ABC):
 
     Args:
         env (gym.Env): The gym environment to wrap.
-        embeddings_model (TogetherEmbeddings): The language model used to embed the text descriptions.
+        embeddings_model (Embeddings): The language model used to embed the text descriptions.
     """
 
     def __init__(self, env: Env, embeddings_model: Embeddings) -> None:
