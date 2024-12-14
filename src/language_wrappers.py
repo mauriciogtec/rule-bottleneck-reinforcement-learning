@@ -5,6 +5,7 @@ import numpy as np
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType
 from numpy import ndarray
+from langchain_core.embeddings import Embeddings
 
 
 class LanguageWrapper(Wrapper, ABC):
@@ -22,7 +23,7 @@ class LanguageWrapper(Wrapper, ABC):
         embeddings_model (TogetherEmbeddings): The language model used to embed the text descriptions.
     """
 
-    def __init__(self, env: Env, embeddings_model: TogetherEmbeddings) -> None:
+    def __init__(self, env: Env, embeddings_model: Embeddings) -> None:
         super().__init__(env)
         self.embeddings_model = embeddings_model
 
@@ -40,7 +41,9 @@ class LanguageWrapper(Wrapper, ABC):
         """
         pass
 
-    def step(self, action: ActType) -> Tuple[ndarray, SupportsFloat, bool, bool, Dict[Any, Any]]:
+    def step(
+        self, action: ActType
+    ) -> Tuple[ndarray, SupportsFloat, bool, bool, Dict[Any, Any]]:
         """
         Take a step in the environment using the given action.
 
