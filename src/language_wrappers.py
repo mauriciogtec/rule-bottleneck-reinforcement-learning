@@ -22,10 +22,20 @@ class LanguageWrapper(Wrapper, ABC):
         env (gym.Env): The gym environment to wrap.
         embeddings_model (Embeddings): The language model used to embed the text descriptions.
     """
-
     def __init__(self, env: Env, embeddings_model: Embeddings) -> None:
         super().__init__(env)
         self.embeddings_model = embeddings_model
+
+    @property
+    @abstractmethod
+    def task_description() -> str:
+        """
+        Return a description of the task that the environment is solving.
+
+        Returns:
+            str: The task description.
+        """
+        pass
 
     @abstractmethod
     def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
@@ -81,6 +91,13 @@ class HeatAlertsWrapper(LanguageWrapper):
     """
     A wrapper for the HeatAlerts environment from Considine et al. (2024).
     """
+
+    task_description = (
+        "You are assisting officials from the National Weather Service in making optimized"
+        " decisions about when to issue public heatwave alerts. You will determine whether"
+        " to issue an alert by considering multiple factors related to current weather conditions,"
+        " past alert history, and the remaining number of alerts for the season."
+    )
 
     def language_descriptor(self, *_, **__) -> str:
         """
@@ -149,7 +166,6 @@ class VitalSignsWrapper(LanguageWrapper):
     """
     A wrapper for the VitalSigns environment.
     """
-
     def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
         """
         Convert the observation into a text description specific to the VitalSigns environment.
