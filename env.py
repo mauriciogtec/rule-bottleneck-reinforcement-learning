@@ -168,7 +168,7 @@ class VitalSignEnv(Env):
             that all incoming patients will receive a device. 
         '''
 
-        for i in range(self.agent_states):
+        for i in range(len(self.agent_states)):
             agent_info = self.agent_states[i]
             agent_id = agent_info['id']
             overall_state = agent_info['state']
