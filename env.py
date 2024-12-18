@@ -44,7 +44,6 @@ weights = np.array(data['weights'])
 # given_indices=[j for j in range(len(vital_signs))]
 
 
-
 class VitalSignEnv(Env):
     ''''Class to simulate the environment 
     for the online RL agent'''
@@ -52,15 +51,16 @@ class VitalSignEnv(Env):
     def _init_(self, path, num_agents, budget, max_num_agents, T, t_min, t_max, joining_rate, leaving_rate):
 
         '''
-        path: path to the gmm and minmax data
-        num_agents: number of agents in the beginning
-        budget: the # of medical device available
-        max_num_agents: the max # of agents that could possibly appear at the same time
-        T: time horizon
-        t_min: minimum number of time to wear the device
-        t_max: maximum number of time to wear the device
-        joining_rate: the rate of people who join  (parameter for Poisson distribution)
-        leaving_rate: teh rate of people who leaves (parameter for Poisson distribution)
+        Parameters:
+            path: path to the gmm and minmax data
+            num_agents: number of agents in the beginning
+            budget: the # of medical device available
+            max_num_agents: the max # of agents that could possibly appear at the same time
+            T: time horizon
+            t_min: minimum number of time to wear the device
+            t_max: maximum number of time to wear the device
+            joining_rate: the rate of people who join  (parameter for Poisson distribution)
+            leaving_rate: teh rate of people who leaves (parameter for Poisson distribution)
         '''
         ## If the budget is larger than the max_num_agents, then there is no 
         ## scarcity and no need for decision making
