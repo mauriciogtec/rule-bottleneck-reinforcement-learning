@@ -14,7 +14,7 @@ def gen_rules(
     examples: Optional[str] = None,
     max_parse_attempts: int = 3,
     verbose: bool = False,
-) -> list[str]:
+) -> dict:
     """
     Generate a list of rules based on the environment.
 
@@ -23,7 +23,7 @@ def gen_rules(
         num_rules (int, optional): The number of rules to generate. Defaults to 10.
 
     Returns:
-        list[str]: A list of generated rules.
+        dict: A list of rules in a machine-readable format.
     """
     system_prompt = (
         "Your goal is to generate a set of *rules* that are useful to solve the resource-constrained allocation task "
