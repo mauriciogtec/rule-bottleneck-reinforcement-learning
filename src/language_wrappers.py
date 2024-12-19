@@ -27,8 +27,30 @@ class LanguageWrapper(Wrapper, ABC):
         super().__init__(env)
         self.embeddings_model = embeddings_model
 
+    @property
     @abstractmethod
-    def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
+    def task_text() -> str:
+        """
+        Return a description of the task that the environment is solving.
+
+        Returns:
+            str: The task description.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def action_space_text() -> str:
+        """
+        Return a description of the action space of the environment.
+
+        Returns:
+            str: The action space description.
+        """
+        pass
+
+    @abstractmethod
+    def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
         """
         Convert the observation into a text description.
 
@@ -55,7 +77,7 @@ class LanguageWrapper(Wrapper, ABC):
                    truncation status, and additional info.
         """
         obs, reward, terminated, truncated, info = self.env.step(action)
-        desc = self.language_descriptor(obs, info)
+        desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
         obs = self.embeddings_model.embed_query(desc)
         obs = np.array(obs, dtype=np.float32)
@@ -70,7 +92,7 @@ class LanguageWrapper(Wrapper, ABC):
             tuple: A tuple containing the embedded initial observation and additional info.
         """
         obs, info = self.env.reset()
-        desc = self.language_descriptor(obs, info)
+        desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
         obs = self.embeddings_model.embed_query(desc)
         obs = np.array(obs, dtype=np.float32)
@@ -82,7 +104,23 @@ class HeatAlertsWrapper(LanguageWrapper):
     A wrapper for the HeatAlerts environment from Considine et al. (2024).
     """
 
-    def language_descriptor(self, *_, **__) -> str:
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting officials from the National Weather Service in making optimized"
+            " decisions about when to issue public heatwave alerts. You will determine whether"
+            " to issue an alert by considering multiple factors related to current weather conditions,"
+            " past alert history, and the remaining number of alerts for the season."
+        )
+
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A single integer value representing the decision"
+            " to issue an alert (1) or not issue an alert (0)."
+        )
+
+    def state_descriptor(self, *_, **__) -> str:
         """
         Convert the observation into a text description specific to the HeatAlerts environment.
 
@@ -150,7 +188,7 @@ class VitalSignsWrapper(LanguageWrapper):
     A wrapper for the VitalSigns environment.
     """
 
-    def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
+    def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
         """
         Convert the observation into a text description specific to the VitalSigns environment.
 
