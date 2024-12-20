@@ -150,18 +150,73 @@ class VitalSignsWrapper(LanguageWrapper):
     A wrapper for the VitalSigns environment.
     """
 
-    def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
-        """
-        Convert the observation into a text description specific to the VitalSigns environment.
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting doctors from a hospital in making optimized"
+            "decisions about which patient should receive a vital sign monitor device."
+            "You will determine the device allocation by considering the patients' current"
+            "vital sign, the patients' vital sign variance in the past five timesteps."
+        )
 
-        Args:
-            obs (Any): The observation to convert into text.
-            info (dict[str, Any]): Additional information about the observation.
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A vector which contains a subset of the indices of patients currently in"
+            "the system. Each patient whose index appears in the vector will be"
+            "assigned a device."
+        )
+
+    def state_descriptor(self, *_, **__) -> str:
+        '''
+        Convert the observation into a text description specific to the environment
 
         Returns:
-            str: The text description of the observation.
-        """
-        raise NotImplementedError("VitalSignsWrapper is not implemented yet.")
+            str: The text description of the observation
+        '''
+
+        agent_descriptions = []
+        env = self.env
+        agent_states = env.agent_states
+
+        for i in range(len(agent_states)):
+            agent_index = i ## Note this is not agent id, but index in the current list
+            agent_state = agent_states[i]['state']
+            pulse_rate_value = agent_state[0]
+            respiratory_rate_value = agent_state[1]
+            spo2_value = agent_state[2]
+            pulse_rate_variance = agent_state[3]
+            respiratory_rate_variance = agent_state[4]
+            spo2_variance = agent_state[5]
+            device_flag = agent_state[6]
+            time_since_joined = agent_state[7]
+
+            description = f"""
+            Agent {agent_index}:
+            - Pulse Rate Value: {pulse_rate_value}
+            - Respiratory Rate Value: {respiratory_rate_value}
+            - SPO2 Value: {spo2_value}
+            - Pulse Rate Variance: {pulse_rate_variance}
+            - Respiratory Rate Variance: {respiratory_rate_variance}
+            - SPO2 Variance: {spo2_variance}
+            - Device Allocation Flag: {device_flag}
+            - Time Slot Since Joined: {time_since_joined}
+            """
+            agent_descriptions.append(description.strip())
+        return "\n\n".join(agent_descriptions)
+    
+    # def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
+    #     """
+    #     Convert the observation into a text description specific to the VitalSigns environment.
+
+    #     Args:
+    #         obs (Any): The observation to convert into text.
+    #         info (dict[str, Any]): Additional information about the observation.
+
+    #     Returns:
+    #         str: The text description of the observation.
+    #     """
+    #     raise NotImplementedError("VitalSignsWrapper is not implemented yet.")
 
 
 if __name__ == "__main__":
