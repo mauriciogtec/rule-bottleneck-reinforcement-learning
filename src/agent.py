@@ -19,8 +19,14 @@ def gen_rules(
     Generate a list of rules based on the environment.
 
     Args:
-        env (LanguageWrapper): The environment to generate rules from.
-        num_rules (int, optional): The number of rules to generate. Defaults to 10.
+        llm (BaseChatModel): The language model to generate the rules.
+        state_text (str): The current state of the environment.
+        action_space_text (str): The possible actions in the environment.
+        task_text (str): The task description.
+        num_rules (int, optional): The number of rules to generate. Defaults to 5.
+        examples (str, optional): Examples of rules. Defaults to None.
+        max_parse_attempts (int, optional): The maximum number of attempts to parse the JSON. Defaults to 3.
+        verbose (bool, optional): Whether to print the prompts and responses. Defaults to False.
 
     Returns:
         dict: A list of rules in a machine-readable format.
@@ -131,6 +137,118 @@ def gen_rules(
     return rules
 
 
+def call_for_action(
+    llm: BaseChatModel,
+    state_text: str,
+    rules_text: list[dict],
+    action_space_text: str,
+    task_text: str,
+    max_parse_attempts: int = 3,
+    verbose: bool = False,
+) -> tuple[int, str]:
+    """
+    Generate a call for action based on the environment.
+
+    Args:
+        llm (BaseChatModel): The language model to generate the rules.
+        state_text (str): The current state of the environment.
+        rules_text (str): The rules to consider.
+        action_space_text (str): The possible actions in the environment.
+        task_text (str): The task description.
+        examples (str, optional): Examples of rules. Defaults to None.
+        max_parse_attempts (int, optional): The maximum number of attempts to parse the JSON. Defaults to 3.
+        verbose (bool, optional): Whether to print the prompts and responses. Defaults to False.
+
+    Returns:
+        int: The action to take.
+        str: The explanation of the action.
+    """
+
+    # system prompt is same as the gen rules prompt, but instead of asking for rules
+    # it focus on the optimal action only considering the priorization rules and their explanations
+
+    system_prompt = (
+        "Your goal is to choose the optimal action given the current state of the decision problem "
+        "and the set of priorization rules that were generated to solve the resource-constrained allocation task. "
+        "If no rule applies to the current state, you should consider the optimal rule without any priorization rule. "
+        "Let's tackle this task step by step. "
+        f"\n\n### Task:\n\n {task_text}"
+        f"\n\n### Current state of the environment:\n\n {state_text}"
+        f"\n\n### Possible actions:\n\n {action_space_text}"
+        f"\n\n### Priorization rules:\n\n {rules_text}"
+    )
+
+    thought_prompt = (
+        "First, reason about what elements should be considered when choosing the optimal action "
+        "the given task considering the task goal and optimal decision making. "
+        "Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks "
+        "of each action in the current state. Conclude the paragraph with a reflection of how they inform the design "
+        "of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+        # "Your response should consist of two paragraphs. First a reflection of the possible consequences "
+        # "of each action, and second, a reflection of the goals of the agents and how each of the given "
+        # "priorization rules would apply to the given scenario."
+    )
+
+    # send first call
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": thought_prompt},
+    ]
+
+    thought_response = llm.invoke(messages).content
+
+    if verbose:
+        for m in messages:
+            print(f"{m['role']}: {m['content']}")
+        print("\n\nThoughts:\n")
+        print(thought_response)
+
+    action_prompt = (
+        "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
+        "Your response should consist of a single integer that corresponds to the index of the optimal action in the given list."
+        "For example, the answer should be one of 0, 1, etc. with no additional explanation."
+    )
+
+    # send second call
+    messages.extend(
+        [
+            {"role": "assistant", "content": thought_response},
+            {"role": "user", "content": action_prompt},
+        ]
+    )
+
+    action_response = llm.invoke(messages).content
+    action = int(action_response)
+
+    if verbose:
+        for m in messages:
+            print(f"{m['role']}: {m['content']}")
+        print("\n\nAction:\n")
+        print(action_response)
+
+    explanation_prompt = (
+        "Explain why you chose the optimal action given the current state of the environment and the set of priorization rules. "
+        "Your response should be a short paragraph that explains the reasoning behind your choice."
+    )
+
+    # send third call
+    messages.extend(
+        [
+            {"role": "user", "content": explanation_prompt},
+        ]
+    )
+
+    explanation_response = llm.invoke(messages).content
+
+    if verbose:
+        for m in messages:
+            print(f"{m['role']}: {m['content']}")
+        print("\n\nExplanation:\n")
+        print(explanation_response)
+
+    return action, explanation_response
+
+
 def _fix_common_json_list_errors(json_str: str) -> str:
     # 1. Remove the following patters
     patterns = ["```", "```json", "```yaml", "```yml", "\n"]
@@ -154,6 +272,7 @@ def _fix_common_json_list_errors(json_str: str) -> str:
 
 
 if __name__ == "__main__":
+    import sys
     from langchain_together import ChatTogether, TogetherEmbeddings
     from weather2alert.env import HeatAlertEnv
 
@@ -176,10 +295,17 @@ if __name__ == "__main__":
         llm_model, state_text, env.action_space_text, env.task_text, verbose=True
     )
 
-    # print initial state and rules
-    print("=== State ===")
-    print(state_text)
+    rules_text = str(rules)
 
-    # print rules
-    print("=== Rules ===")
-    print(rules)
+    # obtain action
+    action, explanation = call_for_action(
+        llm_model,
+        state_text,
+        rules_text,
+        env.action_space_text,
+        env.task_text,
+        verbose=True,
+    )
+
+    # print initial state and rules
+    sys.exit(0)
