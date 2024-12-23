@@ -1,22 +1,34 @@
 from itertools import combinations
-from typing import List, Tuple, Dict
+from typing import List, Optional, Tuple, Dict
 import numpy as np
 from langchain_core.embeddings import Embeddings
 from langchain_together import TogetherEmbeddings
 
-def generate_rule_combinations(rules: List[str]) -> List[Tuple[str, ...]]:
+
+class Agent:
+    def __init__(self, env, policy_network):
+        self.env = env
+
+
+def generate_rule_combinations(
+    rules: List[Dict], max_combs: Optional[int] = None
+) -> List[Tuple[str, ...]]:
     """
     Generate all non-empty combinations of rules.
 
     Args:
-        rules (List[str]): A list of K rules.
+        rules (List[Dict]): A list of K rules, each consist of a dictionry with keys
+            'rule' and 'explanation'.
 
     Returns:
-        List[Tuple[str, ...]]: A list of all non-empty combinations of rules.
+        List[Dict] list of all non-empty combinations of rules. Rules are appended via text as well as the explanation.
     """
     all_combinations = []
-    for r in range(1, len(rules) + 1):  # r: size of the combination (1 to K)
-        all_combinations.extend(combinations(rules, r))
+    for r in range(max_combs or len(rules)):  # r: size of the combination (1 to K)
+        combs = combinations(rules, r + 1)
+        combs_rules = "- " + "\n - ".join({x["rule"] for x in combs})
+        combs_expl = "- " + "\n - ".join({x["explanation"] for x in combs})
+        all_combinations.extend({"rule": combs_rules, "explanation": combs_expl})
     return all_combinations
 
 
