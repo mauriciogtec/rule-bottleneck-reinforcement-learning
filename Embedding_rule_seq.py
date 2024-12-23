@@ -33,26 +33,25 @@ def generate_rule_combinations(
 
 
 def generate_embeddings_for_rules(
-    rule_combinations: List[Tuple[str, ...]], embeddings_model: Embeddings
+    rule_combinations: List[Tuple[Dict]], embeddings_model: Embeddings
 ) -> Dict[Tuple[str, ...], np.ndarray]:
     """
     Generate embeddings for each rule combination using a language embedding model.
 
     Args:
-        rule_combinations (List[Tuple[str, ...]]): List of rule combinations.
+        rule_combinations (List[Dict]): List of all possible rules. Each rule is a dictionary with keys
+            'rule' and 'explanation'.
         embeddings_model (Embeddings): The language model used for embeddings.
 
     Returns:
         Dict[Tuple[str, ...], np.ndarray]: A dictionary mapping rule combinations to embeddings.
     """
     embeddings = {}
-    for combo in rule_combinations:
-        # Combine the rules into a single string
-        combined_text = " | ".join(combo)
-        # Generate embedding for the combined text
-        embedding = embeddings_model.embed_query(combined_text)
-        # Convert to NumPy array for further processing
-        embeddings[combo] = np.array(embedding, dtype=np.float32)
+    documents = [
+        "Rules:\n" + combo["rule"] + "\n\nExplanation:\n" + combo["explanation"]
+        for combo in rule_combinations
+    ]
+    embeddings = embeddings_model.embed_documents(documents)
     return embeddings
 
 
