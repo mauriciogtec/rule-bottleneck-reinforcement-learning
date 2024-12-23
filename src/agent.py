@@ -46,11 +46,19 @@ def gen_rules(
         )
 
     thought_prompt = (
-        "First, reason about what elements should be considered when designing priorization rules "
+        "First, reason about what elements should be considered when choosing the optimal action "
         "the given task considering the task goal and optimal decision making. "
-        "Your response should consist of two paragraphs. First a reflection of the possible consequences "
-        "of each action, and second, a reflection of the goals of the agents and how certain rules "
-        "related to the task and goals would apply to the given scenario."
+        "Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks "
+        "of each action in the current state. Conclude the paragraph with a reflection of how they inform the design "
+        "of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+        # "Your response should consist of two paragraphs. First a reflection of the possible consequences "
+        # "of each action, and second, a reflection of the goals of the agents and how each of the given "
+        # "priorization rules would apply to the given scenario."
+    )
+
+        # "Your response should consist of two paragraphs. First a reflection of the possible consequences "
+        # "of each action, and second, a reflection of the goals of the agents and how certain rules "
+        # "related to the task and goals would apply to the given scenario."
     )
     # send first call using the OpenAI API
     messages = [
