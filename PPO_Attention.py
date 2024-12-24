@@ -138,7 +138,6 @@ class PPOAgent:
         state_dim,
         rule_dim,
         hidden_dim,
-        num_rules,
         lr=1e-3,
         gamma=0.99,
         clip_epsilon=0.2,
@@ -298,9 +297,9 @@ if __name__ == "__main__":
     # Example dimensions (adjust as needed)
     state_dim = 768  # Dimensionality of query embeddings
     rule_dim = 768  # Dimensionality of rule embeddings
-    hidden_dim = 768
-    num_rules = 10
-    agent = PPOAgent(state_dim, rule_dim, hidden_dim, num_rules)
+    hidden_dim = 32
+    num_rules = 3
+    agent = PPOAgent(state_dim, rule_dim, hidden_dim)
 
     # print number of trainable parameters
     print(
