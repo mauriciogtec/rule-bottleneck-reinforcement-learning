@@ -116,8 +116,9 @@ class HeatAlertsWrapper(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "A single integer value representing the decision"
-            " to issue an alert (1) or not issue an alert (0)."
+            "A single integer value representing the decision:"
+            "1 = issue an alert"
+            "0 = do not issue an alert"
         )
 
     def state_descriptor(self, *_, **__) -> str:
