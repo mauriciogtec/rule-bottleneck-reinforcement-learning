@@ -55,11 +55,6 @@ def gen_rules(
         # "of each action, and second, a reflection of the goals of the agents and how each of the given "
         # "priorization rules would apply to the given scenario."
     )
-
-        # "Your response should consist of two paragraphs. First a reflection of the possible consequences "
-        # "of each action, and second, a reflection of the goals of the agents and how certain rules "
-        # "related to the task and goals would apply to the given scenario."
-    )
     # send first call using the OpenAI API
     messages = [
         {"role": "system", "content": system_prompt},
@@ -82,7 +77,7 @@ def gen_rules(
         "- Start with the character '[' and end with the character ']' \n"
         "- Each list entry should be a dictionary with the keys 'rule' and 'explanation'."
         "- The rules should be in natural language. While there is no strict format, it is recommended "
-        " that they have the form 'If [condition], then [action], because [short justification]'."
+        " that they have the form 'Prioritize [what] [when] [because (short justification)]'."
         "- The explanation should expand on the rule justification and explain further how does it "
         "relate to the task and the goals of the decision maker, and what is the expected outcome of following the rule."
     )
@@ -106,6 +101,7 @@ def gen_rules(
     try:
         # parse JSON
         rules = json.loads(rules_response)
+        _verify_rules(rules)
 
     except Exception as e:
         # Try to fix the error
@@ -120,6 +116,8 @@ def gen_rules(
                     "error message that describes the issue when reading the JSON file. "
                     "Your response should be a corrected version of the JSON file without any "
                     "additional explanation so it can be parsed correctly."
+                    "The keys must be 'rule' and 'explanation'. If a key is missing, "
+                    "please add it with an empty string value."  # TODO
                     f"\n\n### Error Message\n\n{error_message}"
                     f"\n\n### JSON File\n\n{rules_response}"
                 )
@@ -130,6 +128,7 @@ def gen_rules(
                 rules_response = _fix_common_json_list_errors(rules_response)
 
                 rules = json.loads(rules_response)
+                _verify_rules(rules)
 
                 break
             except Exception as e:
@@ -182,7 +181,6 @@ def call_for_action(
         "Let's tackle this task step by step. "
         f"\n\n### Task:\n\n {task_text}"
         f"\n\n### Current state of the environment:\n\n {state_text}"
-        f"\n\n### Possible actions:\n\n {action_space_text}"
         f"\n\n### Priorization rules:\n\n {rules_text}"
     )
 
@@ -215,6 +213,7 @@ def call_for_action(
         "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
         "Your response should consist of a single integer that corresponds to the index of the optimal action in the given list."
         "For example, the answer should be one of 0, 1, etc. with no additional explanation."
+        f"\n\n### Possible actions:\n\n {action_space_text}"
     )
 
     # send second call
@@ -277,6 +276,18 @@ def _fix_common_json_list_errors(json_str: str) -> str:
     json_str = re.sub(r"\s+\]", "]", json_str)
 
     return json_str
+
+
+def _verify_rules(rules: list[dict]) -> None:
+    if not isinstance(rules, list):
+        raise ValueError("Rules must be a list of dictionaries.")
+    for rule in rules:
+        if not isinstance(rule, dict):
+            raise ValueError("Each rule must be a dictionary.")
+        if "rule" not in rule:
+            raise ValueError("Each rule must have a 'rule' key.")
+        if "explanation" not in rule:
+            raise ValueError("Each rule must have an 'explanation' key")
 
 
 if __name__ == "__main__":
