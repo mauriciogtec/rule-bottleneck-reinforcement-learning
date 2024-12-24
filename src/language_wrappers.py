@@ -119,6 +119,7 @@ class HeatAlertsWrapper(LanguageWrapper):
             "A single integer value representing the decision:"
             "1 = issue an alert"
             "0 = do not issue an alert"
+            "When remaining number of alerts given budget is 0, the only valid action is 0."
         )
 
     def state_descriptor(self, *_, **__) -> str:
