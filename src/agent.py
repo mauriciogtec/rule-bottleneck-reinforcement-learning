@@ -182,6 +182,7 @@ def call_for_action(
         f"\n\n### Task:\n\n {task_text}"
         f"\n\n### Current state of the environment:\n\n {state_text}"
         f"\n\n### Priorization rules:\n\n {rules_text}"
+        f"\n\n### Possible actions:\n\n {action_space_text}"
     )
 
     thought_prompt = (
@@ -234,6 +235,8 @@ def call_for_action(
         print(action_response)
 
     explanation_prompt = (
+       f"### Your chosen action: {action}\n\n"
+       f"### Question:\n\n"
         "Explain why you chose the optimal action given the current state of the environment and the set of priorization rules. "
         "Your response should be a short paragraph that explains the reasoning behind your choice."
     )
