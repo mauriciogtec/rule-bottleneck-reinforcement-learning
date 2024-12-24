@@ -11,8 +11,8 @@ class Agent:
 
 
 def generate_rule_combinations(
-    rules: List[Dict], max_combs: Optional[int] = None
-) -> List[Tuple[str, ...]]:
+    rules: List[Dict], max_combinations: Optional[int] = None
+) -> List[Dict]:
     """
     Generate all non-empty combinations of rules.
 
@@ -24,17 +24,18 @@ def generate_rule_combinations(
         List[Dict] list of all non-empty combinations of rules. Rules are appended via text as well as the explanation.
     """
     all_combinations = []
-    for r in range(max_combs or len(rules)):  # r: size of the combination (1 to K)
-        combs = combinations(rules, r + 1)
-        combs_rules = "- " + "\n - ".join({x["rule"] for x in combs})
-        combs_expl = "- " + "\n - ".join({x["explanation"] for x in combs})
-        all_combinations.extend({"rule": combs_rules, "explanation": combs_expl})
+    for r in range(max_combinations or len(rules)):  # r: size of the combination (1 to K)
+        for combs in combinations(rules, r + 1):
+            combs_rules = "- " + "\n- ".join({x["rule"] for x in combs})
+            combs_expl = "- " + "\n- ".join({x["explanation"] for x in combs})
+            all_combinations.append({"rule": combs_rules, "explanation": combs_expl})
+
     return all_combinations
 
 
 def generate_embeddings_for_rules(
     rule_combinations: List[Tuple[Dict]], embeddings_model: Embeddings
-) -> Dict[Tuple[str, ...], np.ndarray]:
+) -> List[List[float]]:
     """
     Generate embeddings for each rule combination using a language embedding model.
 
@@ -48,7 +49,7 @@ def generate_embeddings_for_rules(
     """
     embeddings = {}
     documents = [
-        "Rules:\n" + combo["rule"] + "\n\nExplanation:\n" + combo["explanation"]
+        "Rules:\n" + combo["rule"] + "\n\nExplanations:\n" + combo["explanation"]
         for combo in rule_combinations
     ]
     embeddings = embeddings_model.embed_documents(documents)
