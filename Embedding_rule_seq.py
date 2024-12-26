@@ -1,46 +1,58 @@
 from itertools import combinations
-from typing import List, Tuple, Dict
+from typing import List, Optional, Tuple, Dict
 import numpy as np
 from langchain_core.embeddings import Embeddings
 from langchain_together import TogetherEmbeddings
 
-def generate_rule_combinations(rules: List[str]) -> List[Tuple[str, ...]]:
+
+class Agent:
+    def __init__(self, env, policy_network):
+        self.env = env
+
+
+def generate_rule_combinations(
+    rules: List[Dict], max_combinations: Optional[int] = None
+) -> List[Dict]:
     """
     Generate all non-empty combinations of rules.
 
     Args:
-        rules (List[str]): A list of K rules.
+        rules (List[Dict]): A list of K rules, each consist of a dictionry with keys
+            'rule' and 'explanation'.
 
     Returns:
-        List[Tuple[str, ...]]: A list of all non-empty combinations of rules.
+        List[Dict] list of all non-empty combinations of rules. Rules are appended via text as well as the explanation.
     """
     all_combinations = []
-    for r in range(1, len(rules) + 1):  # r: size of the combination (1 to K)
-        all_combinations.extend(combinations(rules, r))
+    for r in range(max_combinations or len(rules)):  # r: size of the combination (1 to K)
+        for combs in combinations(rules, r + 1):
+            combs_rules = "- " + "\n- ".join({x["rule"] for x in combs})
+            combs_expl = "- " + "\n- ".join({x["explanation"] for x in combs})
+            all_combinations.append({"rule": combs_rules, "explanation": combs_expl})
+
     return all_combinations
 
 
 def generate_embeddings_for_rules(
-    rule_combinations: List[Tuple[str, ...]], embeddings_model: Embeddings
-) -> Dict[Tuple[str, ...], np.ndarray]:
+    rule_combinations: List[Tuple[Dict]], embeddings_model: Embeddings
+) -> List[List[float]]:
     """
     Generate embeddings for each rule combination using a language embedding model.
 
     Args:
-        rule_combinations (List[Tuple[str, ...]]): List of rule combinations.
+        rule_combinations (List[Dict]): List of all possible rules. Each rule is a dictionary with keys
+            'rule' and 'explanation'.
         embeddings_model (Embeddings): The language model used for embeddings.
 
     Returns:
         Dict[Tuple[str, ...], np.ndarray]: A dictionary mapping rule combinations to embeddings.
     """
     embeddings = {}
-    for combo in rule_combinations:
-        # Combine the rules into a single string
-        combined_text = " | ".join(combo)
-        # Generate embedding for the combined text
-        embedding = embeddings_model.embed_query(combined_text)
-        # Convert to NumPy array for further processing
-        embeddings[combo] = np.array(embedding, dtype=np.float32)
+    documents = [
+        "Rules:\n" + combo["rule"] + "\n\nExplanations:\n" + combo["explanation"]
+        for combo in rule_combinations
+    ]
+    embeddings = embeddings_model.embed_documents(documents)
     return embeddings
 
 
