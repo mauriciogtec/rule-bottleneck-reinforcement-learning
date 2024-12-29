@@ -17,26 +17,26 @@ class BuySellHold(Env):
     """
 
     init_outlook_prompt = (
-        "### Task\n\nSimulates a the financial outlook of a popular stock of a tech company with ticker TEC. "
+        "## Task\n\nSimulates a the financial outlook of a popular stock of a tech company with ticker TEC. "
         "The current date is 2022-04-01. "
         "You answer should be a single short paragraph of one to two sentences without additional explanation o rnotes."
-        "\n\n### Example answers:"
+        "\n\n## Example answers:"
         "\n\n- The stock TEC will announce a new produce in 2022-04-05 and report earnings on 2022-04-08."
         "The stock is expected to rise after the announcement if the product is well received."
         "However, the earnings are expected to be below expectations."
         "\n\n- The stock TEC is expected to annoince a new product in 2022-04-05. The stock is expected to rise after the announcement."
         "\n\n- The stock TEC is expected to announce earnings on 2022-04-08. The stock is expected to fall after the announcement."
-        "\n\n ## Your answer: The "
+        "\n\n ## Your answer: "
     )
 
     init_price_prompt = (
         "## Task\n\nPredict the a week of stock prices for the stock TEC."
         "You will be given the initial outlook of the stock as of 2022-04-01."
-        "Do not provide any additional information in your answer, only a list (JSON format) starting with ```json\n[ and ending with ]```. "
+        "Do not provide any additional information in your answer, only a list (JSON format) starting with ```[ and ending with ]```. "
         "Use two decimal places for the prices."
-        "\n\nExample answers:"
-        "\n\n- ```json\n[0.23, 0.25, 0.26, 0.24, 0.27, 0.28, 0.29]\n```"
-        "\n\n- ```json\n[0.45, 0.46, 0.47, 0.48, 0.49, 0.50, 0.51]\n```"
+        "\n\n## Example answers:"
+        "\n\n-  The price is ```[0.45, 0.46, 0.47, 0.48, 0.49, 0.50, 0.51]```"
+        "\n\n ## Your answer: The price is "
     )
 
     news_prompt = (
@@ -47,17 +47,17 @@ class BuySellHold(Env):
         "\n\n- The stock TEC has been performing well in the market. "
         "The company has announced a new product that is expected to increase the stock price."
         "\n\n- The stock TEC announced earnings that were below expectations. The stock price is expected to fall."
-        "\n\n ## Your answer: The "
+        "\n\n ## Your answer:\n"
     )
 
     next_price_template = (
         "## Task\n\nPredict the next day price of the stock TEC. "
         "You will be given the stock prices for the last 7 days and recent news about the stock. "
-        "Do not provide any additional information in your answer, only a list (JSON format) starting with ```json\n and ending with ```."
+        "Do not provide any additional information in your answer, only a list (JSON format) starting with ``` and ending with ```."
         "Use two decimal places for the prices."
         "\n\nExample answers:"
-        "\n\n- ```json\n0.23\n```"
-        "\n\n- ```json\n0.45\n```"
+        "\n\n- ```0.23```"
+        "\n\n- ```0.45```"
         "\n\n## Initial outlook as of 2022-04-01\n\n {}"
         "\n\n## News\n\n {}"
         "\n\n## Prices over the last 7 days\n\n{}"
@@ -93,7 +93,7 @@ class BuySellHold(Env):
 
         # get initial outlook
         self.initial_outlook = (
-            self.llm.invoke(self.init_outlook_prompt, max_tokens=100)
+            self.llm.invoke(self.init_outlook_prompt, max_tokens=100, temperature=0.5)
             .strip()
             .strip("\n")
         )
@@ -222,15 +222,18 @@ if __name__ == "__main__":
     from src.language_wrappers import FinanceWrapper
 
     env = BuySellHold()
-    step, info = env.reset()
-    state1, reward1, terminated1, truncated1, info1 = env.step(0)
-    state2, reward2, terminated2, truncated2, info2 = env.step(1)
-    print(info2)
+    # step, info = env.reset()
+    # state1, reward1, terminated1, truncated1, info1 = env.step(0)
+    # state2, reward2, terminated2, truncated2, info2 = env.step(1)
+    # print(info2)
+    # print(f"Reward: {reward2}")
 
     wrapped_env = FinanceWrapper(env, env.emb)
     obs, info = wrapped_env.reset()
     state1, reward1, terminated1, truncated1, info1 = wrapped_env.step(0)
-    state2, reward2, terminated2, truncated2, info2 = wrapped_env.step(1)
-    print(info2)
+    state2, reward2, terminated2, truncated2, info2 = wrapped_env.step(2)
+    state3, reward3, terminated3, truncated3, info3 = wrapped_env.step(1)
+    print(info3)
+    print(f"Reward: {reward3}")
 
     sys.exit(0)
