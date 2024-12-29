@@ -64,17 +64,6 @@ class BuySellHold(Env):
         "\n\n## Your answer:\n\nThe price is: "
     )
 
-    state_template = (
-        "## Initial outlook\n"
-        "{}\n\n"
-        "## Current date\n"
-        "{}\n\n"
-        "## Last week prices from current date\n"
-        "{}\n\n"
-        "## Has bought?\n"
-        "{}"
-    )
-
     def __init__(self):
         self.llm = Together(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
         self.emb = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
@@ -122,6 +111,7 @@ class BuySellHold(Env):
         info = {
             "initial_outlook": self.initial_outlook,
             "initial_prices": self.init_prices,
+            "has_bought": False,
             "last_prices": self.prices,
             "text_obs": text_obs,
         }
@@ -161,6 +151,7 @@ class BuySellHold(Env):
             self.current_budget = 0
             terminated = False
             self.buying_price = self.prices[-1]
+            self.buying_date = self.current_date
             reward = 0
         elif action == 1:
             # Sell
@@ -182,6 +173,7 @@ class BuySellHold(Env):
             "initial_outlook": self.initial_outlook,
             "initial_prices": self.init_prices,
             "last_prices": self.prices,
+            "has_bought": self.current_budget == 0,
             "text_obs": text_obs,
         }
 
