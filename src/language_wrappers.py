@@ -208,20 +208,20 @@ class VitalSignsWrapper(LanguageWrapper):
         )
 
     def state_descriptor(self, *_, **__) -> str:
-        '''
+        """
         Convert the observation into a text description specific to the environment
 
         Returns:
             str: The text description of the observation
-        '''
+        """
 
         agent_descriptions = []
         env = self.env
         agent_states = env.agent_states
 
         for i in range(len(agent_states)):
-            agent_index = i ## Note this is not agent id, but index in the current list
-            agent_state = agent_states[i]['state']
+            agent_index = i  ## Note this is not agent id, but index in the current list
+            agent_state = agent_states[i]["state"]
             pulse_rate_value = agent_state[0]
             respiratory_rate_value = agent_state[1]
             spo2_value = agent_state[2]
@@ -244,7 +244,7 @@ class VitalSignsWrapper(LanguageWrapper):
             """
             agent_descriptions.append(description.strip())
         return "\n\n".join(agent_descriptions)
-    
+
     # def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
     #     """
     #     Convert the observation into a text description specific to the VitalSigns environment.
@@ -257,6 +257,70 @@ class VitalSignsWrapper(LanguageWrapper):
     #         str: The text description of the observation.
     #     """
     #     raise NotImplementedError("VitalSignsWrapper is not implemented yet.")
+
+
+class FinanceWrapper(LanguageWrapper):
+    """
+    A wrapper for the Finance environment.
+    """
+
+    state_template = (
+        "## Initial outlook\n"
+        "{}\n\n"
+        "## Current date\n"
+        "{}\n\n"
+        "## Last week prices from current date\n"
+        "{}\n\n"
+        "## Has bought? If so, price and date\n"
+        "{}"
+    )
+
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting a financial analyst in making optimized decisions about"
+            " when two buy or sell a single stock. You will determine the action by"
+            " considering the current stock price, the stock price history, the"
+            " analyst's predictions, and news articles about the stock."
+        )
+
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A single integer value representing the decision:"
+            "0 = buy the stock\n"
+            "1 = sell the stock\n"
+            "2 = hold the stock\n"
+        )
+
+    def state_descriptor(self, obs, info):
+        """
+        Convert the observation into a text description specific to the Finance environment.
+
+        Args:
+            obs (Any): The observation to convert into text.
+            info (dict[str, Any]): Additional information about the observation.
+
+        Returns:
+            str: The text description of the observation.
+        """
+
+        initial_outlook = info["initial_outlook"]
+        current_date = info["current_date"]
+        last_week_prices = info["last_prices"]
+        has_bought = info["has_bought"]
+        if has_bought:
+            buying_price = info["buying_price"]
+            buying_date = info["buying_date"]
+            msg = f"Yes, bought at {buying_price} on {buying_date}"
+        else:
+            msg = "No"
+
+        text_state = self.state_template.format(
+            initial_outlook, current_date, last_week_prices, msg
+        )
+
+        return text_state
 
 
 if __name__ == "__main__":
