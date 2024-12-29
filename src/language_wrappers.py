@@ -27,8 +27,30 @@ class LanguageWrapper(Wrapper, ABC):
         super().__init__(env)
         self.embeddings_model = embeddings_model
 
+    @property
     @abstractmethod
-    def language_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
+    def task_text() -> str:
+        """
+        Return a description of the task that the environment is solving.
+
+        Returns:
+            str: The task description.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def action_space_text() -> str:
+        """
+        Return a description of the action space of the environment.
+
+        Returns:
+            str: The action space description.
+        """
+        pass
+
+    @abstractmethod
+    def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
         """
         Convert the observation into a text description.
 
@@ -55,7 +77,7 @@ class LanguageWrapper(Wrapper, ABC):
                    truncation status, and additional info.
         """
         obs, reward, terminated, truncated, info = self.env.step(action)
-        desc = self.language_descriptor(obs, info)
+        desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
         obs = self.embeddings_model.embed_query(desc)
         obs = np.array(obs, dtype=np.float32)
@@ -70,7 +92,7 @@ class LanguageWrapper(Wrapper, ABC):
             tuple: A tuple containing the embedded initial observation and additional info.
         """
         obs, info = self.env.reset()
-        desc = self.language_descriptor(obs, info)
+        desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
         obs = self.embeddings_model.embed_query(desc)
         obs = np.array(obs, dtype=np.float32)
@@ -82,7 +104,25 @@ class HeatAlertsWrapper(LanguageWrapper):
     A wrapper for the HeatAlerts environment from Considine et al. (2024).
     """
 
-    def language_descriptor(self, *_, **__) -> str:
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting officials from the National Weather Service in making optimized"
+            " decisions about when to issue public heatwave alerts. You will determine whether"
+            " to issue an alert by considering multiple factors related to current weather conditions,"
+            " past alert history, and the remaining number of alerts for the season."
+        )
+
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A single integer value representing the decision:"
+            "1 = issue an alert"
+            "0 = do not issue an alert"
+            "When remaining number of alerts given budget is 0, the only valid action is 0."
+        )
+
+    def state_descriptor(self, *_, **__) -> str:
         """
         Convert the observation into a text description specific to the HeatAlerts environment.
 
@@ -91,19 +131,19 @@ class HeatAlertsWrapper(LanguageWrapper):
         """
         template = (
             "- Location (FIPS code): {} "
-            "\n- Remaining number of alerts: {} "
-            "\n- Current date (day of summer): {} (day {} of 152) "
-            "\n- Current heat index: {}% "
-            "\n- Average heat index over the past 3 days: {}% "
-            "\n- Excess heat compared to the last 3 days: {}% "
-            "\n- Excess heat compared to the last 7 days: {}% "
+            "\n- Remaining number of alerts given budget: {} "
+            "\n- Current date and day of summer, day of 152): {}, {}"
+            "\n- Current heat index (0 to 100%): {}%"
+            "\n- Average heat index over the past 3 days (0 to 100%): {}% "
+            "\n- Excess heat compared to the last 3 days (0 to 100%): {}% "
+            "\n- Excess heat compared to the last 7 days (0 to 100%): {}% "
             "\n- Weekend (yes/no): {} "
             "\n- Holiday (yes/no): {} "
             "\n- Alerts in last 14 days: {} "
             "\n- Alerts in last 7 days: {} "
             "\n- Alerts in last 3 days: {} "
             "\n- Alert streak: {} "
-            "\n- Heat index forecast for next 14 days: {} "
+            "\n- Heat index forecast for next 14 days (0 to 100%): {} "
             "\n- Max forecasted per week for the rest of the summer: {}"
         )
         env = self.env
