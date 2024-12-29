@@ -528,37 +528,6 @@ def interventions(current_values,min_max,mean=None,cov=None,given_indices=list(r
     #return resample_values(gmm,min_max,component_index=component_index)[0]
 
 
-''' simulate_one_step: based on the current value, calculate what's the next state for vital signs,
-    the variance of vital sign for the past five timesteps, and the reward
-
-    Input:
-      - current_state: current_state[0] stores the current vital sign, current_state[2] stores the 
-        vital signs for the past five timesteps
-    
-    Output:
-      - next_signs: the vital sign for the next timestep
-      - variablity: the variance of vital signs from the past five states
-      - signs_history: the vital sign history for the past five states
-      - reward: the reward for the next signs
-'''
-def simulate_one_step(current_state,min_max,intervention=False,mean=None,cov=None,given_indices=list(range(len(vital_signs)))):
-    current_signs=current_state[0]
-    signs_history=current_state[2]
-    #print(current_signs)
-
-    if intervention:
-      next_signs=interventions(current_values=current_signs,min_max=min_max,mean=mean,cov=cov)
-    else:
-      next_signs=conditional_sample_mnd(current_signs, given_indices,mean=mean,cov=cov)
-
-    for i in range(len(vital_signs)):
-      del signs_history[i][0]
-      signs_history[i].append(next_signs[i])
-
-    variability=[np.var(l) for l in signs_history]
-
-    reward=reward_function(dict(zip(vital_signs,next_signs)),rev_norm=True,o_values=min_max)
-    return [next_signs,variability,signs_history],reward
 
 ''' resample_values: You sample from a multivariate Gaussian for your initial value,
 and you sample conditioned on the previous value until you have enough sign history to 
