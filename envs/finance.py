@@ -64,12 +64,23 @@ class BuySellHold(Env):
         "\n\n## Your answer:\n\nThe price is: "
     )
 
+    state_template = (
+        "## Initial outlook\n"
+        "{}\n\n"
+        "## Current date\n"
+        "{}\n\n"
+        "## Last week prices from current date\n"
+        "{}\n\n"
+        "## Has bought? If so, price and date\n"
+        "{}"
+    )
+
     def __init__(self):
         self.llm = Together(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
         self.emb = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
         self.action_space = spaces.Discrete(3)
 
-        # 1 for budget, the last 8 prices, and 768 for the embeddings
+        # 1 for budget, 1 for buying price (0 otherwise) the last 7 prices, and 768 for the embeddings
         self.current_budget = 1
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9 + 768,))
 
@@ -77,12 +88,18 @@ class BuySellHold(Env):
         self.current_budget = 1
         self.current_date = date(2022, 4, 1)
         self.news = []
+        self.buying_price = 0
+        self.buying_date = None
 
         # get initial outlook
         self.initial_outlook = (
-            self.llm.invoke(self.init_outlook_prompt, max_tokens=100).strip().strip("\n")
+            self.llm.invoke(self.init_outlook_prompt, max_tokens=100)
+            .strip()
+            .strip("\n")
         )
-        self.init_prices = self.llm.invoke(self.init_price_prompt, max_tokens=100).strip().strip("\n")
+        self.init_prices = (
+            self.llm.invoke(self.init_price_prompt, max_tokens=100).strip().strip("\n")
+        )
 
         # parse prices from the response
         try:
@@ -97,7 +114,9 @@ class BuySellHold(Env):
             elif len(self.init_prices) > 7:
                 self.init_prices = self.init_prices[:7]
         except:
-            self.init_prices = np.linspace(np.random.rand(), np.random.rand(), 8).round(2)
+            self.init_prices = np.linspace(np.random.rand(), np.random.rand(), 8).round(
+                2
+            )
 
         text_obs = self.state_template.format(
             self.initial_outlook,
@@ -112,12 +131,17 @@ class BuySellHold(Env):
             "initial_outlook": self.initial_outlook,
             "initial_prices": self.init_prices,
             "has_bought": False,
+            "buying_price": self.buying_price,
+            "buying_date": self.buying_date,
+            "current_date": self.current_date,
             "last_prices": self.prices,
             "text_obs": text_obs,
         }
         emb = self.emb.embed_query(text_obs)
 
-        state = np.array([self.current_budget] + list(self.prices) + emb)
+        state = np.array(
+            [self.current_budget, self.buying_price] + list(self.prices) + emb
+        )
 
         return state, info
 
@@ -140,7 +164,9 @@ class BuySellHold(Env):
         except:
             # if the model fails to predict the previous price
             # we just use the last price
-            next_price = max(0.01, self.prices[-1] + 0.01 * np.round(np.random.randn(), 2))
+            next_price = max(
+                0.01, self.prices[-1] + 0.01 * np.round(np.random.randn(), 2)
+            )
 
         # update the prices
         self.prices = np.append(self.prices[1:], float(next_price))
@@ -172,14 +198,19 @@ class BuySellHold(Env):
         info = {
             "initial_outlook": self.initial_outlook,
             "initial_prices": self.init_prices,
+            "current_date": self.current_date,
             "last_prices": self.prices,
+            "buying_date": self.buying_date,
+            "buying_price": self.buying_price,
             "has_bought": self.current_budget == 0,
             "text_obs": text_obs,
         }
 
         emb = self.emb.embed_query(text_obs)
 
-        state = np.array([self.current_budget] + list(self.prices) + emb)
+        state = np.array(
+            [self.current_budget, self.buying_price] + list(self.prices) + emb
+        )
 
         truncated = False
 
@@ -188,9 +219,18 @@ class BuySellHold(Env):
 
 if __name__ == "__main__":
     import sys  # not needed, just to stay within tradition of successful runs ending with 0
+    from src.language_wrappers import FinanceWrapper
 
     env = BuySellHold()
     step, info = env.reset()
     state1, reward1, terminated1, truncated1, info1 = env.step(0)
     state2, reward2, terminated2, truncated2, info2 = env.step(1)
+    print(info2)
+
+    wrapped_env = FinanceWrapper(env, env.emb)
+    obs, info = wrapped_env.reset()
+    state1, reward1, terminated1, truncated1, info1 = wrapped_env.step(0)
+    state2, reward2, terminated2, truncated2, info2 = wrapped_env.step(1)
+    print(info2)
+
     sys.exit(0)

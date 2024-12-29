@@ -307,7 +307,7 @@ class FinanceWrapper(LanguageWrapper):
 
         initial_outlook = info["initial_outlook"]
         current_date = info["current_date"]
-        last_week_prices = info["last_week_prices"]
+        last_week_prices = info["last_prices"]
         has_bought = info["has_bought"]
         if has_bought:
             buying_price = info["buying_price"]
