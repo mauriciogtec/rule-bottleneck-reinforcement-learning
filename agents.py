@@ -32,9 +32,7 @@ class BaseAgent:
         system_prompt += f"\n\n### Current state of the environment\n\n {state}"
         return system_prompt
 
-    def gen_thoughts(
-        self, state: str, info: dict, prev_messages: List[Dict]
-    ) -> dict:
+    def gen_thoughts(self, outputs: Dict, messages: List[Dict]) -> str:
         """Generate thoughts and update message list"""
         thought_prompt = (
             "First, reason about what elements should be considered when choosing the optimal action "
@@ -44,30 +42,43 @@ class BaseAgent:
             "of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
         )
 
-        messages = prev_messages + [{"role": "system", "content": thought_prompt}]
+        messages.append({"role": "system", "content": thought_prompt})
 
         response = self.llm.invoke(messages, temperature=0.5, max_tokens=200).content
 
-        messages += [{"role": "user", "content": response}]
+        messages.append({"role": "user", "content": response})
+        outputs["thoughts"] = response
 
-        return {"thoughts": response, "messages": messages}
+        return response
 
-    def gen_explanation(
-        self, state: str, info: dict, prev_messages: list
-    ) -> Tuple[str, List[Dict]]:
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]) -> str:
         """Generate explanation and update message list"""
         explanation_prompt = (
             "Explain why you chose the optimal action given the current state of the environment and the set of priorization rules. "
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
-        messages = prev_messages + [{"role": "system", "content": explanation_prompt}]
+        messages.append({"role": "system", "content": explanation_prompt})
 
         response = self.llm.invoke(messages, temperature=0.5, max_tokens=200).content
 
-        messages += [{"role": "user", "content": response}]
+        messages.append({"role": "user", "content": response})
+        outputs["explanation"] = response
 
-        return response, messages
+        return response
+
+    def pre_action(self, state: str, info: dict) -> Tuple[Dict, List[Dict]]:
+        """Initializes outputs and messages"""
+        system_prompt = self.system_prompt_with_state(state, info)
+        outputs = {"state": state, "info": info}
+        messages = [{"role": "system", "content": system_prompt}]
+        self.gen_thoughts(outputs, messages)
+
+        return outputs, messages
+
+    def post_action(self, outputs: Dict, messages: List[Dict]) -> None:
+        """Finalizes outputs and messages"""
+        self.gen_explanation(outputs, messages)
 
     def gen_action(self, state: str, info: dict) -> Tuple[int, str]:
         """Generate a call for action based on the environment.
@@ -78,13 +89,7 @@ class BaseAgent:
         Returns:
             int: The action to take.
         """
-
-        # make system prompt with the environment state
-        system_prompt = self.system_prompt_with_state(state, info)
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # get thoughts and update messages
-        _, messages = self.gen_thoughts(state, info, messages)
+        outputs, messages = self.pre_action(state, info)
 
         # get actions
         action_prompt = (
@@ -101,9 +106,9 @@ class BaseAgent:
         action = int(action)
 
         # add explanation
-        explanation, messages = self.gen_explanation(state, info, messages)
+        self.post_action(outputs, messages)
 
-        return action, explanation, messages
+        return action, outputs, messages
 
 
 class BaseRulesAgent(BaseAgent):
@@ -124,7 +129,14 @@ class BaseRulesAgent(BaseAgent):
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
 
-    def gen_rules(self, state: str, info: dict, messages: list[dict]) -> dict:
+    def pre_action(self, state: str, info: dict) -> Tuple[Dict, List[Dict]]:
+        """Initializes outputs and messages"""
+        outputs, messages = super().pre_action(state, info)
+        self.gen_rules(outputs, messages)
+
+        return outputs, messages
+
+    def gen_rules(self, outputs: Dict, messages: List[Dict]) -> dict:
         """The rule-based agent generates a set of rules based on the environment state.
 
         Args:
@@ -145,7 +157,7 @@ class BaseRulesAgent(BaseAgent):
         )
 
         # send second call using the OpenAI API
-        messages = messages + [{"role": "system", "content": rules_prompt}]
+        messages.append({"role": "system", "content": rules_prompt})
 
         rules_response = self.llm.invoke(messages).content
         rules_response = self._fix_common_json_list_errors(rules_response)
@@ -199,25 +211,10 @@ class BaseRulesAgent(BaseAgent):
             if attempts >= self.max_parse_attempts:
                 raise ValueError(f"Failed to parse JSON: {error_message}")
 
-        # # expand number of rules by making combinations
-        # rules = self._generate_rule_combinations(rules)
+        outputs["rules"] = rules
+        messages.append({"role": "user", "content": rules_response})
 
         return rules
-
-    def gen_thoughts(
-        self, state: str, info: dict, prev_messages: List[Dict]
-    ) -> Tuple[str, List[Dict], Dict]:
-        """This wrapper generates the initial thoughts and then adds priorization rules."""
-        thoughts, messages = super().gen_thoughts(state, info, prev_messages)
-
-        # generate rules
-        rules = self.gen_rules(state, info, messages)
-
-        # append priorization rules
-        thoughts += f"\n\n### Priorization Rules\n\n {rules}"
-        messages[-1]["content"] = thoughts
-
-        return thoughts, messages
 
     @staticmethod
     def _fix_common_json_list_errors(json_str: str) -> str:
@@ -269,7 +266,12 @@ class RulesSelectorRLAgent(BaseRulesAgent):
         verbose: bool = False,
     ):
         super().__init__(
-            env, llm, num_rules, example_rules, max_parse_attempts, verbose,
+            env,
+            llm,
+            num_rules,
+            example_rules,
+            max_parse_attempts,
+            verbose,
         )
         self.actor = actor
         self.max_rule_combinations = max_rule_combinations
@@ -320,17 +322,17 @@ class RulesSelectorRLAgent(BaseRulesAgent):
 
         return all_combinations
 
-    def gen_rules(self, state: str, info: dict, messages: list[dict]) -> dict:
+    def gen_rules(self, outputs: dict, messages: list[dict]) -> dict:
         """Wrapper for generating rules that includes combinations of and embeddings for rules.
         First, generates combinations of rules, next it filters using an RL selector
         """
         # get all possible rules with combinations
-        rules = super().gen_rules(state, info, messages)
+        rules = super().gen_rules(outputs, messages)
         rules_with_combs = self._generate_rule_combinations(rules)
 
         # get the rules and state embeddings
         rule_emb = self._generate_embeddings_for_rules(rules_with_combs)
-        state_emb = self.embedder.embed_query(state)
+        state_emb = self.embedder.embed_query(outputs["state"])
 
         # convert to torch tensors
         device = next(self.actor.parameters()).device
@@ -405,11 +407,11 @@ if __name__ == "__main__":
     agent = RulesSelectorRLAgent(actor, env, llm_model, embed_model, 768)
 
     # test call for action
-    action, explanation, messages = agent.gen_action(state_text, info)
+    action, outputs, messages = agent.gen_action(state_text, info)
     print("Action:", action)
-    print("Explanation:", explanation)
-    print("Messages:")
-    print(messages)
+    print("Thoughts:", outputs["thoughts"])
+    print("Rules:", outputs["rules"])
+    print("Explanation:", outputs["explanation"])
 
     # print initial state and rules
     sys.exit(0)
