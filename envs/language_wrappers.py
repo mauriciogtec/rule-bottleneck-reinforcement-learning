@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Tuple, SupportsFloat
+from typing import Any, Dict, Optional, Tuple, SupportsFloat
 
 import numpy as np
-from gymnasium import Env, Wrapper
+from gymnasium import Env, Wrapper, spaces
 from gymnasium.core import ActType
 from numpy import ndarray
 from langchain_core.embeddings import Embeddings
@@ -23,9 +23,20 @@ class LanguageWrapper(Wrapper, ABC):
         embeddings_model (Embeddings): The language model used to embed the text descriptions.
     """
 
-    def __init__(self, env: Env, embeddings_model: Embeddings) -> None:
+    def __init__(
+        self,
+        env: Env,
+        embeddings_model: Optional[Embeddings] = None,
+        embeddings_dim: int = 768,
+    ) -> None:
         super().__init__(env)
         self.embeddings_model = embeddings_model
+
+        if self.embeddings_model is not None:
+            # update obs space
+            self.env.observation_space = spaces.Box(
+                low=-np.inf, high=np.inf, shape=(embeddings_dim,)
+            )
 
     @property
     @abstractmethod
@@ -79,23 +90,28 @@ class LanguageWrapper(Wrapper, ABC):
         obs, reward, terminated, truncated, info = self.env.step(action)
         desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
-        obs = self.embeddings_model.embed_query(desc)
-        obs = np.array(obs, dtype=np.float32)
+
+        if self.embeddings_model is not None:
+            obs = self.embeddings_model.embed_query(desc)
+            obs = np.array(obs, dtype=np.float32)
 
         return obs, reward, terminated, truncated, info
 
-    def reset(self) -> Tuple[ndarray, Dict[str, Any]]:
+    def reset(self, *args, **kwargs) -> Tuple[ndarray, Dict[str, Any]]:
         """
         Reset the environment.
 
         Returns:
             tuple: A tuple containing the embedded initial observation and additional info.
         """
-        obs, info = self.env.reset()
+        obs, info = self.env.reset(*args, **kwargs)
         desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
-        obs = self.embeddings_model.embed_query(desc)
-        obs = np.array(obs, dtype=np.float32)
+
+        if self.embeddings_model is not None:
+            obs = self.embeddings_model.embed_query(desc)
+            obs = np.array(obs, dtype=np.float32)
+
         return obs, info
 
 
