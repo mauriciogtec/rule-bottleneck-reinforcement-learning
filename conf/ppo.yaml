@@ -1,0 +1,60 @@
+exp_name: 
+# the name of this experiment
+seed: 1
+# seed of the experiment
+torch_deterministic: true
+# if toggled, `torch.backends.cudnn.deterministic=False`
+cuda: true
+# if toggled, cuda will be enabled by default
+track: false
+# if toggled, this experiment will be tracked with Weights and Biases
+wandb_project_name: "cleanRL"
+# the wandb's project name
+wandb_entity: null
+# the entity (team) of wandb's project
+capture_video: false
+# whether to capture videos of the agent performances (check out `videos` folder)
+
+# Algorithm specific arguments
+env_id: "CartPole-v1"
+# the id of the environment
+total_timesteps: 500000
+# total timesteps of the experiments
+learning_rate: 2.5e-4
+# the learning rate of the optimizer
+num_envs: 4
+# the number of parallel game environments
+num_steps: 128
+# the number of steps to run in each environment per policy rollout
+anneal_lr: true
+# Toggle learning rate annealing for policy and value networks
+gamma: 0.99
+# the discount factor gamma
+gae_lambda: 0.95
+# the lambda for the general advantage estimation
+num_minibatches: 4
+# the number of mini-batches
+update_epochs: 4
+# the K epochs to update the policy
+norm_adv: true
+# Toggles advantages normalization
+clip_coef: 0.2
+# the surrogate clipping coefficient
+clip_vloss: true
+# Toggles whether or not to use a clipped loss for the value function, as per the paper.
+ent_coef: 0.01
+# coefficient of the entropy
+vf_coef: 0.5
+# coefficient of the value function
+max_grad_norm: 0.5
+# the maximum norm for the gradient clipping
+target_kl: null
+# the target KL divergence threshold
+
+# to be filled in runtime
+batch_size: 0
+# the batch size (computed in runtime)
+minibatch_size: 0
+# the mini-batch size (computed in runtime)
+num_iterations: 0
+# the number of iterations (computed in runtime)
