@@ -32,9 +32,9 @@ class BaseAgent:
         system_prompt += f"\n\n### Current state of the environment\n\n {state}"
         return system_prompt
 
-    def add_thoughts(
+    def gen_thoughts(
         self, state: str, info: dict, prev_messages: List[Dict]
-    ) -> Tuple[str, List[Dict]]:
+    ) -> dict:
         """Generate thoughts and update message list"""
         thought_prompt = (
             "First, reason about what elements should be considered when choosing the optimal action "
@@ -50,9 +50,9 @@ class BaseAgent:
 
         messages += [{"role": "user", "content": response}]
 
-        return response, messages
+        return {"thoughts": response, "messages": messages}
 
-    def add_explanation(
+    def gen_explanation(
         self, state: str, info: dict, prev_messages: list
     ) -> Tuple[str, List[Dict]]:
         """Generate explanation and update message list"""
@@ -69,7 +69,7 @@ class BaseAgent:
 
         return response, messages
 
-    def call_for_action(self, state: str, info: dict) -> Tuple[int, str]:
+    def gen_action(self, state: str, info: dict) -> Tuple[int, str]:
         """Generate a call for action based on the environment.
 
         Args:
@@ -84,7 +84,7 @@ class BaseAgent:
         messages = [{"role": "system", "content": system_prompt}]
 
         # get thoughts and update messages
-        _, messages = self.add_thoughts(state, info, messages)
+        _, messages = self.gen_thoughts(state, info, messages)
 
         # get actions
         action_prompt = (
@@ -101,7 +101,7 @@ class BaseAgent:
         action = int(action)
 
         # add explanation
-        explanation, messages = self.add_explanation(state, info, messages)
+        explanation, messages = self.gen_explanation(state, info, messages)
 
         return action, explanation, messages
 
@@ -204,11 +204,11 @@ class BaseRulesAgent(BaseAgent):
 
         return rules
 
-    def add_thoughts(
+    def gen_thoughts(
         self, state: str, info: dict, prev_messages: List[Dict]
-    ) -> Tuple[str, List[Dict]]:
+    ) -> Tuple[str, List[Dict], Dict]:
         """This wrapper generates the initial thoughts and then adds priorization rules."""
-        thoughts, messages = super().add_thoughts(state, info, prev_messages)
+        thoughts, messages = super().gen_thoughts(state, info, prev_messages)
 
         # generate rules
         rules = self.gen_rules(state, info, messages)
@@ -401,11 +401,11 @@ if __name__ == "__main__":
         state_dim=768,
         rule_dim=768,
         hidden_dim=32,
-    ).
+    )
     agent = RulesSelectorRLAgent(actor, env, llm_model, embed_model, 768)
 
     # test call for action
-    action, explanation, messages = agent.call_for_action(state_text, info)
+    action, explanation, messages = agent.gen_action(state_text, info)
     print("Action:", action)
     print("Explanation:", explanation)
     print("Messages:")
