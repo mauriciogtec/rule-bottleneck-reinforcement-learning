@@ -18,7 +18,6 @@ def temperature_penalty(temperature):
     else:
         return -math.exp(abs(temperature - 38.0) / 2)  # Exponential penalty
 
-
 def pulse_penalty(pulse):
     if pulse <= 120:
         return 0
@@ -43,24 +42,6 @@ def blood_penalty(blood_pressure):
     else:
         return -math.exp(abs(blood_pressure - 127) / 5)  # Exponential penalty
     
-
-def reward_function(sign_dict, rev_norm=False, o_values=None):
-    # if rev_norm:
-    #     # print(sign_dict)
-    #     sign_dict = clean_data(vital_signs, sign_dict, o_values)
-
-    reward = 0
-    for signs in sign_dict:
-        if signs == "COVERED_SKIN_TEMPERATURE":
-            reward += temperature_penalty(sign_dict[signs])
-        elif signs == "PULSE_RATE":
-            reward += pulse_penalty(sign_dict[signs])
-        elif signs == "RESPIRATORY_RATE":
-            reward += respiratory_penalty(sign_dict[signs])
-        elif signs == "SPO2":
-            reward += spo2_penalty(sign_dict[signs])
-    return reward
-
 class VitalSignEnv(Env):
     """'Class to simulate the environment
     for the online RL agent"""
@@ -229,6 +210,19 @@ class VitalSignEnv(Env):
         cov = covariances[component]
 
         return mean,cov, min_max
+    
+    def _reward_function(self, sign_dict):
+        reward = 0
+        for signs in sign_dict:
+            if signs == "COVERED_SKIN_TEMPERATURE":
+                reward += temperature_penalty(sign_dict[signs])
+            elif signs == "PULSE_RATE":
+                reward += pulse_penalty(sign_dict[signs])
+            elif signs == "RESPIRATORY_RATE":
+                reward += respiratory_penalty(sign_dict[signs])
+            elif signs == "SPO2":
+                reward += spo2_penalty(sign_dict[signs])
+        return reward
 
     # sign_dict, min_max, intervention_success_rate
     def _improve_vital_signs3(self, sign_dict):
@@ -324,8 +318,8 @@ class VitalSignEnv(Env):
         given_indices = np.arange(len(vital_signs))
 
         if (
-            reward_function(
-                dict(zip(vital_signs, vital_values)), rev_norm=True, o_values=min_max
+            self._reward_function(
+                dict(zip(vital_signs, vital_values))
             )
             >= 0
         ):
@@ -369,8 +363,8 @@ class VitalSignEnv(Env):
 
         variability = [np.var(l) for l in signs_history]
 
-        reward = reward_function(
-            dict(zip(vital_signs, next_signs)), rev_norm=True, o_values=min_max
+        reward = self._reward_function(
+            dict(zip(vital_signs, next_signs))
         )
         return [next_signs, variability, signs_history], reward
 
@@ -405,8 +399,8 @@ class VitalSignEnv(Env):
         # print(l,np.var(l))
         variability = [np.var(l) for l in signs_history]
         # print(variability)
-        reward = reward_function(
-            dict(zip(vital_signs, current_signs)), rev_norm=True, o_values=min_max
+        reward = self._reward_function(
+            dict(zip(vital_signs, current_signs))
         )
         return [current_signs, variability, signs_history], reward
 
@@ -445,6 +439,25 @@ class VitalSignEnv(Env):
         # print(mean,cov)
         # pertubation
         return state, component, mean, cov
+    
+    def _change_state_to_obs(self):
+        agent_states = self.agent_states
+        # Initialize an empty list to hold rows
+        agent_matrix = []
+        
+        # Iterate over each agent's state
+        for agent in agent_states:
+            # Extract values from the dictionary
+            vitals = agent['vitals']  # 1D array with 3 values
+            variability = agent['variability']  # List with 3 elements
+            signs_history = np.concatenate(agent['signs_history'])  # Flatten the list of lists
+            has_device = [agent['has_device']]  # Scalar value converted to list for concatenation
+            time_joined = [agent['time_joined']]  # Scalar value converted to list for concatenation
+
+            # Concatenate all components into a single row
+            agent_row = np.concatenate([vitals, variability, signs_history, has_device, time_joined])
+            agent_matrix.append(agent_row)
+        return np.array(agent_matrix)
 
     def step(self, action):
         """
@@ -474,12 +487,6 @@ class VitalSignEnv(Env):
 
         ## Accumulated reward from this round
         overall_reward_this_step = 0
-
-        """
-            Question left for Mauricio, This part is a bit confusing to me. The action is directly passed in to 
-            the step function, then we determine how many agents join. Then it's unclear to me how can we guarantee 
-            that all incoming patients will receive a device. 
-        """
 
         for i in range(len(self.agent_states)):
             agent_info = self.agent_states[i]
@@ -566,9 +573,9 @@ class VitalSignEnv(Env):
         truncated = False
         info = {}
 
-        # this is wrong, the observation should be in vector form
-        # self.agent_states is a list of dictionaries and it is the internal state instead
-        return self.agent_states, overall_reward_this_step, done, truncated, info
+        obs = self._change_state_to_obs()
+
+        return obs, overall_reward_this_step, done, truncated, info
 
     def render(self):
         pass
@@ -583,8 +590,10 @@ class VitalSignEnv(Env):
         self._initialize_agents()
 
         self.next_agent_id = self.num_agents
+        info = {}
 
-        return self.agent_states
+        obs = self._change_state_to_obs()
+        return obs, info
 
 
 if __name__ == "__main__":
@@ -595,7 +604,7 @@ if __name__ == "__main__":
     obs, info = env.reset()
     print(f"Initial state: {obs}")
     print(f"Initial info: {info}")
-
+    
     # action
     obs, reward, terminated, truncated, info = env.step([0, 0])
     print(f"State: {obs}")
