@@ -1,8 +1,12 @@
+from typing import Optional
+import warnings
 import numpy as np
 from gymnasium import Env, spaces
 from langchain_together import Together, TogetherEmbeddings
 import re
 from datetime import date, timedelta
+
+from envs.language_wrapper import LanguageWrapper
 
 
 class BuySellHold(Env):
@@ -84,7 +88,11 @@ class BuySellHold(Env):
         self.current_budget = 1
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9 + 768,))
 
-    def reset(self):
+    def reset(self, **kwargs):
+        # note that seed here is ignored since the env is random
+        if "seed" in kwargs:
+            warnings.warn("Seed is ignored in this environment")
+
         self.current_budget = 1
         self.current_date = date(2022, 4, 1)
         self.news = []
@@ -92,14 +100,12 @@ class BuySellHold(Env):
         self.buying_date = None
 
         # get initial outlook
-        self.initial_outlook = (
-            self.llm.invoke(self.init_outlook_prompt, max_tokens=100, temperature=0.5)
-            .strip()
-            .strip("\n")
+        self.initial_outlook = self.llm.invoke(
+            self.init_outlook_prompt, max_tokens=100, temperature=0.5
         )
-        self.init_prices = (
-            self.llm.invoke(self.init_price_prompt, max_tokens=100).strip().strip("\n")
-        )
+        self.initial_outlook = self.initial_outlook.strip().strip("\n")
+        self.init_prices = self.llm.invoke(self.init_price_prompt, max_tokens=100)
+        self.init_prices = self.init_prices.strip().strip("\n")
 
         # parse prices from the response
         try:
@@ -219,7 +225,7 @@ class BuySellHold(Env):
 
 if __name__ == "__main__":
     import sys  # not needed, just to stay within tradition of successful runs ending with 0
-    from src.language_wrappers import FinanceWrapper
+    from envs.language_wrapper import FinanceWrapper
 
     env = BuySellHold()
     # step, info = env.reset()
@@ -230,6 +236,7 @@ if __name__ == "__main__":
 
     wrapped_env = FinanceWrapper(env, env.emb)
     obs, info = wrapped_env.reset()
+    print("Shape of observation: ", obs.shape)
     state1, reward1, terminated1, truncated1, info1 = wrapped_env.step(0)
     state2, reward2, terminated2, truncated2, info2 = wrapped_env.step(2)
     state3, reward3, terminated3, truncated3, info3 = wrapped_env.step(1)
@@ -237,3 +244,70 @@ if __name__ == "__main__":
     print(f"Reward: {reward3}")
 
     sys.exit(0)
+
+
+class BuySellHoldLang(LanguageWrapper):
+    """
+    A wrapper for the Finance environment.
+    """
+    def __init__(self, embeddings_model: Optional[TogetherEmbeddings] = None, **kwargs):
+        env = BuySellHold(**kwargs)
+        super().__init__(env, embeddings_model)
+
+    state_template = (
+        "## Initial outlook\n"
+        "{}\n\n"
+        "## Current date\n"
+        "{}\n\n"
+        "## Last week prices from current date\n"
+        "{}\n\n"
+        "## Has bought? If so, price and date\n"
+        "{}"
+    )
+
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting a financial analyst in making optimized decisions about"
+            " when two buy or sell a single stock. You will determine the action by"
+            " considering the current stock price, the stock price history, the"
+            " analyst's predictions, and news articles about the stock."
+        )
+
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A single integer value representing the decision:"
+            "0 = buy the stock\n"
+            "1 = sell the stock\n"
+            "2 = hold the stock\n"
+        )
+
+    def state_descriptor(self, obs, info):
+        """
+        Convert the observation into a text description specific to the Finance environment.
+
+        Args:
+            obs (Any): The observation to convert into text.
+            info (dict[str, Any]): Additional information about the observation.
+
+        Returns:
+            str: The text description of the observation.
+        """
+
+        initial_outlook = info["initial_outlook"]
+        current_date = info["current_date"]
+        last_week_prices = info["last_prices"]
+        has_bought = info["has_bought"]
+        if has_bought:
+            buying_price = info["buying_price"]
+            buying_date = info["buying_date"]
+            msg = f"Yes, bought at {buying_price} on {buying_date}"
+        else:
+            msg = "No"
+
+        text_state = self.state_template.format(
+            initial_outlook, current_date, last_week_prices, msg
+        )
+
+        return text_state
