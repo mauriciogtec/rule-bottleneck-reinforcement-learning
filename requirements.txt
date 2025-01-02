@@ -4,4 +4,5 @@ gymnasium
 torch
 torchvision
 torchaudio
+wandb
 git+https://github.com/NSAPH-Projects/weather2alert@dev
