@@ -95,6 +95,9 @@ class LanguageWrapper(Wrapper, ABC):
             obs = self.embeddings_model.embed_query(desc)
             obs = np.array(obs, dtype=np.float32)
 
+        self.last_obs = obs
+        self.last_info = info
+
         return obs, reward, terminated, truncated, info
 
     def reset(self, *args, **kwargs) -> Tuple[ndarray, Dict[str, Any]]:
@@ -107,6 +110,9 @@ class LanguageWrapper(Wrapper, ABC):
         obs, info = self.env.reset(*args, **kwargs)
         desc = self.state_descriptor(obs, info)
         info["obs_text"] = desc
+
+        self.last_obs = obs
+        self.last_info = info
 
         if self.embeddings_model is not None:
             obs = self.embeddings_model.embed_query(desc)
