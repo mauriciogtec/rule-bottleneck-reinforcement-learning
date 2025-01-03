@@ -9,7 +9,6 @@ from gymnasium import Env, spaces
 # from gymnasium.spaces import Discrete, Box
 from sklearn.mixture import GaussianMixture
 import math
-import random
 import pandas as pd
 from together import Embeddings
 
@@ -64,7 +63,7 @@ class VitalSignEnv(Env):
         joining_interval = 5, ## In the paper, patients join every 5 timesteps
         degree_of_arm_noise=0.15,
         intervention_success_rate=0.7,
-        variability_window=5
+        variability_window=5,
     ):
         """
         Parameters:
@@ -138,6 +137,9 @@ class VitalSignEnv(Env):
         ## Initialize agents at time step 0
         self._initialize_agents()
 
+        ## Random number generator
+        self.rng = np.random.default_rng()
+
     def _initialize_agents(self):
         """Initialize the agents' states at time step 0"""
         for agent_id in range(self.num_agents):
@@ -208,7 +210,7 @@ class VitalSignEnv(Env):
         weights /= np.sum(weights)
 
         # Sample an index based on the weights
-        component = np.random.choice(len(weights), p=weights)
+        component = self.rng.choice(len(weights), p=weights)
 
         mean = means[component]
         cov = covariances[component]
@@ -245,20 +247,20 @@ class VitalSignEnv(Env):
             }
 
         # print(sign_dict)
-        if random.random() < self.intervention_success_rate:
+        if self.rng.random() < self.intervention_success_rate:
             for signs in sign_dict:
                 if signs == "COVERED_SKIN_TEMPERATURE":
                     if temperature_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - np.random.normal(1.5, 0.5)
+                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(1.5, 0.5)
                 elif signs == "PULSE_RATE":
                     if pulse_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - np.random.normal(15, 5)
+                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(15, 5)
                 elif signs == "RESPIRATORY_RATE":
                     if respiratory_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - np.random.normal(10, 10 / 3)
+                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(10, 10 / 3)
                 elif signs == "SPO2":
                     if spo2_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] + np.random.normal(3, 1)
+                        sign_dict[signs] = sign_dict[signs] + self.rng.normal(3, 1)
 
         if min_max:
             # renormalize
@@ -302,9 +304,9 @@ class VitalSignEnv(Env):
             - cov_remaining_given @ cov_inv_given_given @ cov_given_remaining
         )
 
-        return np.clip(
-            np.random.multivariate_normal(mean=conditional_mean, cov=conditional_cov), 0, 1
-        )
+        v = self.rng.multivariate_normal(mean=conditional_mean, cov=conditional_cov)
+
+        return np.clip(v, 0, 1)
 
     # current_values, min_max, intervention_success_rate, mean=None, cov=None,
     def _interventions(self, vital_values):
@@ -387,7 +389,9 @@ class VitalSignEnv(Env):
         vital_signs = list(min_max.keys())
         given_indices = np.arange(len(vital_signs))
 
-        sample = np.clip(np.random.multivariate_normal(mean=mean, cov=cov), 0, 1)
+        sample = self.rng.multivariate_normal(mean=mean, cov=cov)
+        sample = np.clip(sample, 0, 1)
+
         current_signs = [sample[i] for i in given_indices]
         signs_history = [[] for _ in range(len(vital_signs))]
         for i in range(len(vital_signs)):
@@ -424,7 +428,7 @@ class VitalSignEnv(Env):
         weights /= np.sum(weights)
 
         # Sample an index based on the weights
-        component = np.random.choice(len(weights), p=weights)
+        component = self.rng.choice(len(weights), p=weights)
 
         means = gmm.means_
         covariances = gmm.covariances_
@@ -432,10 +436,10 @@ class VitalSignEnv(Env):
         cov = covariances[component]
         state, _ = self._resample_values()
 
-        perturb = random.choice([i for i in range(len(weights)) if i != component])
+        perturb = self.rng.choice([i for i in range(len(weights)) if i != component])
 
-        x = random.uniform(0, self.degree_of_arm_noise)
-        y = random.uniform(0, self.degree_of_arm_noise)
+        x = self.rng.uniform(0, self.degree_of_arm_noise)
+        y = self.rng.uniform(0, self.degree_of_arm_noise)
 
         mean = (1 - x) * mean + x * means[perturb]
         cov = (1 - y) * cov + y * covariances[perturb]
@@ -584,7 +588,11 @@ class VitalSignEnv(Env):
     def render(self):
         pass
 
-    def reset(self):
+    def reset(self, seed=None, **kwargs):
+        # Set the seed
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+
         # Reinitialize agent states
         self.remaining_planning_length = self.T
         self.num_agents = self.init_agents
@@ -604,6 +612,13 @@ class VitalSignsLang(LanguageWrapper):
     """
     A wrapper for the VitalSigns environment.
     """
+
+    _state_mapping = {
+        "PULSE_RATE": "Pulse rate",
+        "RESPIRATORY_RATE": "Respiratory rate",
+        "SPO2": "SPO2",
+        "COVERED_SKIN_TEMPERATURE": "Covered skin temperature",
+    }
 
     def __init__(self, path: str, embeddings_model: Optional[Embeddings] = None, **kwargs):
         env = VitalSignEnv(path, **kwargs)
@@ -633,36 +648,29 @@ class VitalSignsLang(LanguageWrapper):
         Returns:
             str: The text description of the observation
         """
-
-        agent_descriptions = []
         env = self.env
-        agent_states = env.agent_states
 
-        for i in range(len(agent_states)):
-            agent_index = i  ## Note this is not agent id, but index in the current list
-            agent_state = agent_states[i]["state"]
-            pulse_rate_value = agent_state[0]
-            respiratory_rate_value = agent_state[1]
-            spo2_value = agent_state[2]
-            pulse_rate_variance = agent_state[3]
-            respiratory_rate_variance = agent_state[4]
-            spo2_variance = agent_state[5]
-            device_flag = agent_state[6]
-            time_since_joined = agent_state[7]
+        desc = ""
+        for i, d in enumerate(env.agent_states):
+            has_device = d["has_device"]
+            if not has_device:
+                continue
 
-            description = f"""
-            Agent {agent_index}:
-            - Pulse Rate Value: {pulse_rate_value}
-            - Respiratory Rate Value: {respiratory_rate_value}
-            - SPO2 Value: {spo2_value}
-            - Pulse Rate Variance: {pulse_rate_variance}
-            - Respiratory Rate Variance: {respiratory_rate_variance}
-            - SPO2 Variance: {spo2_variance}
-            - Device Allocation Flag: {device_flag}
-            - Time Slot Since Joined: {time_since_joined}
-            """
-            agent_descriptions.append(description.strip())
-        return "\n\n".join(agent_descriptions)
+            time_joined = d["time_joined"]
+
+            aux = {}
+            for j, v in enumerate(env.vital_signs):
+                aux[v] = f"{d['vitals'][j]:.2f} +/- {d['variability'][j]:.2f}"
+
+            key = "Time steps since joined (will exit the system after 50 steps)"
+            aux[key] = time_joined
+
+            key = "Has a device available for reallocation (otherwise not a candidate)"
+            aux[key] = has_device
+
+            desc += f"Agent {i}:\n" + "\n".join({f"{k}: {v}" for k, v in aux.items()})
+
+        return desc
 
 
 if __name__ == "__main__":
