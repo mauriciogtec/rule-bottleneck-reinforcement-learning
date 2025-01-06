@@ -12,7 +12,6 @@ class HeatAlertsLang(LanguageWrapper):
 
     def __init__(
         self,
-        embeddings_model: Optional[Embeddings] = None,
         budget: Optional[int] = None,
         fips_list: Optional[List[int]] = None,
         years: Optional[List[int]] = None,
@@ -25,7 +24,7 @@ class HeatAlertsLang(LanguageWrapper):
                 " Please install it using `pip install git+https://github.com/NSAPH-Projects/weather2alert@dev`."
             )
         env = HeatAlertEnv(budget=budget, fips_list=fips_list, years=years)
-        super().__init__(env, embeddings_model)
+        super().__init__(env)
 
     @property
     def task_text(self) -> str:
