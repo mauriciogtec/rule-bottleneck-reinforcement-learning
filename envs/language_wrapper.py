@@ -48,7 +48,7 @@ class LanguageWrapper(Wrapper, ABC):
             self.env.observation_space = spaces.Text(max_length=max_text_length)
         elif self.obs_type == "both":
             self.env.observation_space = spaces.Tuple(
-                (self.env.observation_space, spaces.Text(max_length=512))
+                (self.env.observation_space, spaces.Text(max_length=2048))
             )
 
         self.metadata["task_text"] = self.task_text
