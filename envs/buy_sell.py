@@ -346,15 +346,15 @@ class BuySell(Env):
         self.rng = np.random.default_rng()
 
     def reset(self, seed: Optional[int] = None, options: Dict = {}):
-        self.price = options.get("price", 1)
+        self.price = options.get("price", 1.0)
         self.volatility = options.get("volatility", 0.1)
         self.drift = options.get("drift", 0.0)
 
         if seed is not None:
             self.rng = np.random.default_rng(seed)
 
-        self.current_budget = 1
-        self.buying_price = 0
+        self.current_budget = 1.0
+        self.buying_price = 0.0
 
         state = np.array(
             [
@@ -363,7 +363,8 @@ class BuySell(Env):
                 self.price,
                 self.current_budget,
                 self.buying_price,
-            ]
+            ],
+            dtype=np.float32,
         )
 
         return state, {}
@@ -410,7 +411,8 @@ class BuySell(Env):
                 self.price,
                 self.current_budget,
                 self.buying_price,
-            ]
+            ],
+            dtype=np.float32,
         )
 
         return state, reward, done, truncated, {}
@@ -468,15 +470,15 @@ class BuySellLang(LanguageWrapper):
         buying_price = obs[4]
 
         # First the current price
-        text = f"Current price: ${current_price}\n"
+        text = f"Current price: ${current_price:.2f}\n"
 
         # Then the estimated drift and volatility
-        text += f"Estimated drift: {drift}\n"
-        text += f"Estimated volatility: {volatility}\n"
+        text += f"Estimated drift: {drift:.2f}\n"
+        text += f"Estimated volatility: {volatility:.2f}\n"
 
         # Is the stock currently in the portfolio? If so, what was the buying price?
         if current_budget == 0:
-            text += f"Stock in portfolio. Bought at ${buying_price}\n"
+            text += f"Stock in portfolio. Bought at ${buying_price:.2f}\n"
         else:
             text += "Stock not in portfolio.\n"
 
