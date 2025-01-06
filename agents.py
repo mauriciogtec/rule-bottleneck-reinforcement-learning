@@ -312,25 +312,25 @@ class RulesSelectorActorCritic(BaseAgent):
         rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(device)
         outputs["rules_emb"] = rules_emb
 
-        # query (1, emb_dim,) keys (num_rules, emb_dim)
+        # get the rule scores
         query, keys = state_vector.unsqueeze(0), rules_emb
-
-        # logits (1, num_rules) -> (num_rules, )
         logits, value = self.actor_critic(query, keys)
+        logits = logits.squeeze(0)
+        value = value.squeeze()
 
         dist = torch.distributions.Categorical(logits=logits)
-        sel_idx = dist.sample().squeeze()
-        entropy = dist.entropy().squeeze()
+        sel_idx = dist.sample()
+        entropy = dist.entropy()
 
         # get the selected rule
         sel_rule = rules[sel_idx]
 
         outputs["logits"] = logits
-        outputs["sel_logprob"] = dist.log_prob(sel_idx).squeeze()
+        outputs["sel_logprob"] = dist.log_prob(sel_idx)
         outputs["sel_idx"] = sel_idx
         outputs["sel_rule"] = sel_rule
         outputs["entropy"] = entropy
-        outputs["value"] = value.squeeze()
+        outputs["value"] = value
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]) -> Dict:
         """Generate rule scores based on the current state and the set of rules."""
@@ -355,6 +355,7 @@ class RulesSelectorActorCritic(BaseAgent):
         logits, values = self.actor_critic(
             state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
         )
+        logits = logits.squeeze(1)
         dist = torch.distributions.Categorical(logits=logits)
         if sel_idxs is None:
             sel_idxs = dist.sample()
