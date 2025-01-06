@@ -465,9 +465,9 @@ class BuySellLang(LanguageWrapper):
     def action_space_text(self) -> str:
         return (
             "A single integer value representing the decision:"
-            "0 = buy the stock\n"
-            "1 = hold the stock\n"
-            "2 = sell the stock\n"
+            "0 = buy the stock if not yet in portfolio\n"
+            "1 = hold the stock if already in portfolio\n"
+            "2 = sell the stock if already in portfolio\n"
             "You can only buy the stock if not bought yet, and you can only hold or sell if it has been bought."
             " You will be penalized if selecting to hold or sell the stock when it has not been bought,"
             " and when selecting to buy the stock when it has already been bought."
