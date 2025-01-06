@@ -130,14 +130,13 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(actor_critic.parameters(), lr=cfg.learning_rate, eps=1e-5)
     torchsummary.summary(actor_critic)
 
-    ckpt_path = f"checkpoints/{__file__.replace('.py', '')}/best_{run_id}.pt"
-    training_state_path = f"{ckpt_path}.state"
+    ckpt_path = f"checkpoints/{__file__.replace('.py', '')}/best_{run_id}.state"
 
     global_step = 0
     start_time = time.time()
     best_total_reward = -float("inf")
 
-    checkpoint = load_checkpoint(training_state_path, device)
+    checkpoint = load_checkpoint(ckpt_path, device)
     if checkpoint:
         logger.info(
             f"Resuming training from checkpoint at step {checkpoint['global_step']}."
@@ -253,7 +252,7 @@ def main(cfg: DictConfig):
                     "elapsed_time": time.time() - start_time,
                     "best_total_reward": best_total_reward,
                 },
-                training_state_path,
+                ckpt_path,
             )
 
         # bootstrap value if not done
