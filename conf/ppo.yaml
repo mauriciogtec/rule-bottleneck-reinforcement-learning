@@ -25,7 +25,7 @@ torch_deterministic: true
 # if toggled, `torch.backends.cudnn.deterministic=False`
 cuda: true
 # if toggled, cuda will be enabled by default
-track: true
+track: false
 # if toggled, this experiment will be tracked with Weights and Biases
 wandb_project_name: "rulebots"
 # the wandb's project name
@@ -35,6 +35,7 @@ wandb_save_code: true
 # if toggled, the code will be saved to wandb
 capture_video: false
 # whether to capture videos of the agent performances (check out `videos` folder)
+log_examples_interval: 20
 
 # Algorithm specific arguments
 env_id: "BuySell"
