@@ -205,6 +205,7 @@ def main(cfg: DictConfig):
                     f"### State\n {outputs['state_text'][0]}\n"
                     f"### Thoughts\n {outputs['thoughts'][0]}\n"
                     f"### Rule\n {outputs['sel_rule'][0]}\n"
+                    f"### Rule Probability\n {np.exp(outputs['sel_logprob'][0]):.2f}\n"
                     f"### Environment Action\n {env_actions[0]}\n"
                     f"### Explanation\n {outputs['explanation'][0]}"
                 )
