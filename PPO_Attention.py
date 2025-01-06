@@ -198,8 +198,8 @@ def main(cfg: DictConfig):
                         logging.info(
                             f"global_step={global_step}, episodic_return={r:.4f}"
                         )
-            
-            if global_step == 0 or global_step % cfg.log_examples_interval == 0:
+
+            if step == 0 or step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
                 example = (
                     f"### State\n {outputs['state_text'][0]}\n"
@@ -339,10 +339,10 @@ def main(cfg: DictConfig):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        logging.info("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar(
-            "charts/SPS", int(global_step / (time.time() - start_time)), global_step
-        )
+
+        sps = int(global_step / (time.time() - start_time))
+        logging.info(f"SPS: {sps}")
+        writer.add_scalar("charts/SPS", sps, global_step)
 
     envs.close()
     writer.close()
