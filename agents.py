@@ -31,7 +31,7 @@ def generate_rule_combinations(
 
 def parse_rules(x: str) -> List[str]:
     # 1. Remove the following patters
-    patterns = ["```yaml", "```yml"]
+    patterns = ["```yaml", "```yml", "```"]
     x = re.sub("|".join(patterns), "", x)
 
     # 2. Remove trailing white space, and collapse new lines
@@ -291,7 +291,7 @@ class RulesSelectorActorCritic(BaseAgent):
             " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
             " the task and the agent's goals."
-            " Your answer should start with the character ```- "
+            " Your answer should start with the character ```-  and end with ```"
         )
 
         # send second call using the OpenAI API
