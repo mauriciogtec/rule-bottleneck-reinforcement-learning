@@ -8,6 +8,9 @@
 .vscode/
 .env
 
-# hydra / logging
+# hydra / wandb / tensorboard / other logging
 multirun/
 outputs/
+runs/
+wandb/
+checkpoints/
