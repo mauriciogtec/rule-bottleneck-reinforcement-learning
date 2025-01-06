@@ -152,6 +152,7 @@ class AttentionActorCritic(nn.Module):
                     )
                 )
                 self.attn_body.append(nn.LayerNorm(embed_dim))
+                self.attn_body.append(nn.SiLU())
 
         self.attn_head = MultiHeadAttentionWeightsOnly(
             q_dim=self.q_dim,
@@ -189,9 +190,10 @@ class AttentionActorCritic(nn.Module):
 
         value = self.critic(query).squeeze(-1)
 
-        for i in range(0, len(self.attn_body), 2):
+        for i in range(0, len(self.attn_body), 3):
             attn_layer = self.attn_body[i]
             norm_layer = self.attn_body[i + 1]
+            act_layer = self.attn_body[i + 2]
 
             query, _ = attn_layer(
                 query,
@@ -201,7 +203,7 @@ class AttentionActorCritic(nn.Module):
                 key_padding_mask=key_padding_mask,
             )
             query = norm_layer(query)
-            query = torch.nn.functional.silu(query)
+            query = act_layer(query)
 
         attn_logits = self.attn_head(
             query, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
