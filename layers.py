@@ -17,7 +17,7 @@ class MultiHeadAttentionWeightsOnly(nn.Module):
         self.head_dim = embed_dim // num_heads
 
         # Linear layers for query and key transformations
-        self.q_proj = nn.Linear(q_dim, embed_dim)
+        self.q_proj = nn.Linear(q_dim, embed_dim, bias=False)
         self.k_proj = nn.Linear(k_dim, embed_dim)
 
         self.dropout = nn.Dropout(dropout)
@@ -149,10 +149,11 @@ class AttentionActorCritic(nn.Module):
                         kdim=self.k_dim,
                         vdim=hidden_dim,
                         batch_first=True,
+                        add_bias_kv=True,
                     )
                 )
-                self.attn_body.append(nn.LayerNorm(embed_dim))
                 self.attn_body.append(nn.SiLU())
+                self.attn_body.append(nn.LayerNorm(embed_dim))
 
         self.attn_head = MultiHeadAttentionWeightsOnly(
             q_dim=self.q_dim,
@@ -192,18 +193,17 @@ class AttentionActorCritic(nn.Module):
 
         for i in range(0, len(self.attn_body), 3):
             attn_layer = self.attn_body[i]
-            norm_layer = self.attn_body[i + 1]
-            act_layer = self.attn_body[i + 2]
+            act_layer = self.attn_body[i + 1]
+            norm_layer = self.attn_body[i + 2]
 
-            query, _ = attn_layer(
+            layer_output, _ = attn_layer(
                 query,
                 keys,
                 keys,
                 attn_mask=attn_mask,
                 key_padding_mask=key_padding_mask,
             )
-            query = norm_layer(query)
-            query = act_layer(query)
+            query = norm_layer(act_layer(query + layer_output))
 
         attn_logits = self.attn_head(
             query, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
