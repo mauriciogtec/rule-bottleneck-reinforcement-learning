@@ -1,3 +1,22 @@
+embedder_lm: "togethercomputer/m2-bert-80M-8k-retrieval"
+embed_dim: 768
+# the embeddings model to use
+
+parallel: true
+
+# chat_lm: "meta-llama/Llama-3.2-3B-Instruct-Turbo"
+chat_lm: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+# the chat model to use
+
+hidden_dim: 32
+# the hidden dimension of the attention model projections
+
+num_rules: 3
+# the number of rules to use
+
+max_rule_combinations: 3
+# the maximum number of rule combinations to use
+
 exp_name: 
 # the name of this experiment
 seed: 1
@@ -16,15 +35,15 @@ capture_video: false
 # whether to capture videos of the agent performances (check out `videos` folder)
 
 # Algorithm specific arguments
-env_id: "CartPole-v1"
+env_id: "BuySell"
 # the id of the environment
-total_timesteps: 500000
+total_timesteps: 5000  # removed two zeros, originally 500000
 # total timesteps of the experiments
 learning_rate: 2.5e-4
 # the learning rate of the optimizer
 num_envs: 4
 # the number of parallel game environments
-num_steps: 128
+num_steps: 2  # 128
 # the number of steps to run in each environment per policy rollout
 anneal_lr: true
 # Toggle learning rate annealing for policy and value networks
@@ -32,9 +51,9 @@ gamma: 0.99
 # the discount factor gamma
 gae_lambda: 0.95
 # the lambda for the general advantage estimation
-num_minibatches: 4
+num_minibatches: 8  # 4
 # the number of mini-batches
-update_epochs: 4
+update_epochs: 10  # 4
 # the K epochs to update the policy
 norm_adv: true
 # Toggles advantages normalization
@@ -50,11 +69,3 @@ max_grad_norm: 0.5
 # the maximum norm for the gradient clipping
 target_kl: null
 # the target KL divergence threshold
-
-# to be filled in runtime
-batch_size: 0
-# the batch size (computed in runtime)
-minibatch_size: 0
-# the mini-batch size (computed in runtime)
-num_iterations: 0
-# the number of iterations (computed in runtime)
