@@ -202,10 +202,10 @@ def main(cfg: DictConfig):
             if global_step == 0 or global_step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
                 example = (
-                    f"### State:\n {outputs['state_text'][0]}\n"
-                    f"### Thoughts: {outputs['thoughts'][0]}\n"
-                    f"### Rule: {outputs['sel_rule'][0]}\n"
-                    f"### Explanation: {outputs['explanation'][0]}"
+                    f"### State\n {outputs['state_text'][0]}\n"
+                    f"### Thoughts\n {outputs['thoughts'][0]}\n"
+                    f"### Rule\n {outputs['sel_rule'][0]}\n"
+                    f"### Explanation\n {outputs['explanation'][0]}"
                 )
                 writer.add_text("text/examples", example, global_step)
 
