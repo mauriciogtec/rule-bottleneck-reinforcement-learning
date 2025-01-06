@@ -62,13 +62,6 @@ def main(cfg: DictConfig):
     # Load the environment
     def make_env(seed):
         def thunk():
-            import random
-
-            import numpy as np
-
-            random.seed(seed)
-            np.random.seed(seed)
-
             env = gym.make(cfg.env_id)
             env = gym.wrappers.RecordEpisodeStatistics(env)
             return env
