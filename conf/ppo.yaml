@@ -14,7 +14,7 @@ hidden_dim: 16
 # the hidden dimension of the attention model projections
 num_rules: 10
 # the number of rules to use
-resume: false
+resume: true
 # if toggled, the model will be resumed from the last checkpoint
 max_rule_combinations: 1
 # the maximum number of rule combinations to use
