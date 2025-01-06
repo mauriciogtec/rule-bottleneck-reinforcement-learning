@@ -156,8 +156,8 @@ class BaseAgent:
         """Generate thoughts and update message list"""
 
         thought_prompt = (
-            "First, reason about what elements should be considered when choosing the optimal action"and
-            " in the given task of the decision making agent."
+            "First, reason about what elements should be considered when choosing the optimal action"
+            and " in the given task of the decision making agent."
             " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
             " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
             " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
@@ -215,12 +215,11 @@ class LLMRulesAgent(BaseAgent):
     def gen_rules(self, outputs: Dict, messages: List[Dict]):
 
         rules_prompt = (
-            f"Now, suggest {self.num_rules} rules that could be useful to solve the task. "
+            f"Now, suggest {self.num_rules} rules that could be useful to make an optinal decision in the current state. "
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
-            " Your response should be a list of rules. Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. While there is no strict format, it is recommended "
-            " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " Each rule should be exactly one line and start with the character `-`."
+            " The rules should be in natural language. Follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
             " the task and the agent's goals."
             " Your answer should start with the character ```- "
@@ -299,7 +298,9 @@ class RulesSelectorActorCritic(BaseAgent):
         response = self.llm.invoke(messages, max_tokens=512).content
 
         rules = parse_rules(response)
-        outputs["rules"] = rules = generate_rule_combinations(rules)
+        outputs["rules"] = rules = generate_rule_combinations(
+            rules, max_combs=self.max_rule_combinations
+        )
 
         # get the rules and state embeddings
         # rules_emb = self._generate_embeddings_for_rules(rules)
