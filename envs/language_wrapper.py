@@ -162,7 +162,7 @@ class LanguageWrapper(Wrapper, ABC):
 
         return obs, info
 
-    def action_parser(s: str) -> int | List[int]:
+    def action_parser(self, s: str) -> int | List[int]:
         """
         Convert the action into a text description.
 
