@@ -156,11 +156,11 @@ class BaseAgent:
         """Generate thoughts and update message list"""
 
         thought_prompt = (
-            "First, reason about what elements should be considered when choosing the optimal action "
-            "the given task considering the task goal and optimal decision making. "
-            "Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks "
-            "of each action in the current state. Conclude the paragraph with a reflection of how they inform the design "
-            "of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+            "First, reason about what elements should be considered when choosing the optimal action"and
+            " in the given task of the decision making agent."
+            " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+            " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
+            " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
         )
 
         messages.append({"role": "user", "content": thought_prompt})
