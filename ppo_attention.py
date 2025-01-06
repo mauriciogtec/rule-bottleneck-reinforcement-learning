@@ -130,11 +130,11 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(actor_critic.parameters(), lr=cfg.learning_rate, eps=1e-5)
     torchsummary.summary(actor_critic)
 
-    model_path = f"models/{__file__.replace('.py', '')}/best_{run_id}.pt"
+    ckpt_path = f"checkpoints/{__file__.replace('.py', '')}/best_{run_id}.pt"
     if cfg.resume:
-        if os.path.exists(model_path):
-            actor_critic.load_state_dict(torch.load(model_path))
-            logging.info(f"Loaded model from {model_path}")
+        if os.path.exists(ckpt_path):
+            actor_critic.load_state_dict(torch.load(ckpt_path))
+            logging.info(f"Loaded model from {ckpt_path}")
 
     # set batch size and num iters same as in clean rl's PPO
     batch_size = int(cfg.num_envs * cfg.num_steps)
@@ -235,8 +235,8 @@ def main(cfg: DictConfig):
         total_reward = rewards.mean().item()
         if best_total_reward < total_reward:
             best_total_reward = total_reward
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            torch.save(actor_critic.state_dict(), model_path)
+            os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+            torch.save(actor_critic.state_dict(), ckpt_path)
 
         # bootstrap value if not done
         with torch.no_grad():

@@ -13,3 +13,4 @@ multirun/
 outputs/
 runs/
 wandb/
+checkpoints/
