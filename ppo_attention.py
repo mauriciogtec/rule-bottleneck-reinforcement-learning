@@ -91,7 +91,7 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
 
     # congigure logging
-    run_id = f"{__file__.strip('.py')}_{cfg.env_id}__{cfg.exp_name}__{cfg.seed}"
+    run_id = f"{__file__.replace('.py', '')}_{cfg.env_id}__{cfg.exp_name}__{cfg.seed}"
     run_name = f"{run_id}_{int(time.time())}"
     params = OmegaConf.to_container(cfg, resolve=True)
 
@@ -130,8 +130,8 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(actor_critic.parameters(), lr=cfg.learning_rate, eps=1e-5)
     torchsummary.summary(actor_critic)
 
+    model_path = f"models/{__file__.replace('.py', '')}/best_{run_id}.pt"
     if cfg.resume:
-        model_path = f"models/{__file__.strip('.py')}/best_{run_id}.pt"
         if os.path.exists(model_path):
             actor_critic.load_state_dict(torch.load(model_path))
             logging.info(f"Loaded model from {model_path}")
@@ -235,9 +235,8 @@ def main(cfg: DictConfig):
         total_reward = rewards.mean().item()
         if best_total_reward < total_reward:
             best_total_reward = total_reward
-            savedir = f"models/{__file__.strip('.py')}"
-            os.makedirs(savedir, exist_ok=True)
-            torch.save(actor_critic.state_dict(), f"{savedir}/best_{run_id}.pt")
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            torch.save(actor_critic.state_dict(), model_path)
 
         # bootstrap value if not done
         with torch.no_grad():
