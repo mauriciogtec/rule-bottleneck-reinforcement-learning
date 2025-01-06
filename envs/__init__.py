@@ -12,7 +12,8 @@ BuySellText = partial(BuySellTextLang)
 BuySell2 = partial(BuySellLang)
 
 
-kwargs = {"disable_env_checker": True, "order_enforce": False}
+# kwargs = {"disable_env_checker": True, "order_enforce": False}
+kwargs = {}
 register(id="Uganda", entry_point="envs:Uganda", **kwargs)
 register(id="MimicIII", entry_point="envs:MimicIII", **kwargs)
 register(id="MimicIV", entry_point="envs:MimicIV", **kwargs)
