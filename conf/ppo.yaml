@@ -2,19 +2,23 @@ embedder_lm: "togethercomputer/m2-bert-80M-8k-retrieval"
 embed_dim: 768
 # the embeddings model to use
 
-parallel: true
-
 # chat_lm: "meta-llama/Llama-3.2-3B-Instruct-Turbo"
 chat_lm: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
 # the chat model to use
 
+parallel: true
+# if toggled, the model will be trained in parallel
+
 hidden_dim: 16
 # the hidden dimension of the attention model projections
 
-num_rules: 3
+num_rules: 10
 # the number of rules to use
 
-max_rule_combinations: 3
+resume: false
+# if toggled, the model will be resumed from the last checkpoint
+
+max_rule_combinations: 1
 # the maximum number of rule combinations to use
 
 exp_name: 
@@ -42,21 +46,21 @@ env_id: "BuySell"
 # the id of the environment
 total_timesteps: 10000  # 50x reduction
 # total timesteps of the experiments
-learning_rate: 2.5e-4
+learning_rate: 1.0e-3  # 2.5e-4
 # the learning rate of the optimizer
 num_envs: 4
 # the number of parallel game environments
-num_steps: 32  # 128
+num_steps: 16  # 128
 # the number of steps to run in each environment per policy rollout
-anneal_lr: true
+anneal_lr: true # true
 # Toggle learning rate annealing for policy and value networks
 gamma: 0.99
 # the discount factor gamma
 gae_lambda: 0.95
 # the lambda for the general advantage estimation
-num_minibatches: 32  # 4
+num_minibatches: 4 
 # the number of mini-batches
-update_epochs: 10  # 4
+update_epochs: 20  # 4
 # the K epochs to update the policy
 norm_adv: true
 # Toggles advantages normalization
