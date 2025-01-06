@@ -24,10 +24,7 @@ import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic
 from layers import AttentionActorCritic
 
-
 logger = logging.getLogger(__name__)
-
-# set logging of httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -42,25 +39,34 @@ def pad_rules(rules_emb: list[list[torch.Tensor]]):
     num_steps = len(rules_emb)
     num_envs = len(rules_emb[0])
 
-    # flatten and pad the rules
     x = list(itertools.chain(*rules_emb))
     embs = nested_tensor(x)
     padding_mask = nested_tensor([torch.ones(len(y)) for y in x])
 
-    # pad the rules
     embs = to_padded_tensor(embs, -20.0)
     padding_mask = to_padded_tensor(padding_mask, 0.0)
 
-    # reshape the rules
     embs = embs.view(num_steps, num_envs, -1, embs.shape[-1])
     padding_mask = padding_mask.view(num_steps, num_envs, -1)
 
     return embs, padding_mask
 
 
+def save_checkpoint(state, checkpoint_path):
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    torch.save(state, checkpoint_path)
+
+
+def load_checkpoint(checkpoint_path, device):
+    if os.path.exists(checkpoint_path):
+        return torch.load(checkpoint_path, map_location=device)
+    else:
+        logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
+        return None
+
+
 @hydra.main(config_path="conf", config_name="ppo", version_base=None)
 def main(cfg: DictConfig):
-    # Load the environment
     def make_env(seed):
         def thunk():
             env = gym.make(cfg.env_id)
@@ -70,29 +76,25 @@ def main(cfg: DictConfig):
         return thunk
 
     env_funs = [make_env(cfg.seed + i) for i in range(cfg.num_envs)]
-    if cfg.parallel:
-        envs = gym.vector.AsyncVectorEnv(env_funs, shared_memory=False)
-    else:
-        envs = gym.vector.SyncVectorEnv(env_funs)
+    envs = (
+        gym.vector.AsyncVectorEnv(env_funs, shared_memory=False)
+        if cfg.parallel
+        else gym.vector.SyncVectorEnv(env_funs)
+    )
 
-    # LLM and Chat model
     chat_model = ChatTogether(model=cfg.chat_lm)
     embed_model = TogetherEmbeddings(model=cfg.embedder_lm)
 
-    # Example dimensions (adjust as needed)
     state_dim = envs.single_observation_space[0].shape[0]
-    # state_dim = env.observation_space[0].shape[0]  # Dimensionality of query embeddings
-    rule_dim = cfg.embed_dim  # Dimensionality of rule embeddings
+    rule_dim = cfg.embed_dim
     hidden_dim = cfg.hidden_dim
     num_rules = cfg.num_rules
 
-    # seeding
     set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
 
-    # congigure logging
     run_id = f"{__file__.replace('.py', '')}_{cfg.env_id}__{cfg.exp_name}__{cfg.seed}"
-    run_name = f"{run_id}_{int(time.time())}"
+    run_name = f"{run_id}"
     params = OmegaConf.to_container(cfg, resolve=True)
 
     if cfg.track:
@@ -115,9 +117,7 @@ def main(cfg: DictConfig):
         % ("\n".join([f"|{key}|{value}|" for key, value in params.items()])),
     )
 
-    # Create the actor critic model and the language agent
     actor_critic = AttentionActorCritic(state_dim, rule_dim, hidden_dim).to(device)
-
     lang_agent = RulesSelectorActorCritic(
         actor_critic=actor_critic,
         task_text=envs.metadata["task_text"],
@@ -131,41 +131,38 @@ def main(cfg: DictConfig):
     torchsummary.summary(actor_critic)
 
     ckpt_path = f"checkpoints/{__file__.replace('.py', '')}/best_{run_id}.pt"
-    if cfg.resume:
-        if os.path.exists(ckpt_path):
-            actor_critic.load_state_dict(torch.load(ckpt_path))
-            logging.info(f"Loaded model from {ckpt_path}")
+    training_state_path = f"{ckpt_path}.state"
 
-    # set batch size and num iters same as in clean rl's PPO
+    global_step = 0
+    start_time = time.time()
+    best_total_reward = -float("inf")
+
+    checkpoint = load_checkpoint(training_state_path, device)
+    if checkpoint:
+        actor_critic.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        global_step = checkpoint["global_step"]
+        start_time = time.time() - checkpoint["elapsed_time"]
+        best_total_reward = checkpoint["best_total_reward"]
+        logging.info(f"Resumed training from checkpoint at step {global_step}.")
+
     batch_size = int(cfg.num_envs * cfg.num_steps)
     minibatch_size = int(batch_size // cfg.num_minibatches)
     num_iterations = cfg.total_timesteps // batch_size
 
-    # Start the game
-    global_step = 0
-    start_time = time.time()
-
-    # Initialize the environments
     obs, infos = envs.reset()
     next_state_vector, next_state_text = obs
     next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32).to(device)
     next_dones = torch.zeros(cfg.num_envs, dtype=torch.bool).to(device)
 
-    # Best model
-    best_total_reward = -float("inf")
-
-    # Training loop
     for iter in range(1, num_iterations + 1):
-        # Annealing the rate if instructed to do so.
         if cfg.anneal_lr:
             frac = 1.0 - (iter - 1.0) / num_iterations
             lrnow = frac * cfg.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        # Initialize the transitions
         transitions = defaultdict(list)
-
-        for step in range(0, cfg.num_steps):
+        for step in range(cfg.num_steps):
             global_step += cfg.num_envs
 
             # Add states and dones
@@ -178,7 +175,9 @@ def main(cfg: DictConfig):
                 # Use the term env_actions to differentiate from the internal actions
                 # which are the selected rules.
                 env_actions, outputs, messages = lang_agent(
-                    state_text=next_state_text, state_vector=next_state_vector, post_action=True
+                    state_text=next_state_text,
+                    state_vector=next_state_vector,
+                    post_action=True,
                 )
 
             # Append the rules
@@ -213,12 +212,14 @@ def main(cfg: DictConfig):
             if step == 0 or step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
                 example = (
-                    f"### State\n {outputs['state_text'][0]}\n"
-                    f"### Thoughts\n {outputs['thoughts'][0]}\n"
-                    f"### Rule\n {outputs['sel_rule'][0]}\n"
-                    f"### Rule Probability\n {np.exp(outputs['sel_logprob'][0]):.2f}\n"
-                    f"### Environment Action\n {env_actions[0]}\n"
-                    f"### Explanation\n {outputs['explanation'][0]}"
+                    f"## Initial prompt \n {outputs['initial_prompt'][0]}\n"
+                    f"## Thoughts\n {outputs['thoughts'][0]}\n"
+                    f"## Rules\n {outputs['rules'][0]}\n"
+                    f"## Selected Rule\n {outputs['sel_rule'][0]}\n"
+                    f"## Selected Rule Probability\n {np.exp(outputs['sel_logprob'][0]):.2f}\n"
+                    f"## Selected Rule Reward\n {rewards[0]:.2f}\n"
+                    f"## Environment Action\n {env_actions[0]}\n"
+                    f"## Explanation\n {outputs['explanation'][0]}"
                 )
                 writer.add_text("text/examples", example, global_step)
 
@@ -235,14 +236,27 @@ def main(cfg: DictConfig):
         total_reward = rewards.mean().item()
         if best_total_reward < total_reward:
             best_total_reward = total_reward
-            os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
             torch.save(actor_critic.state_dict(), ckpt_path)
+
+        if iter % cfg.save_interval == 0 or iter == num_iterations:
+            save_checkpoint(
+                {
+                    "model_state": actor_critic.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "global_step": global_step,
+                    "elapsed_time": time.time() - start_time,
+                    "best_total_reward": best_total_reward,
+                },
+                training_state_path,
+            )
 
         # bootstrap value if not done
         with torch.no_grad():
             # need to call one last time to get the rules embeddings
             _, outputs, _ = lang_agent(
-                state_text=next_state_text, state_vector=next_state_vector, post_action=True
+                state_text=next_state_text,
+                state_vector=next_state_vector,
+                post_action=True,
             )
             next_value = torch.stack(outputs["value"])
 
