@@ -177,8 +177,8 @@ def main(cfg: DictConfig):
             with torch.no_grad():
                 # Use the term env_actions to differentiate from the internal actions
                 # which are the selected rules.
-                env_actions, outputs, _ = lang_agent(
-                    state_text=next_state_text, state_vector=next_state_vector, post_action=False
+                env_actions, outputs, messages = lang_agent(
+                    state_text=next_state_text, state_vector=next_state_vector, post_action=True
                 )
 
             # Append the rules
@@ -243,7 +243,7 @@ def main(cfg: DictConfig):
         with torch.no_grad():
             # need to call one last time to get the rules embeddings
             _, outputs, _ = lang_agent(
-                state_text=next_state_text, state_vector=next_state_vector, post_action=False
+                state_text=next_state_text, state_vector=next_state_vector, post_action=True
             )
             next_value = torch.stack(outputs["value"])
 
