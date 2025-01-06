@@ -4,6 +4,7 @@
 
 import itertools
 import logging
+import os
 import random
 import time
 from collections import defaultdict
@@ -90,7 +91,8 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
 
     # congigure logging
-    run_name = f"{cfg.env_id}__{cfg.exp_name}__{cfg.seed}__{int(time.time())}"
+    run_id = f"{__file__.strip('.py')}_{cfg.env_id}__{cfg.exp_name}__{cfg.seed}"
+    run_name = f"{run_id}_{int(time.time())}"
     params = OmegaConf.to_container(cfg, resolve=True)
 
     if cfg.track:
@@ -128,6 +130,12 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(actor_critic.parameters(), lr=cfg.learning_rate, eps=1e-5)
     torchsummary.summary(actor_critic)
 
+    if cfg.resume:
+        model_path = f"models/{__file__.strip('.py')}/best_{run_id}.pt"
+        if os.path.exists(model_path):
+            actor_critic.load_state_dict(torch.load(model_path))
+            logging.info(f"Loaded model from {model_path}")
+
     # set batch size and num iters same as in clean rl's PPO
     batch_size = int(cfg.num_envs * cfg.num_steps)
     minibatch_size = int(batch_size // cfg.num_minibatches)
@@ -142,6 +150,9 @@ def main(cfg: DictConfig):
     next_state_vector, next_state_text = obs
     next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32).to(device)
     next_dones = torch.zeros(cfg.num_envs, dtype=torch.bool).to(device)
+
+    # Best model
+    best_total_reward = -float("inf")
 
     # Training loop
     for iter in range(1, num_iterations + 1):
@@ -198,6 +209,7 @@ def main(cfg: DictConfig):
                         logging.info(
                             f"global_step={global_step}, episodic_return={r:.4f}"
                         )
+                        returns.append(r)
 
             if step == 0 or step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
@@ -219,6 +231,14 @@ def main(cfg: DictConfig):
         logprobs = torch.stack(transitions["sel_logprob"])
         sel_idxs = torch.stack(transitions["sel_idx"])
         rewards = torch.FloatTensor(transitions["rewards"]).to(device)
+
+        # save best model
+        total_reward = rewards.mean().item()
+        if best_total_reward < total_reward:
+            best_total_reward = total_reward
+            os.makedirs(f"models", exist_ok=True)
+            model_path = f"models/{__file__.strip('.py')}/best_{run_id}.pt"
+            torch.save(actor_critic.state_dict(), model_path)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -340,10 +360,6 @@ def main(cfg: DictConfig):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-
-        sps = int(global_step / (time.time() - start_time))
-        logging.info(f"SPS: {sps}")
-        writer.add_scalar("charts/SPS", sps, global_step)
 
     envs.close()
     writer.close()
