@@ -335,10 +335,9 @@ class BuySell(Env):
     Budget = 1  # The agent starts with a budget of 1, after buying goes to 0, game ends when selling
                 # forced to sell when budget is 0
 
-    This version of the environment is numerical.
-    The transition function of the price is a discretized geometric Brownian motion
-    with drift and volatility are the underlying parameters.
     The agent observes the drift and volatility, the current price, and indicator of having bought, and the buying price if available.
+    Because of the operation delays and spread, the buy/sell price can be slightly different from the current price. Thus, 
+    pay attention to the drift and volatility to make the decision.
     """
 
     def __init__(self, penalty=0.1):
@@ -390,8 +389,8 @@ class BuySell(Env):
         )
 
     def step(self, action):
-        self._update_drift_and_volatility()
         self._update_price()
+        self._update_drift_and_volatility()
         truncated = False
 
         if action == 0:  # buy
