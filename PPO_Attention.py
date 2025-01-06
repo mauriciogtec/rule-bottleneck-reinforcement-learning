@@ -3,10 +3,10 @@
 # in addition, one must keep track of the rules selected by the agent.
 
 import itertools
+import logging
 import random
 import time
-from collections import defaultdict, deque
-from functools import partial
+from collections import defaultdict
 
 import gymnasium as gym
 import hydra
@@ -22,6 +22,12 @@ from torch.utils.tensorboard import SummaryWriter
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic
 from layers import AttentionActorCritic
+
+
+logger = logging.getLogger(__name__)
+
+# set logging of httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def set_seed(seed: int):
@@ -54,24 +60,26 @@ def pad_rules(rules_emb: list[list[torch.Tensor]]):
 @hydra.main(config_path="conf", config_name="ppo", version_base=None)
 def main(cfg: DictConfig):
     # Load the environment
-    def _make_env(seed):
-        import random
+    def make_env(seed):
+        def thunk():
+            import random
 
-        import numpy as np
+            import numpy as np
 
-        random.seed(seed)
-        np.random.seed(seed)
+            random.seed(seed)
+            np.random.seed(seed)
 
-        env = gym.make(cfg.env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        return env
+            env = gym.make(cfg.env_id)
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            return env
 
-    vec_fun = (
-        partial(gym.vector.AsyncVectorEnv, shared_memory=False)
-        if cfg.parallel
-        else gym.vector.SyncVectorEnv
-    )
-    envs = vec_fun([lambda: _make_env(cfg.seed + i) for i in range(cfg.num_envs)])
+        return thunk
+
+    env_funs = [make_env(cfg.seed + i) for i in range(cfg.num_envs)]
+    if cfg.parallel:
+        envs = gym.vector.AsyncVectorEnv(env_funs, shared_memory=False)
+    else:
+        envs = gym.vector.SyncVectorEnv(env_funs)
 
     # LLM and Chat model
     chat_model = ChatTogether(model=cfg.chat_lm)
@@ -187,18 +195,26 @@ def main(cfg: DictConfig):
             # Store the reward
             transitions["rewards"].append(list(rewards))
 
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        print(
-                            f"global_step={global_step}, episodic_return={info['episode']['r']}"
+            if "episode" in infos:
+                for i in range(cfg.num_envs):
+                    if infos["_episode"][i]:
+                        r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                        writer.add_scalar("charts/episodic_return", r, global_step)
+                        writer.add_scalar("charts/episodic_length", l, global_step)
+
+                        logging.info(
+                            f"global_step={global_step}, episodic_return={r:.4f}"
                         )
-                        writer.add_scalar(
-                            "charts/episodic_return", info["episode"]["r"], global_step
-                        )
-                        writer.add_scalar(
-                            "charts/episodic_length", info["episode"]["l"], global_step
-                        )
+            
+            if global_step % cfg.log_examples_interval == 0:
+                # log the final selected rule and explanation
+                example = (
+                    f"### State:\n {outputs['state_text'][0]}\n"
+                    f"### Thoughts: {outputs['thoughts'][0]}\n"
+                    f"### Rule: {outputs['sel_rule'][0]}\n"
+                    f"### Explanation: {outputs['explanation'][0]}"
+                )
+                writer.add_text("text/examples", example, global_step)
 
         # convert the transitions to tensors
         state_vector = torch.stack(transitions["state_vector"])
@@ -329,7 +345,7 @@ def main(cfg: DictConfig):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        logging.info("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar(
             "charts/SPS", int(global_step / (time.time() - start_time)), global_step
         )
