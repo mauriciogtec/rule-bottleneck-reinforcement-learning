@@ -459,7 +459,7 @@ class BuySellLang(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "A single integer value representing the decision:"
+            "A single integer value representing the decision:\n"
             "0 = buy\n"
             "1 = hold/wait\n"
             "2 = sell\n"
