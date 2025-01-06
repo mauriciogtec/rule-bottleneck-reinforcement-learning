@@ -94,7 +94,7 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
 
     run_id = f"{__file__.replace('.py', '')}_{cfg.env_id}__{cfg.exp_name}__{cfg.seed}"
-    run_name = f"{run_id}"
+    run_name = run_id if cfg.resume else f"{run_id}_{int(time.time())}"
     params = OmegaConf.to_container(cfg, resolve=True)
 
     if cfg.track:
@@ -139,6 +139,9 @@ def main(cfg: DictConfig):
 
     checkpoint = load_checkpoint(training_state_path, device)
     if checkpoint:
+        logger.info(
+            f"Resuming training from checkpoint at step {checkpoint['global_step']}."
+        )
         actor_critic.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         global_step = checkpoint["global_step"]
@@ -185,7 +188,7 @@ def main(cfg: DictConfig):
             transitions["rules_emb"].append(outputs["rules_emb"])
 
             # Append the scalar quantities
-            for key in ["sel_idx", "sel_logprob", "value", "entropy"]:
+            for key in ["sel_idx", "sel_logprob", "value", "entropy", "sel_reward"]:
                 transitions[key].append(torch.stack(outputs[key]))
 
             # Step the environment
@@ -211,15 +214,16 @@ def main(cfg: DictConfig):
 
             if step == 0 or step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
+                rules_str = "\n".join(outputs["rules"][0])
                 example = (
-                    f"## Initial prompt \n {outputs['initial_prompt'][0]}\n"
-                    f"## Thoughts\n {outputs['thoughts'][0]}\n"
-                    f"## Rules\n {outputs['rules'][0]}\n"
-                    f"## Selected Rule\n {outputs['sel_rule'][0]}\n"
-                    f"## Selected Rule Probability\n {np.exp(outputs['sel_logprob'][0]):.2f}\n"
-                    f"## Selected Rule Reward\n {rewards[0]:.2f}\n"
-                    f"## Environment Action\n {env_actions[0]}\n"
-                    f"## Explanation\n {outputs['explanation'][0]}"
+                    f"{outputs['initial_prompt'][0]}\n"
+                    f"### Thoughts\n {outputs['thoughts'][0]}\n"
+                    f"### Rules\n {rules_str}\n"
+                    f"### Selected Rule\n {outputs['sel_rule'][0]}\n"
+                    f"### Selected Rule Probability\n {np.exp(outputs['sel_logprob'][0]):.2f}\n"
+                    f"### Selected Rule Reward\n {outputs['sel_reward'][0]}\n"
+                    f"### Environment Action\n {env_actions[0]}\n"
+                    f"### Explanation\n {outputs['explanation'][0]}"
                 )
                 writer.add_text("text/examples", example, global_step)
 
@@ -231,6 +235,8 @@ def main(cfg: DictConfig):
         logprobs = torch.stack(transitions["sel_logprob"])
         sel_idxs = torch.stack(transitions["sel_idx"])
         rewards = torch.FloatTensor(transitions["rewards"]).to(device)
+        sel_rule_rewards = torch.stack(transitions["sel_reward"])
+        rewards += sel_rule_rewards
 
         # save best model
         total_reward = rewards.mean().item()
@@ -279,13 +285,15 @@ def main(cfg: DictConfig):
             returns = advantages + values
 
         # flatten the batch
-        b_state = state_vector.reshape((-1,) + envs.single_observation_space[0].shape)
+        b_states_vec = state_vector.reshape(
+            (-1,) + envs.single_observation_space[0].shape
+        )
         b_logprobs = logprobs.reshape(-1)
         b_sel_idxs = sel_idxs.reshape(-1)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
-        b_rules = rules_emb.reshape((-1,) + rules_emb.shape[2:])
+        b_rules_emb = rules_emb.reshape((-1,) + rules_emb.shape[2:])
         b_padding_mask = rules_padding_mask.reshape(
             (-1,) + rules_padding_mask.shape[2:]
         )
@@ -300,8 +308,8 @@ def main(cfg: DictConfig):
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = lang_agent.get_action_and_value(
-                    b_state[mb_inds],
-                    b_rules[mb_inds],
+                    b_states_vec[mb_inds],
+                    b_rules_emb[mb_inds],
                     rules_padding_mask=b_padding_mask[mb_inds],
                     sel_idxs=b_sel_idxs[mb_inds],
                 )
