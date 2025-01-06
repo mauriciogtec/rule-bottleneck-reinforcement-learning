@@ -341,13 +341,6 @@ class BuySell(Env):
     The agent observes the drift and volatility, the current price, and indicator of having bought, and the buying price if available.
     """
 
-    def _update_drift_volatily():
-        """
-        The volatility starts at 0.1. It follows a geoemtric random walk where it decreasesd by 25% with probability 0.1
-        and increases by 50% with probability 0.1.
-        The drift starts at 0.0 and follows a random walk with step size given by the volatility.
-        """
-
     def __init__(self, penalty=0.1):
         self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,))
@@ -355,9 +348,9 @@ class BuySell(Env):
         self.penalty = penalty
 
     def reset(self, seed: Optional[int] = None, options: Dict = {}):
-        self.price = options.get("price", 1.0)
-        self.volatility = options.get("volatility", 0.1)
-        self.drift = options.get("drift", 0.0)
+        self.price = options.get("price", np.random.uniform(0.5, 1.5))
+        self.volatility = options.get("volatility", 0.1 * self.price)
+        self.drift = options.get("drift", np.random.uniform(-0.1, 0.1))
 
         if seed is not None:
             self.rng = np.random.default_rng(seed)
@@ -379,12 +372,17 @@ class BuySell(Env):
         return state, {}
 
     def _update_drift_and_volatility(self):
-        if self.rng.random() < 0.1:
+        u = self.rng.random()
+        if u < 0.25:
             self.volatility *= 0.75
-        elif self.rng.random() < 0.1:
+        elif u < 0.5:
             self.volatility *= 1.5
 
-        self.drift = self.volatility * self.rng.normal()
+        u = self.rng.random()
+        if u < 0.25:
+            self.drift -= self.volatility * np.random.rand()
+        elif u < 0.5:
+            self.drift += self.volatility * np.random.rand()
 
     def _update_price(self):
         self.price = self.price * np.exp(
