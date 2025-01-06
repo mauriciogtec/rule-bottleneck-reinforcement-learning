@@ -63,14 +63,14 @@ class MultiHeadAttentionWeightsOnly(nn.Module):
         K = K.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Scaled dot-product attention weights (logits)
-        attn_weights = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
+        attn_logits = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
         # attn_weights shape: (batch_size, num_heads, query_len, key_len)
 
         # Aggregate the attention weights across heads
-        attn_weights = attn_weights.mean(dim=1)  # Aggregate across the head dimension
+        attn_logits = attn_logits.mean(dim=1)  # Aggregate across the head dimension
 
         # merge key padding and attention mask
-        mask = torch.ones(batch_size, query_len, key_len).to(attn_weights.device)
+        mask = torch.ones(batch_size, query_len, key_len).to(attn_logits.device)
 
         if key_padding_mask is not None:
             mask *= key_padding_mask.unsqueeze(1).float()
@@ -79,13 +79,13 @@ class MultiHeadAttentionWeightsOnly(nn.Module):
             mask *= attn_mask.float()
 
         # Apply the mask
-        attn_weights = attn_weights + (1.0 - mask) * -1e9
+        attn_logits = attn_logits + (1.0 - mask) * -1e9
 
         # Remove batch dimension if it was added for non-batch inputs
         if not is_batched:
-            attn_weights = attn_weights.squeeze(0)
+            attn_logits = attn_logits.squeeze(0)
 
-        return attn_weights
+        return attn_logits
 
 
 # Define the Attention-based Actor Network with Multi-Head Attention
