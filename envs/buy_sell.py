@@ -189,11 +189,19 @@ class BuySellText(Env):
         elif action == 1:
             # Hold
             terminated = False
-            reward = 0
+            # penalize holding when not bought
+            if self.current_budget == 9:
+                reward = -0.1
+            else:
+                reward = 0
         elif action == 2:
             # Sell
-            terminated = True
-            reward = self.prices[-1] - self.buying_price
+            if self.current_budget == 1:
+                terminated = True
+                reward = self.prices[-1] - self.buying_price
+            else:
+                terminated = False
+                reward = -0.1
         else:
             raise ValueError("Invalid action")
 
@@ -340,10 +348,11 @@ class BuySell(Env):
         The drift starts at 0.0 and follows a random walk with step size given by the volatility.
         """
 
-    def __init__(self):
+    def __init__(self, penalty=0.1):
         self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,))
         self.rng = np.random.default_rng()
+        self.penalty = penalty
 
     def reset(self, seed: Optional[int] = None, options: Dict = {}):
         self.price = options.get("price", 1.0)
@@ -389,18 +398,28 @@ class BuySell(Env):
 
         if action == 0:
             # Buy
-            self.current_budget = 0
-            self.buying_price = self.price
-            reward = 0
             done = False
+            if self.current_budget == 1:
+                self.current_budget = 0
+                self.buying_price = self.price
+                reward = 0
+            else:
+                reward = -self.penalty
         elif action == 1:
             # Hold
-            reward = 0
             done = False
+            if self.current_budget == 0:
+                reward = -self.penalty
+            else:
+                reward = 0.0
         elif action == 2:
             # Sell
-            reward = self.price - self.buying_price
-            done = True
+            if self.current_budget == 0:
+                reward = self.price - self.buying_price
+                done = True
+            else:
+                reward = -self.penalty
+                done = False
         else:
             raise ValueError("Invalid action")
 
@@ -449,6 +468,9 @@ class BuySellLang(LanguageWrapper):
             "0 = buy the stock\n"
             "1 = hold the stock\n"
             "2 = sell the stock\n"
+            "You can only buy the stock if not bought yet, and you can only hold or sell if it has been bought."
+            " You will be penalized if selecting to hold or sell the stock when it has not been bought,"
+            " and when selecting to buy the stock when it has already been bought."
         )
 
     def state_descriptor(self, obs, _):
