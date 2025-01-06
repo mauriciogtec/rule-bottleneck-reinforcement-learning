@@ -101,6 +101,7 @@ class AttentionActorCritic(nn.Module):
         k_proj: bool = True,
         num_attention_layers: int = 2,
         num_critic_layers: int = 2,
+        normalize_inputs: bool = True,  # Input normalization flag
     ):
         super().__init__()
         assert (
@@ -108,19 +109,32 @@ class AttentionActorCritic(nn.Module):
         ), "Number of attention layers must be at least 1."
         assert num_critic_layers >= 1, "Number of critic layers must be at least 1."
 
+        self.normalize_inputs = normalize_inputs
+
+        if normalize_inputs:
+            self.query_norm = nn.LayerNorm(q_dim)
+            self.key_norm = nn.LayerNorm(k_dim)
+
         if q_proj:
-            self.q_proj = nn.Sequential(nn.Linear(q_dim, hidden_dim), nn.SiLU())
+            self.q_proj = nn.Sequential(
+                nn.Linear(q_dim, hidden_dim),
+                nn.SiLU(),
+                nn.LayerNorm(hidden_dim),
+            )
             self.q_dim = hidden_dim
         else:
             self.q_dim = q_dim
 
         if k_proj:
-            self.k_proj = nn.Sequential(nn.Linear(k_dim, hidden_dim), nn.SiLU())
+            self.k_proj = nn.Sequential(
+                nn.Linear(k_dim, hidden_dim),
+                nn.SiLU(),
+                nn.LayerNorm(hidden_dim),
+            )
             self.k_dim = hidden_dim
         else:
             self.k_dim = k_dim
 
-        # cross-attention full multi-head attention
         if num_attention_layers == 1:
             self.attn_body = []
         else:
@@ -137,8 +151,8 @@ class AttentionActorCritic(nn.Module):
                         batch_first=True,
                     )
                 )
+                self.attn_body.append(nn.LayerNorm(embed_dim))
 
-        # multi-head attention with weights only
         self.attn_head = MultiHeadAttentionWeightsOnly(
             q_dim=self.q_dim,
             k_dim=self.k_dim,
@@ -147,7 +161,6 @@ class AttentionActorCritic(nn.Module):
             dropout=dropout,
         )
 
-        # critic network
         self.critic = nn.Sequential()
         for i in range(num_critic_layers):
             in_dim = self.q_dim if i == 0 else hidden_dim
@@ -155,8 +168,8 @@ class AttentionActorCritic(nn.Module):
             self.critic.append(nn.Linear(in_dim, out_dim))
             if i < num_critic_layers - 1:
                 self.critic.append(nn.SiLU())
+                self.critic.append(nn.LayerNorm(out_dim))
 
-        # initialize
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -164,18 +177,22 @@ class AttentionActorCritic(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, query, keys, attn_mask=None, key_padding_mask=None):
-        # first project inputs if needed
+        if self.normalize_inputs:
+            query = self.query_norm(query)
+            keys = self.key_norm(keys)
+
         if hasattr(self, "q_proj"):
             query = self.q_proj(query)
 
         if hasattr(self, "k_proj"):
             keys = self.k_proj(keys)
 
-        # get value from critic network
         value = self.critic(query).squeeze(-1)
 
-        # loop through body attention layers
-        for attn_layer in self.attn_body:
+        for i in range(0, len(self.attn_body), 2):
+            attn_layer = self.attn_body[i]
+            norm_layer = self.attn_body[i + 1]
+
             query, _ = attn_layer(
                 query,
                 keys,
@@ -183,9 +200,9 @@ class AttentionActorCritic(nn.Module):
                 attn_mask=attn_mask,
                 key_padding_mask=key_padding_mask,
             )
+            query = norm_layer(query)
             query = torch.nn.functional.silu(query)
 
-        # final attention layer
         attn_logits = self.attn_head(
             query, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
         )
