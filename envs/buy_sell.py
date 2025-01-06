@@ -329,7 +329,7 @@ class BuySell(Env):
     """In this environment, the agent must decide whether to buy, sell, or hold a stock.
     It can only do so once during each episode.
     Action = 0 -> Buy
-    Action = 1 -> Hold
+    Action = 1 -> Hold (wait to buy or sell)
     Action = 2 -> Sell
 
     Budget = 1  # The agent starts with a budget of 1, after buying goes to 0, game ends when selling
@@ -394,7 +394,7 @@ class BuySell(Env):
         self._update_price()
         truncated = False
 
-        if action == 0:
+        if action == 0:  # buy
             # Buy
             done = False
             if self.current_budget == 1:
@@ -403,14 +403,11 @@ class BuySell(Env):
                 reward = 0
             else:
                 reward = -self.penalty
-        elif action == 1:
+        elif action == 1:  # hold/wait
             # Hold
             done = False
-            if self.current_budget == 0:
-                reward = -self.penalty
-            else:
-                reward = 0.0
-        elif action == 2:
+            reward = 0.0
+        elif action == 2:  # sell
             # Sell
             if self.current_budget == 0:
                 reward = self.price - self.buying_price
@@ -463,12 +460,12 @@ class BuySellLang(LanguageWrapper):
     def action_space_text(self) -> str:
         return (
             "A single integer value representing the decision:"
-            "0 = buy the stock if not yet in portfolio\n"
-            "1 = hold the stock if already in portfolio\n"
-            "2 = sell the stock if already in portfolio\n"
-            "You can only buy the stock if not bought yet, and you can only hold or sell if it has been bought."
-            " You will be penalized if selecting to hold or sell the stock when it has not been bought,"
-            " and when selecting to buy the stock when it has already been bought."
+            "0 = buy\n"
+            "1 = hold/wait\n"
+            "2 = sell\n"
+            "You can only buy the stock if not bought yet, and you can only sell if it is already in the portfolio."
+            " You will be penalized if selecting to sell the stock when it has not been bought"
+            " or if selecting to buy the stock when it has already been bought."
         )
 
     def state_descriptor(self, obs, _):
