@@ -1,6 +1,7 @@
 ## Create gym environment here.
 # import os
-from typing import Optional
+import re
+from typing import Optional, Sequence
 import numpy as np
 
 # import torch
@@ -470,12 +471,9 @@ class VitalSignsEnv(Env):
             agent_matrix[j, :] = np.array(
                 vitals + variability + [has_device, time_joined]
             )
-        return np.array(agent_matrix).flatten()
+        return agent_matrix.flatten()
 
     def step(self, action):
-
-        if len(action) != self.num_agents:
-            raise ValueError("Invalid Action: Number of Agents Mismatch")
 
         self.remaining_planning_length -= 1
         time_passed = self.T - self.remaining_planning_length
@@ -623,9 +621,9 @@ class VitalSignsLang(LanguageWrapper):
         "COVERED_SKIN_TEMPERATURE": "Covered skin temperature",
     }
 
-    def __init__(self, path: str, **kwargs):
+    def __init__(self, path: str, parse_action: str = False, **kwargs):
         env = VitalSignsEnv(path, **kwargs)
-        super().__init__(env)
+        super().__init__(env, parse_action=parse_action)
 
     @property
     def task_text(self) -> str:
@@ -666,6 +664,7 @@ class VitalSignsLang(LanguageWrapper):
             str: The text description of the observation
         """
         env = self.env
+        min_max = self.env.min_max  # ranges for unnormalized values
 
         agents_with_device = [d for d in env.agent_states if d["has_device"]]
         desc = (
@@ -677,6 +676,7 @@ class VitalSignsLang(LanguageWrapper):
         )
 
         for i, d in enumerate(env.agent_states):
+            # only list agents with device
             has_device = d["has_device"]
             if not has_device:
                 continue
@@ -686,7 +686,12 @@ class VitalSignsLang(LanguageWrapper):
             aux = []
             for j, v in enumerate(env.vital_signs):
                 key = self._state_mapping[v]
-                val_text = f"{d['vitals'][j]:.2f} +/- {d['variability'][j]:.2f}"
+                sign_value, sign_variability = d["vitals"][j], d["variability"][j]
+                # TODO # use min_max to unnormalize
+                # something like this...
+                #  sign_value = sign_value * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
+                #  sign_variability = sign_variability * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
+                val_text = f"{sign_value:.2f} +/- {sign_variability:.2f}"
                 aux.append((key, val_text))
 
             key = "Time steps since joined (will exit the system after 50 steps)"
@@ -699,23 +704,38 @@ class VitalSignsLang(LanguageWrapper):
 
         return desc
 
+    def action_parser(self, action_string: str) -> Sequence[int]:
+        """This functions takes a list of indices in text mode (with possible spaces and unnecessary text)
+        and returns a binary list of indices"""
+        # 1. extract all integers
+        int_list = [int(s) for s in re.findall(r"\d+", action_string)]
+
+        # 2. covert to binary list with size max_num_agents
+        action = np.zeros(self.env.max_num_agents, dtype=int)
+        action[np.array(int_list)] = 1
+
+        return action
+
 
 if __name__ == "__main__":
-    import sys
+    env = VitalSignsLang(path="models/uganda.npz", parse_action=True)
 
-    env = VitalSignsLang("models/uganda.npz")
+
+    # task step
+    print(f"\n\n== Task Step ==\n{env.task_text}")
+
+    # action space text
+    print(f"\n\n== Action Space Text ==\n{env.action_space_text}")
 
     # reset
     obs, info = env.reset()
-    print(f"Initial state: {obs}")
-    print(f"Initial info: {info}")
+    print(f"Initial state:\n {obs[1]}")
 
-    # action
-    obs, reward, terminated, truncated, info = env.step([0, 0])
-    print(f"State: {obs}")
-    print(f"Reward: {reward}")
-    print(f"Terminated: {terminated}")
-    print(f"Truncated: {truncated}")
-    print(f"Info: {info}")
-
-    sys.exit(0)
+    for step in range(5):
+        print(f"\n\n== Step: {step} == ")
+        # action
+        obs, reward, terminated, truncated, info = env.step("[0, 1]")
+        print(f"State:\n {obs[1]}")
+        print(f"Reward: {reward}")
+        print(f"Terminated: {terminated}")
+        print(f"Truncated: {truncated}")
