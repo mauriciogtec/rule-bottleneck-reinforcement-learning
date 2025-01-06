@@ -637,7 +637,15 @@ class VitalSignsLang(LanguageWrapper):
             " Your goal is to optimize a reward function, where a cost (negative reward)"
             " is incurred for each patient whose vital signs are outside the normal range."
             " It is known that wearing the device can help improve the patient's vital signs. "
-            " and prevent abnormality. "
+            " and prevent abnormality.\n"
+            "Normal Vital Sign Range: To define the normal range, we primarily follow the thresholds used for alerts signaling abnormal"
+            " vital sings in the study on vital sign monitoring devices for maternal health in Mbarara (Boatin et al. 2021) featured earlier:"
+            " A heart rate above 120, a temperature above 38C, a respiratory rate above 30, and an SPO2 rate below 90 are considered"
+            " abnormal.\n"
+            "Reward Function: For a heart rate h, the penalty is-exp (|h-120|/17). For a temperature t, the penalty is -exp(|t-38.0|/2)."
+            " For a respiratory rate r, the penalty is -exp(|r-30|/5). For an SPO2 rate s, the penalty is -exp(|s-90|/4).\n"
+            "Effect of Intervention: The abnormal vital signs of patients wearing a device are reduced towards the normal range with an estimated"
+            " 70% success rate. The effect of the intervention is probabilistic, with the magnitude of the adjustment varying for each vital sign."
         )
 
     @property
