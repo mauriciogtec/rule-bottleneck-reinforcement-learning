@@ -206,7 +206,7 @@ def main(cfg: DictConfig):
                             f"global_step={global_step}, episodic_return={r:.4f}"
                         )
             
-            if global_step % cfg.log_examples_interval == 0:
+            if global_step == 0 or global_step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
                 example = (
                     f"### State:\n {outputs['state_text'][0]}\n"
