@@ -1,26 +1,23 @@
-embedder_lm: "togethercomputer/m2-bert-80M-8k-retrieval"
-embed_dim: 768
-# the embeddings model to use
+# Description: PPO configuration file
 
+# Rulebot arguments
+embedder_lm: "togethercomputer/m2-bert-80M-8k-retrieval"
+# the embedder model to use
+embed_dim: 768
+# the dimension of the mbeddings model
 # chat_lm: "meta-llama/Llama-3.2-3B-Instruct-Turbo"
 chat_lm: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
 # the chat model to use
-
 parallel: true
 # if toggled, the model will be trained in parallel
-
 hidden_dim: 16
 # the hidden dimension of the attention model projections
-
 num_rules: 10
 # the number of rules to use
-
 resume: false
 # if toggled, the model will be resumed from the last checkpoint
-
 max_rule_combinations: 1
 # the maximum number of rule combinations to use
-
 exp_name: 
 # the name of this experiment
 seed: 1
@@ -28,6 +25,8 @@ seed: 1
 torch_deterministic: true
 # if toggled, `torch.backends.cudnn.deterministic=False`
 cuda: true
+
+# Logging and tracking arguments
 # if toggled, cuda will be enabled by default
 track: false
 # if toggled, this experiment will be tracked with Weights and Biases
@@ -40,8 +39,11 @@ wandb_save_code: true
 capture_video: false
 # whether to capture videos of the agent performances (check out `videos` folder)
 log_examples_interval: 20
+# the interval to log examples
+save_interval: 4
+# the interval to save the model
 
-# Algorithm specific arguments
+# PPO specific arguments
 env_id: "BuySell"
 # the id of the environment
 total_timesteps: 10000  # 50x reduction
