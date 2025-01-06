@@ -178,7 +178,7 @@ def main(cfg: DictConfig):
                 # Use the term env_actions to differentiate from the internal actions
                 # which are the selected rules.
                 env_actions, outputs, _ = lang_agent(
-                    state_text=next_state_text, state_vector=next_state_vector
+                    state_text=next_state_text, state_vector=next_state_vector, post_action=False
                 )
 
             # Append the rules
@@ -209,7 +209,6 @@ def main(cfg: DictConfig):
                         logging.info(
                             f"global_step={global_step}, episodic_return={r:.4f}"
                         )
-                        returns.append(r)
 
             if step == 0 or step % cfg.log_examples_interval == 0:
                 # log the final selected rule and explanation
@@ -236,15 +235,15 @@ def main(cfg: DictConfig):
         total_reward = rewards.mean().item()
         if best_total_reward < total_reward:
             best_total_reward = total_reward
-            os.makedirs(f"models", exist_ok=True)
-            model_path = f"models/{__file__.strip('.py')}/best_{run_id}.pt"
-            torch.save(actor_critic.state_dict(), model_path)
+            savedir = f"models/{__file__.strip('.py')}"
+            os.makedirs(savedir, exist_ok=True)
+            torch.save(actor_critic.state_dict(), f"{savedir}/best_{run_id}.pt")
 
         # bootstrap value if not done
         with torch.no_grad():
             # need to call one last time to get the rules embeddings
             _, outputs, _ = lang_agent(
-                state_text=next_state_text, state_vector=next_state_vector
+                state_text=next_state_text, state_vector=next_state_vector, post_action=False
             )
             next_value = torch.stack(outputs["value"])
 
