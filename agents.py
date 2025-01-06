@@ -1,39 +1,160 @@
+from collections import defaultdict
 import json
 import re
 from itertools import combinations
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, Sequence, List, Optional, Tuple
 
 import torch
+import torch.nn as nn
+from gymnasium.core import ActType
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
-from torch import nn
 
-from layers import AttentionActor
-from envs.language_wrappers import LanguageWrapper
+import layers
+
+
+def default_action_parser(s: str) -> ActType:
+    out = [int(i) for i in re.findall(r"\d+", s)]
+    return out[0] if len(out) == 1 else out
+
+
+def generate_rule_combinations(
+    rules: List[Dict], max_combs: Optional[int] = None
+) -> List[Dict]:
+    all_combinations = []
+    for r in range(max_combs or len(rules)):
+        for combs in combinations(rules, r + 1):
+            all_combinations.append("\n".join(combs))
+
+    return all_combinations
+
+
+def parse_rules(x: str) -> List[str]:
+    # 1. Remove the following patters
+    patterns = ["```yaml", "```yml"]
+    x = re.sub("|".join(patterns), "", x)
+
+    # 2. Remove trailing white space, and collapse new lines
+    x = x.strip()
+    x = re.sub(r"\n+", "\n", x)
+
+    # 3. Break in lines
+    x = x.split("\n")
+
+    # 4. Remove empty lines
+    x = [line for line in x if line.strip() != ""]
+
+    return x
 
 
 class BaseAgent:
     """base class for the CoT agent with explanation"""
 
-    def __init__(self, env: LanguageWrapper, llm: BaseChatModel):
-        self.env = env
+    def __init__(
+        self,
+        task_text: str,
+        action_space_text: str,
+        llm: BaseChatModel,
+        action_parser: Callable[[str], ActType] = default_action_parser,
+    ):
+        self.task_text = task_text
+        self.action_space_text = action_space_text
         self.llm = llm
+        self.action_parser = action_parser
 
-    def system_prompt(self) -> str:
-        task_text = self.env.task_text
-        action_space_text = self.env.action_space_text
+    def __call__(
+        self,
+        state_text: str | list[str],
+        state_vector: Optional[Sequence[float] | List[Sequence[float]]] = None,
+        post_action: bool = True,
+        **kwargs,
+    ):
+        # Initialize outputs and messages that will be updated by each pipeline step
+        #    all intermediate outputs and finall results will be stored in the outputs
+        #    all messages exchanged between the user and the llm assistant are stored in the messages
 
+        # Call in a vectorized way when state_text is a list
+        if isinstance(state_text, str):
+            return self.pipeline(
+                state_text, state_vector=state_vector, post_action=post_action, **kwargs
+            )
+        else:
+            # call for each
+            all_actions = []
+            all_messages = []
+            all_outputs = defaultdict(list)
+            for i in range(len(state_text)):
+                action, outputs, messages = self.pipeline(
+                    state_text[i],
+                    state_vector=state_vector[i] if state_vector is not None else None,
+                    post_action=post_action,
+                    **kwargs,
+                )
+                all_actions.append(action)
+                all_messages.append(messages)
+                for k, v in outputs.items():
+                    all_outputs[k].append(v)
+
+            return all_actions, dict(all_outputs), all_messages
+
+    def pipeline(
+        self,
+        state_text: str,
+        state_vector: Optional[Sequence[float]] = None,
+        post_action: bool = True,
+        **kwargs,
+    ) -> Tuple[ActType, Dict, List[Dict]]:
+        outputs = {"state_text": state_text, "state_vector": state_vector, **kwargs}
+        messages = [
+            {"role": "system", "content": self.system_prompt_with_state(state_text)}
+        ]
+
+        # Pre-action step (e.g., stores thoughts in the outputs)
+        self.pre_action(outputs, messages)
+
+        # Get action (e.g., asks the user to choose an action and parses the response)
+        action = self.get_action(outputs, messages)
+
+        # Post-action step (e.g., stores explanation in the outputs)
+        if post_action:
+            self.post_action(outputs, messages)
+
+        return action, outputs, messages
+
+    def system_prompt_with_state(self, state_text: str) -> str:
         return (
-            f"\n\n### Task\n\n {task_text}"
-            f"\n\n### Possible actions\n\n {action_space_text}"
+            f"### Task\n\n {self.task_text}"
+            f"\n\n### Possible actions\n\n {self.action_space_text}"
+            f"\n\n### Current state of the environment\n\n {state_text}\n"
         )
 
-    def system_prompt_with_state(self, state: str, info: dict) -> str:
-        system_prompt = self.system_prompt()
-        system_prompt += f"\n\n### Current state of the environment\n\n {state}"
-        return system_prompt
+    def pre_action(self, outputs: Dict, messages: List[Dict]):
+        """Initializes outputs and messages"""
+        self.gen_thoughts(outputs, messages)
 
-    def gen_thoughts(self, outputs: Dict, messages: List[Dict]) -> str:
+    def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
+        # get actions
+        action_prompt = (
+            "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
+            "Do not provide additional information or context for your answer, only the action as follows. "
+            f"\n\n### Possible actions:\n\n {self.action_space_text}"
+            "\n\n### Your response:"
+        )
+        messages += [{"role": "user", "content": action_prompt}]
+
+        outputs["action_str"] = self.llm.invoke(messages, max_tokens=10).content
+        messages.append({"role": "assistant", "content": outputs["action_str"]})
+
+        outputs["action"] = self.action_parser(outputs["action_str"])
+        return outputs["action"]
+
+    def post_action(self, outputs: Dict, messages: List[Dict]) -> None:
+        """Finalizes outputs and messages"""
+        self.gen_explanation(outputs, messages)
+
+    def gen_thoughts(self, outputs: Dict, messages: List[Dict]) -> None:
         """Generate thoughts and update message list"""
+
         thought_prompt = (
             "First, reason about what elements should be considered when choosing the optimal action "
             "the given task considering the task goal and optimal decision making. "
@@ -42,14 +163,11 @@ class BaseAgent:
             "of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
         )
 
-        messages.append({"role": "system", "content": thought_prompt})
-
-        response = self.llm.invoke(messages, temperature=0.5, max_tokens=200).content
-
-        messages.append({"role": "user", "content": response})
-        outputs["thoughts"] = response
-
-        return response
+        messages.append({"role": "user", "content": thought_prompt})
+        outputs["thoughts"] = self.llm.invoke(
+            messages, temperature=0.5, max_tokens=200
+        ).content
+        messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
     def gen_explanation(self, outputs: Dict, messages: List[Dict]) -> str:
         """Generate explanation and update message list"""
@@ -58,321 +176,206 @@ class BaseAgent:
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
-        messages.append({"role": "system", "content": explanation_prompt})
-
-        response = self.llm.invoke(messages, temperature=0.5, max_tokens=200).content
-
-        messages.append({"role": "user", "content": response})
-        outputs["explanation"] = response
-
-        return response
-
-    def pre_action(self, state: str, info: dict) -> Tuple[Dict, List[Dict]]:
-        """Initializes outputs and messages"""
-        system_prompt = self.system_prompt_with_state(state, info)
-        outputs = {"state": state, "info": info}
-        messages = [{"role": "system", "content": system_prompt}]
-        self.gen_thoughts(outputs, messages)
-
-        return outputs, messages
-
-    def post_action(self, outputs: Dict, messages: List[Dict]) -> None:
-        """Finalizes outputs and messages"""
-        self.gen_explanation(outputs, messages)
-
-    def gen_action(self, state: str, info: dict) -> Tuple[int, str]:
-        """Generate a call for action based on the environment.
-
-        Args:
-            state_text (str): The current state of the environment.
-
-        Returns:
-            int: The action to take.
-        """
-        outputs, messages = self.pre_action(state, info)
-
-        # get actions
-        action_prompt = (
-            "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
-            "Your response should consist of a single integer that corresponds to the index of the optimal action in the given list."
-            "For example, the answer should be one of 0, 1, etc. with no additional explanation."
-            f"\n\n### Possible actions:\n\n {self.env.action_space_text}"
-        )
-        messages += [{"role": "user", "content": action_prompt}]
-        response = self.llm.invoke(messages, max_tokens=20).content
-
-        # use regex to extract the first integer
-        action = re.search(r"\d+", response).group(0)
-        action = int(action)
-
-        # add explanation
-        self.post_action(outputs, messages)
-
-        return action, outputs, messages
+        messages.append({"role": "user", "content": explanation_prompt})
+        outputs["explanation"] = self.llm.invoke(
+            messages, temperature=0.5, max_tokens=200
+        ).content
+        messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
-class BaseRulesAgent(BaseAgent):
+class LLMRulesAgent(BaseAgent):
     """The rule-based agent generates a set of rules in addition to thoughts"""
 
     def __init__(
         self,
-        env: LanguageWrapper,
+        task_text: str,
+        action_space_text: str,
         llm: BaseChatModel,
         num_rules: int = 5,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
+        action_parser: Callable[[str], ActType] = default_action_parser,
     ):
-        super().__init__(env, llm)
+        super().__init__(
+            task_text=task_text,
+            action_space_text=action_space_text,
+            llm=llm,
+            action_parser=action_parser,
+        )
         self.num_rules = num_rules
         self.example_rules = example_rules
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
 
-    def pre_action(self, state: str, info: dict) -> Tuple[Dict, List[Dict]]:
-        """Initializes outputs and messages"""
-        outputs, messages = super().pre_action(state, info)
+    def pre_action(self, outputs: Dict, messages: List[Dict]):
+        self.gen_thoughts(outputs, messages)
         self.gen_rules(outputs, messages)
 
-        return outputs, messages
+    def gen_rules(self, outputs: Dict, messages: List[Dict]):
 
-    def gen_rules(self, outputs: Dict, messages: List[Dict]) -> dict:
-        """The rule-based agent generates a set of rules based on the environment state.
-
-        Args:
-            messages (list[dict]): A list of messages exchanged between the agent and the user.
-                It is expected to the output of the `thoughts` method.
-        """
         rules_prompt = (
             f"Now, suggest {self.num_rules} rules that could be useful to solve the task. "
-            " For each rule, provide the explanation of why it is important to consider it at the given state. "
-            "Your response consist solely of a machine-readable JSON code."
-            " This JSON structure should be a list with the follwing requirements: \n"
-            "- Start with the character '[' and end with the character ']' \n"
-            "- Each list entry should be a dictionary with the keys 'rule' and 'explanation'."
-            "- The rules should be in natural language. While there is no strict format, it is recommended "
-            " that they have the form 'Prioritize [what] [when] [because (short justification)]'."
-            "- The explanation should expand on the rule justification and explain further how does it "
-            "relate to the task and the goals of the decision maker, and what is the expected outcome of following the rule."
+            " For each rule, provide the explanation of why it is important to consider it at the given state."
+            " Your response consist solely of a machine-readable YAML list."
+            " Your response should be a list of rules. Each rule should be exactly one line and start with the character `-`."
+            " The rules should be in natural language. While there is no strict format, it is recommended "
+            " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
+            " the task and the agent's goals."
+            " Your answer should start with the character ```- "
         )
 
         # send second call using the OpenAI API
-        messages.append({"role": "system", "content": rules_prompt})
-
-        rules_response = self.llm.invoke(messages).content
-        rules_response = self._fix_common_json_list_errors(rules_response)
-
-        if self.verbose:
-            for m in messages:
-                print(f"{m['role']}: {m['content']}")
-            print("\n\nRules:\n")
-            print(rules_response)
-
-        try:
-            # parse JSON
-            rules = json.loads(rules_response)
-            self._verify_rules(rules)
-
-        except Exception as e:
-            # Try to fix the error
-            attempts = 0
-            error_message = str(e)
-            while attempts < self.max_parse_attempts:
-                try:
-                    # call OpenAI API
-                    fix_prompt = (
-                        "You are a helpful assistant. Your task is to help fix the "
-                        "syntax of machine-readable JSON file. You will be provided with an "
-                        "error message that describes the issue when reading the JSON file. "
-                        "Your response should be a corrected version of the JSON file without any "
-                        "additional explanation so it can be parsed correctly."
-                        "The keys must be 'rule' and 'explanation'. If a key is missing, "
-                        "please add it with an empty string value."  # TODO
-                        f"\n\n### Error Message\n\n{error_message}"
-                        f"\n\n### JSON File\n\n{rules_response}"
-                    )
-                    fix_messages = [
-                        {"role": "system", "content": fix_prompt},
-                    ]
-                    rules_response = self.llm.invoke(fix_messages).content
-                    rules_response = self._fix_common_json_list_errors(rules_response)
-
-                    rules = json.loads(rules_response)
-                    self._verify_rules(rules)
-
-                    break
-                except Exception as e:
-                    # increment attempts
-                    attempts += 1
-
-                    # update error message
-                    error_message = str(e)
-
-            if attempts >= self.max_parse_attempts:
-                raise ValueError(f"Failed to parse JSON: {error_message}")
-
-        outputs["rules"] = rules
-        messages.append({"role": "user", "content": rules_response})
-
-        return rules
-
-    @staticmethod
-    def _fix_common_json_list_errors(json_str: str) -> str:
-        # 1. Remove the following patters
-        patterns = ["```", "```json", "```yaml", "```yml", "\n"]
-        json_str = re.sub("|".join(patterns), "", json_str)
-
-        # 2. Remove trailing white space
-        json_str = json_str.strip()
-
-        # 3. Since the JSON is a list, make sure to being with '[' and end with ']'
-        if not json_str.startswith("["):
-            json_str = "[" + json_str
-        if not json_str.endswith("]"):
-            json_str = json_str + "]"
-
-        # 4. Remove any white space after the '[', and ',', and before the ']'
-        json_str = re.sub(r"\[\s+", "[", json_str)
-        json_str = re.sub(r",\s+", ", ", json_str)
-        json_str = re.sub(r"\s+\]", "]", json_str)
-
-        return json_str
-
-    @staticmethod
-    def _verify_rules(rules: list[dict]) -> None:
-        if not isinstance(rules, list):
-            raise ValueError("Rules must be a list of dictionaries.")
-        for rule in rules:
-            if not isinstance(rule, dict):
-                raise ValueError("Each rule must be a dictionary.")
-            if "rule" not in rule:
-                raise ValueError("Each rule must have a 'rule' key.")
-            if "explanation" not in rule:
-                raise ValueError("Each rule must have an 'explanation' key")
+        messages.append({"role": "user", "content": rules_prompt})
+        response = self.llm.invoke(messages, max_tokens=200).content
+        outputs["rules"] = parse_rules(response)
+        messages.append({"role": "assistant", "content": outputs["rules"]})
 
 
-class RulesSelectorRLAgent(BaseRulesAgent):
+class RulesSelectorActorCritic(BaseAgent, nn.Module):
     """The rule-based agent generates a set of rules based on the environment state."""
 
     def __init__(
         self,
-        actor: AttentionActor,
-        env: LanguageWrapper,
+        actor: layers.AttentionActor,
+        task_text: str,
+        action_space_text: str,
         llm: BaseChatModel,
+        embededder: Embeddings,
         max_rule_combinations: int = 3,
         num_rules: int = 5,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
+        action_parser: Callable[[str], ActType] = default_action_parser,
+        critic: Optional[layers.AttentionCritic] = None,
     ):
-        super().__init__(
-            env,
-            llm,
-            num_rules,
-            example_rules,
-            max_parse_attempts,
-            verbose,
+        BaseAgent.__init__(
+            self,
+            task_text=task_text,
+            action_space_text=action_space_text,
+            llm=llm,
+            action_parser=action_parser,
         )
+        nn.Module.__init__(self)
+
         self.actor = actor
+        self.critic = critic
         self.max_rule_combinations = max_rule_combinations
+        self.embedder = embededder
+        self.num_rules = num_rules
+        self.example_rules = example_rules
+        self.max_parse_attempts = max_parse_attempts
+        self.verbose = verbose
 
-    def _generate_embeddings_for_rules(
-        self, rules: List[Tuple[Dict]]
-    ) -> List[List[float]]:
-        """
-        Generate embeddings for each rule combination using a language embedding model.
+        # initialize layers
+        nn.init.xavier_uniform_(self.actor.multihead_attn.q_proj.weight)
+        if self.critic is not None:
+            nn.init.xavier_uniform_(self.critic.multihead_attn.q_proj.weight)
 
-        Args:
-            rule_combinations (List[Dict]): List of all possible rules. Each rule is a dictionary with keys
-                'rule' and 'explanation'.
-            embeddings_model (Embeddings): The language model used for embeddings.
+    def pre_action(self, outputs: Dict, messages: List[Dict]):
+        self.gen_thoughts(outputs, messages)
+        self.gen_rules(outputs, messages)
 
-        Returns:
-            Dict[Tuple[str, ...], np.ndarray]: A dictionary mapping rule combinations to embeddings.
-        """
-        embeddings = {}
-        documents = [
-            "Rules:\n" + combo["rule"] + "\n\nExplanations:\n" + combo["explanation"]
-            for combo in rules
-        ]
-        embeddings = self.embedder.embed_documents(documents)
-        return embeddings
-
-    def _generate_rule_combinations(self, rules: List[Dict]) -> List[Dict]:
-        """
-        Generate all non-empty combinations of rules.
-
-        Args:
-            rules (List[Dict]): A list of K rules, each consist of a dictionry with keys
-                'rule' and 'explanation'.
-
-        Returns:
-            List[Dict] list of all non-empty combinations of rules. Rules are appended via text as well as the explanation.
-        """
-        all_combinations = []
-        for r in range(
-            self.max_rule_combinations or len(rules)
-        ):  # r: size of the combination (1 to K)
-            for combs in combinations(rules, r + 1):
-                combs_rules = "- " + "\n- ".join({x["rule"] for x in combs})
-                combs_expl = "- " + "\n- ".join({x["explanation"] for x in combs})
-                all_combinations.append(
-                    {"rule": combs_rules, "explanation": combs_expl}
-                )
-
-        return all_combinations
-
-    def gen_rules(self, outputs: dict, messages: list[dict]) -> dict:
+    def gen_rules(self, outputs: dict, messages: list[dict]) -> List[str]:
         """Wrapper for generating rules that includes combinations of and embeddings for rules.
         First, generates combinations of rules, next it filters using an RL selector
         """
+        # get the state, throw error if state is not present
+        assert (
+            "state_vector" in outputs
+        ), "passing state_vector when calling the agent is required."
+        state_vector = outputs["state_vector"]
+        device = state_vector.device
+
         # get all possible rules with combinations
-        rules = super().gen_rules(outputs, messages)
-        rules_with_combs = self._generate_rule_combinations(rules)
+        rules_prompt = (
+            f"Now, suggest {self.num_rules} rules that could be useful to solve the task. "
+            " For each rule, provide the explanation of why it is important to consider it at the given state."
+            " Your response consist solely of a machine-readable YAML list."
+            " Your response should be a list of rules. Each rule should be exactly one line and start with the character `-`."
+            " The rules should be in natural language. While there is no strict format, it is recommended "
+            " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
+            " the task and the agent's goals."
+            " Your answer should start with the character ```- "
+        )
+
+        # send second call using the OpenAI API
+        messages.append({"role": "user", "content": rules_prompt})
+        response = self.llm.invoke(messages, max_tokens=512).content
+
+        rules = parse_rules(response)
+        outputs["rules"] = rules = generate_rule_combinations(rules)
 
         # get the rules and state embeddings
-        rule_emb = self._generate_embeddings_for_rules(rules_with_combs)
-        state_emb = self.embedder.embed_query(outputs["state"])
+        # rules_emb = self._generate_embeddings_for_rules(rules)
+        rules_emb = self.embedder.embed_documents(rules)
+        rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(device)
+        outputs["rules_emb"] = rules_emb
 
-        # convert to torch tensors
-        device = next(self.actor.parameters()).device
-        rule_emb = torch.tensor(rule_emb, dtype=torch.float32).to(device)
-        state_emb = torch.tensor(state_emb, dtype=torch.float32).to(device)
+        # query (1, emb_dim,) keys (num_rules, emb_dim)
+        query, keys = state_vector.unsqueeze(0), rules_emb
 
-        # get the
-        with torch.no_grad():
-            # query (1, emb_dim,) keys (num_rules, emb_dim)
-            query, keys = state_emb.unsqueeze(0), rule_emb
+        # logits (1, num_rules) -> (num_rules, )
+        logits = self.actor(query, keys)
 
-            # logits (1, num_rules) -> (num_rules, )
-            sel_idx, _ = self.actor.sample(query, keys)
+        dist = torch.distributions.Categorical(logits=logits)
+        sel_idx = dist.sample().squeeze()
+        entropy = dist.entropy().squeeze()
 
         # get the selected rule
-        selected_rule = rules_with_combs[sel_idx.item()]
+        sel_rule = rules[sel_idx]
 
-        return selected_rule
+        outputs["logits"] = logits
+        outputs["sel_logprob"] = dist.log_prob(sel_idx).squeeze()
+        outputs["sel_idx"] = sel_idx
+        outputs["sel_rule"] = sel_rule
+        outputs["entropy"] = entropy
+
+        # eval the critic for the selected rule
+        if self.critic is not None:
+            values = self.critic(query, keys)
+            outputs["values"] = values.squeeze(0)
+            outputs["sel_value"] = outputs["values"][sel_idx]
+
+    def get_action_and_value(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        sel_idxs: Optional[torch.Tensor] = None,
+    ):
+        logits = self.actor(state_vector, rules_emb, attn_mask=attn_mask)
+        dist = torch.distributions.Categorical(logits=logits)
+        if sel_idxs is None:
+            sel_idxs = dist.sample()
+        entropy = dist.entropy()
+        log_prob = dist.log_prob(sel_idxs)
+        values = self.critic(state_vector, rules_emb, attn_mask=attn_mask)
+
+        return sel_idxs, log_prob, entropy, values
 
 
 if __name__ == "__main__":
     import sys
 
     from langchain_together import ChatTogether, TogetherEmbeddings
-    from weather2alert.env import HeatAlertEnv
+
+    import envs
+    import gymnasium as gym
     from layers import AttentionActor
 
-    from envs.language_wrappers import HeatAlertsWrapper
-
     # loead language based environment
-    embed_model = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
-    env = HeatAlertEnv()
-    env = HeatAlertsWrapper(env, embed_model)
+    env = gym.make("HeatAlerts", budget=10)
 
     # reset environment
-    obs, info = env.reset()
-    state_text = info["obs_text"]
+    (obs, text), info = env.reset()
 
     # load LLM model
-    llm_model = ChatTogether(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
+    embed_model = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
+    chat_model = ChatTogether(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
 
     # # obtain rules
     # rules = gen_rules(
@@ -404,10 +407,10 @@ if __name__ == "__main__":
         rule_dim=768,
         hidden_dim=32,
     )
-    agent = RulesSelectorRLAgent(actor, env, llm_model, embed_model, 768)
+    agent = RulesSelectorActorCritic(actor, env, chat_model, embed_model, 768)
 
     # test call for action
-    action, outputs, messages = agent.gen_action(state_text, info)
+    action, outputs, messages = agent.get_action(text)
     print("Action:", action)
     print("Thoughts:", outputs["thoughts"])
     print("Rules:", outputs["rules"])
