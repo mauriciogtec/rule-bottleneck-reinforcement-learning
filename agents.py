@@ -233,12 +233,12 @@ class LLMRulesAgent(BaseAgent):
         messages.append({"role": "assistant", "content": outputs["rules"]})
 
 
-class RulesSelectorActorCritic(BaseAgent, nn.Module):
+class RulesSelectorActorCritic(BaseAgent):
     """The rule-based agent generates a set of rules based on the environment state."""
 
     def __init__(
         self,
-        actor: layers.AttentionActor,
+        actor_critic: layers.AttentionActorCritic,
         task_text: str,
         action_space_text: str,
         llm: BaseChatModel,
@@ -249,30 +249,22 @@ class RulesSelectorActorCritic(BaseAgent, nn.Module):
         max_parse_attempts: int = 3,
         verbose: bool = False,
         action_parser: Callable[[str], ActType] = default_action_parser,
-        critic: Optional[layers.AttentionCritic] = None,
     ):
-        BaseAgent.__init__(
-            self,
+        super().__init__(
             task_text=task_text,
             action_space_text=action_space_text,
             llm=llm,
             action_parser=action_parser,
         )
-        nn.Module.__init__(self)
+        assert isinstance(actor_critic, layers.AttentionActorCritic)
 
-        self.actor = actor
-        self.critic = critic
+        self.actor_critic = actor_critic
         self.max_rule_combinations = max_rule_combinations
         self.embedder = embededder
         self.num_rules = num_rules
         self.example_rules = example_rules
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
-
-        # initialize layers
-        nn.init.xavier_uniform_(self.actor.multihead_attn.q_proj.weight)
-        if self.critic is not None:
-            nn.init.xavier_uniform_(self.critic.multihead_attn.q_proj.weight)
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         self.gen_thoughts(outputs, messages)
@@ -319,7 +311,7 @@ class RulesSelectorActorCritic(BaseAgent, nn.Module):
         query, keys = state_vector.unsqueeze(0), rules_emb
 
         # logits (1, num_rules) -> (num_rules, )
-        logits = self.actor(query, keys)
+        logits, value = self.actor_critic(query, keys)
 
         dist = torch.distributions.Categorical(logits=logits)
         sel_idx = dist.sample().squeeze()
@@ -333,88 +325,22 @@ class RulesSelectorActorCritic(BaseAgent, nn.Module):
         outputs["sel_idx"] = sel_idx
         outputs["sel_rule"] = sel_rule
         outputs["entropy"] = entropy
-
-        # eval the critic for the selected rule
-        if self.critic is not None:
-            values = self.critic(query, keys)
-            outputs["values"] = values.squeeze(0)
-            outputs["sel_value"] = outputs["values"][sel_idx]
+        outputs["value"] = value.squeeze()
 
     def get_action_and_value(
         self,
         state_vector: torch.Tensor,
         rules_emb: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
+        rules_padding_mask: Optional[torch.Tensor] = None,
         sel_idxs: Optional[torch.Tensor] = None,
     ):
-        logits = self.actor(state_vector, rules_emb, attn_mask=attn_mask)
+        logits, values = self.actor_critic(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
         dist = torch.distributions.Categorical(logits=logits)
         if sel_idxs is None:
             sel_idxs = dist.sample()
         entropy = dist.entropy()
         log_prob = dist.log_prob(sel_idxs)
-        values = self.critic(state_vector, rules_emb, attn_mask=attn_mask)
 
         return sel_idxs, log_prob, entropy, values
-
-
-if __name__ == "__main__":
-    import sys
-
-    from langchain_together import ChatTogether, TogetherEmbeddings
-
-    import envs
-    import gymnasium as gym
-    from layers import AttentionActor
-
-    # loead language based environment
-    env = gym.make("HeatAlerts", budget=10)
-
-    # reset environment
-    (obs, text), info = env.reset()
-
-    # load LLM model
-    embed_model = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
-    chat_model = ChatTogether(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
-
-    # # obtain rules
-    # rules = gen_rules(
-    #     llm_model, state_text, env.action_space_text, env.task_text, verbose=True
-    # )
-
-    # rules_text = str(rules)
-
-    # # obtain action
-    # action, explanation = call_for_action(
-    #     llm_model,
-    #     state_text,
-    #     rules_text,
-    #     env.action_space_text,
-    #     env.task_text,
-    #     verbose=True,
-    # )
-
-    # # test LLM RL Agent
-    # agent = RuleBasedLLM(env, llm_model)
-
-    # # test call for action
-    # action, explanation, messages = agent.call_for_action(state_text, info)
-    # print(messages)
-
-    # test RL agent
-    actor = AttentionActor(
-        state_dim=768,
-        rule_dim=768,
-        hidden_dim=32,
-    )
-    agent = RulesSelectorActorCritic(actor, env, chat_model, embed_model, 768)
-
-    # test call for action
-    action, outputs, messages = agent.get_action(text)
-    print("Action:", action)
-    print("Thoughts:", outputs["thoughts"])
-    print("Rules:", outputs["rules"])
-    print("Explanation:", outputs["explanation"])
-
-    # print initial state and rules
-    sys.exit(0)

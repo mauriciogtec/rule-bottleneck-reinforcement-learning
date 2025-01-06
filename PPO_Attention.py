@@ -1,423 +1,342 @@
+# this file is an adaption of the clean rl's PPO implementation for rule-based agents
+# rule-based language agents use different internal actions than the environment actions
+# in addition, one must keep track of the rules selected by the agent.
+
+import itertools
+import random
+import time
+from collections import defaultdict, deque
+from functools import partial
+
+import gymnasium as gym
+import hydra
+import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.distributions import Categorical
+import torchsummary
+from langchain_together import ChatTogether, TogetherEmbeddings
+from omegaconf import DictConfig, OmegaConf
 from torch.nested import nested_tensor, to_padded_tensor
+from torch.utils.tensorboard import SummaryWriter
+
+import envs as E  # registers the gym environments during import
+from agents import RulesSelectorActorCritic
+from layers import AttentionActorCritic
 
 
-class MultiHeadAttentionWeightsOnly(nn.Module):
-    def __init__(self, q_dim, k_dim, num_heads, proj_dim, dropout=0.0):
-        super(MultiHeadAttentionWeightsOnly, self).__init__()
-
-        assert (
-            proj_dim % num_heads == 0
-        ), "Projection dimension must be divisible by the number of heads."
-
-        self.q_dim = q_dim
-        self.k_dim = k_dim
-        self.num_heads = num_heads
-        self.proj_dim = proj_dim
-        self.head_dim = proj_dim // num_heads
-
-        # Linear layers for query and key transformations
-        self.q_proj = nn.Linear(q_dim, proj_dim)
-        self.k_proj = nn.Linear(k_dim, proj_dim)
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, query, key, attn_mask=None):
-        # Input shapes:
-        #   query: (batch_size, query_len, q_dim)
-        #   key: (batch_size, key_len, k_dim)
-        #   attn_mask: (batch_size, query_len, key_len)
-        # Output shape:
-        #   attn_weights: (batch_size, query_len, key_len)
-
-        # Track whether inputs have batch dimension
-        single_query = False
-        single_key = False
-
-        if query.dim() == 2:
-            query = query.unsqueeze(0)  # Add batch dimension
-            single_query = True
-        if key.dim() == 2:
-            key = key.unsqueeze(0)  # Add batch dimension
-            single_key = True
-
-        batch_size, query_len, q_dim = query.size()
-        _, key_len, k_dim = key.size()
-
-        assert q_dim == self.q_dim, "Query dimension must match the initialized q_dim."
-        assert k_dim == self.k_dim, "Key dimension must match the initialized k_dim."
-
-        # Linear transformations for query and key
-        Q = self.q_proj(query)  # (batch_size, query_len, proj_dim)
-        K = self.k_proj(key)  # (batch_size, key_len, proj_dim)
-
-        # Apply dropout after projections
-        Q = self.dropout(Q)
-        K = self.dropout(K)
-
-        # Reshape and transpose for multi-head computation
-        Q = Q.view(batch_size, query_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Scaled dot-product attention weights (logits)
-        attn_weights = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
-        # attn_weights shape: (batch_size, num_heads, query_len, key_len)
-
-        # Aggregate the attention weights across heads
-        attn_weights = attn_weights.mean(dim=1)  # Aggregate across the head dimension
-
-        if attn_mask is not None:
-            # Adjust binary mask (0 for masked positions, 1 for valid positions) to additive mask
-            # Here the unsqueezing is done to allow for broadcasting for the query_len dimension
-            additive_mask = (1.0 - attn_mask).unsqueeze(1) * -1e9
-            attn_weights += additive_mask # TODO: debug this
-
-        # Remove batch dimension if it was added for non-batch inputs
-        if single_query and single_key:
-            attn_weights = attn_weights.squeeze(0)
-
-        return attn_weights
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 
-# Define the Attention-based Actor Network with Multi-Head Attention
-class AttentionActor(nn.Module):
-    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=8):
-        super(AttentionActor, self).__init__()
-        # self.query_proj = nn.Linear(state_dim, hidden_dim)
-        # self.key_proj = nn.Linear(rule_dim, hidden_dim)
-        # self.values_proj = nn.Linear(rule_dim, hidden_dim)
-        self.multihead_attn = MultiHeadAttentionWeightsOnly(
-            q_dim=state_dim,
-            k_dim=rule_dim,
-            proj_dim=hidden_dim,
-            num_heads=num_heads,
-        )
-        # self.actor_head = nn.Linear(hidden_dim, num_rules)  # Outputs logits over rules
+def pad_rules(rules_emb: list[list[torch.Tensor]]):
+    num_steps = len(rules_emb)
+    num_envs = len(rules_emb[0])
 
-    def forward(self, query, keys, attn_mask=None):
-        # Project query and keys
-        # query_proj = self.query_proj(query)  # Shape: [batch_size, 1, hidden_dim]
-        # keys_proj = self.key_proj(keys)  # Shape: [batch_size, num_rules, hidden_dim]
+    # flatten and pad the rules
+    x = list(itertools.chain(*rules_emb))
+    embs = nested_tensor(x)
+    padding_mask = nested_tensor([torch.ones(len(y)) for y in x])
 
-        # Multi-Head Attention
-        attn_logits = self.multihead_attn(query, keys, attn_mask=attn_mask)
+    # pad the rules
+    embs = to_padded_tensor(embs, -20.0)
+    padding_mask = to_padded_tensor(padding_mask, 0.0)
 
-        return attn_logits
+    # reshape the rules
+    embs = embs.view(num_steps, num_envs, -1, embs.shape[-1])
+    padding_mask = padding_mask.view(num_steps, num_envs, -1)
+
+    return embs, padding_mask
 
 
-# Define the Attention-based Critic Network with Multi-Head Attention
-class AttentionCritic(nn.Module):
-    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=8):
-        super(AttentionCritic, self).__init__()
-        # self.query_proj = nn.Linear(state_dim, hidden_dim)
-        # self.key_proj = nn.Linear(rule_dim, hidden_dim)
-        self.multihead_attn = MultiHeadAttentionWeightsOnly(
-            q_dim=state_dim,
-            k_dim=rule_dim,
-            proj_dim=hidden_dim,
-            num_heads=num_heads,
-        )
-        # self.critic_head = nn.Linear(hidden_dim, 1)  # Outputs state value
+@hydra.main(config_path="conf", config_name="ppo", version_base=None)
+def main(cfg: DictConfig):
+    # Load the environment
+    def _make_env(seed):
+        import random
 
-    def forward(self, query, keys, attn_mask=None):
-        # Project query and keys
-        # query_proj = self.query_proj(query).unsqueeze(
-        #     1
-        # )  # Shape: [batch_size, 1, hidden_dim]
-        # keys_proj = self.key_proj(keys)  # Shape: [batch_size, num_rules, hidden_dim]
+        import numpy as np
 
-        # Multi-Head Attention
-        # Multi-Head Attention
-        values = self.multihead_attn(
-            query, keys, attn_mask=attn_mask
-        )  # Shape: [batch_size, 1, num_rules]
+        random.seed(seed)
+        np.random.seed(seed)
 
-        # Critic: Estimate state value
-        # state_value = self.critic_head(attn_output).squeeze(-1)  # Shape: [batch_size]
+        env = gym.make(cfg.env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return env
 
-        return values
-
-
-# PPO Components with Separate Actor-Critic
-class PPOAgent:
-    def __init__(
-        self,
-        state_dim,
-        rule_dim,
-        hidden_dim,
-        lr=1e-3,
-        gamma=0.99,
-        clip_epsilon=0.2,
-        num_updates=10,
-    ):
-        self.actor = AttentionActor(state_dim, rule_dim, hidden_dim)
-        self.critic = AttentionCritic(
-            state_dim,
-            rule_dim,
-            hidden_dim,
-        )
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
-        self.gamma = gamma
-        self.clip_epsilon = clip_epsilon
-        self.trajectory = []
-        self.num_updates = num_updates
-
-    def select_rules(self, query, keys, attn_mask=None):
-        log_probs = self.actor(query, keys, attn_mask=attn_mask).squeeze(-2)
-        values = self.critic(query, keys, attn_mask=attn_mask).squeeze(-2)
-        if len(values.shape) > 1:
-            values = values.squeeze(-1)
-        probs = log_probs.exp()
-        dist = Categorical(probs)
-        action = dist.sample()
-        return action, log_probs, dist.entropy(), values
-
-    def store_transition(self, transition):
-        self.trajectory.append(transition)
-
-    def compute_advantages(self, rewards, values, dones):
-        advantages, returns = [], []
-        R = 0
-        A = 0
-        for i in reversed(range(len(rewards))):
-            if dones[i]:
-                R = 0
-                A = 0
-            R = rewards[i] + self.gamma * R
-            next_value = values[i + 1] if i + 1 < len(values) else 0
-            delta = (
-                rewards[i]
-                + self.gamma * next_value * (1 - dones[i].float())
-                - values[i]
-            )
-            A = delta + self.gamma * 0.95 * A * (1 - dones[i].float())
-            returns.insert(0, R)
-            advantages.insert(0, A)
-        return torch.tensor(advantages), torch.tensor(returns)
-
-    def update_policy(self):
-        # Prepare trajectory data
-        queries, keys, sel_rules, _, log_probs, values, rewards, dones = zip(
-            *self.trajectory
-        )
-        queries = torch.stack(queries)
-        sel_rules = torch.tensor(sel_rules).unsqueeze(-1)
-        old_log_probs = torch.stack(log_probs)
-        values = torch.tensor(values)
-        rewards = torch.tensor(rewards)
-        dones = torch.tensor(dones)
-
-        # stacking the keys is tricky because they have different lengths
-        # padding mask is used to mask the attention weights for the padded keys
-        keys = to_padded_tensor(nested_tensor(list(keys)), padding=-20.0)
-        attn_mask = [torch.ones(k.shape[0]) for k in keys]
-        attn_mask = to_padded_tensor(nested_tensor(attn_mask), padding=0.0)
-
-        advantages, returns = self.compute_advantages(rewards, values, dones)
-
-        # PPO update loop
-        for _ in range(self.num_updates):  # Iterate over the data multiple times
-            # Actor update
-            # the attention mask takes care of the padding
-            logits = self.actor(queries, keys, attn_mask=attn_mask) 
-            # Shape: [batch_size, 1, num_rules]
-            logits = logits.squeeze(1) 
-            # Shape: [batch_size, num_rules]
-            new_log_probs = F.log_softmax(logits, dim=-1)
-            new_log_probs = new_log_probs.gather(1, sel_rules).squeeze(1)
-            # dist = Categorical(logits=logits)
-
-            ratio = torch.exp(new_log_probs - old_log_probs)
-            surrogate1 = ratio * advantages
-            eps = self.clip_epsilon
-            surrogate2 = torch.clamp(ratio, 1 - eps, 1 + eps) * advantages
-            policy_loss = -torch.min(surrogate1, surrogate2).mean()
-
-            self.actor_optimizer.zero_grad()
-            policy_loss.backward()
-            self.actor_optimizer.step()
-
-            # Critic update, squeeze query dim
-            new_values = self.critic(queries, keys).squeeze(1)
-            sel_new_values = new_values.gather(1, sel_rules).squeeze(1)
-            value_loss = (returns - sel_new_values).pow(2).mean()
-
-            self.critic_optimizer.zero_grad()
-            value_loss.backward()
-            self.critic_optimizer.step()
-
-        # Clear trajectory
-        self.trajectory = []
-
-
-# Define Environment
-# class Environment:
-#     def __init__(self, state_dim, rule_dim, num_rules):
-#         self.state_dim = state_dim
-#         self.rule_dim = rule_dim
-#         self.num_rules = num_rules
-#         self.reset()
-
-#     def reset(self):
-#         self.state = torch.randn((1, self.state_dim))  # Random initial state
-#         self.rules = torch.randn((1, self.num_rules, self.rule_dim))  # Random rules
-#         return self.state, self.rules
-
-#     def step(self, action):
-#         # Define how the state and reward change given an action
-#         reward = torch.rand(1).item()  # Random reward
-#         done = (
-#             torch.rand(1).item() > 0.95
-#         )  # Randomly end the episode with 5% probability
-#         self.state = torch.randn((1, self.state_dim))  # New random state
-#         return self.state, reward, done
-
-
-# Example Usage
-if __name__ == "__main__":
-    # # Example dimensions (adjust as needed)
-    # state_dim = 128  # Dimensionality of query embeddings
-    # rule_dim = 128  # Dimensionality of rule embeddings
-    # hidden_dim = 64
-    # num_rules = 10
-
-    # # Initialize PPO agent and environment
-    # agent = PPOAgent(state_dim, rule_dim, hidden_dim, num_rules)
-    # env = Environment(state_dim, rule_dim, num_rules)
-
-    # # Training loop
-    # for episode in range(100):
-    #     state, rules = env.reset()
-    #     done = False
-    #     values = []
-    #     while not done:
-    #         action, log_prob, entropy, value = agent.select_action(state, rules)
-    #         next_state, reward, done = env.step(action.item())
-    #         values.append(value.item())
-    #         agent.store_transition((state, rules, action, log_prob, value, reward, done))
-    #         state = next_state
-
-    #     # Append final value for advantage calculation
-    #     agent.store_transition((None, None, None, None, torch.tensor(0.0), 0, True))
-    #     agent.update_policy()
-    #     print(f"Episode {episode + 1} complete")
-    from src.agent import call_for_action, gen_rules
-    from Embedding_rule_seq import (
-        generate_rule_combinations,
-        generate_embeddings_for_rules,
+    vec_fun = (
+        partial(gym.vector.AsyncVectorEnv, shared_memory=False)
+        if cfg.parallel
+        else gym.vector.SyncVectorEnv
     )
-    from src.language_wrappers import HeatAlertsWrapper
-    from weather2alert.env import HeatAlertEnv
-    from langchain_together import TogetherEmbeddings, ChatTogether
+    envs = vec_fun([lambda: _make_env(cfg.seed + i) for i in range(cfg.num_envs)])
 
-    embed_model = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
-    chat_model = ChatTogether(model="meta-llama/Llama-3.2-3B-Instruct-Turbo")
-    env = HeatAlertsWrapper(HeatAlertEnv(), embed_model)
-    action_state_text = env.action_space_text
-    task_text = env.task_text
+    # LLM and Chat model
+    chat_model = ChatTogether(model=cfg.chat_lm)
+    embed_model = TogetherEmbeddings(model=cfg.embedder_lm)
 
     # Example dimensions (adjust as needed)
-    state_dim = 768  # Dimensionality of query embeddings
-    rule_dim = 768  # Dimensionality of rule embeddings
-    hidden_dim = 32
-    num_rules = 3
-    agent = PPOAgent(state_dim, rule_dim, hidden_dim)
+    state_dim = envs.single_observation_space[0].shape[0]
+    # state_dim = env.observation_space[0].shape[0]  # Dimensionality of query embeddings
+    rule_dim = cfg.embed_dim  # Dimensionality of rule embeddings
+    hidden_dim = cfg.hidden_dim
+    num_rules = cfg.num_rules
 
-    # print number of trainable parameters
-    print(
-        f"Number of trainable parameters in actor: {sum(p.numel() for p in agent.actor.parameters() if p.requires_grad)}"
+    # seeding
+    set_seed(cfg.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
+
+    # congigure logging
+    run_name = f"{cfg.env_id}__{cfg.exp_name}__{cfg.seed}__{int(time.time())}"
+    params = OmegaConf.to_container(cfg, resolve=True)
+
+    if cfg.track:
+        import wandb
+
+        wandb.init(
+            project=cfg.wandb_project_name,
+            entity=cfg.wandb_entity,
+            sync_tensorboard=True,
+            config=params,
+            name=run_name,
+            monitor_gym=True,
+            save_code=cfg.wandb_save_code,
+        )
+    writer = SummaryWriter(f"runs/{run_name}")
+
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in params.items()])),
     )
 
+    # Create the actor critic model and the language agent
+    actor_critic = AttentionActorCritic(state_dim, rule_dim, hidden_dim).to(device)
+
+    lang_agent = RulesSelectorActorCritic(
+        actor_critic=actor_critic,
+        task_text=envs.metadata["task_text"],
+        action_space_text=envs.metadata["action_space_text"],
+        llm=chat_model,
+        embededder=embed_model,
+        num_rules=num_rules,
+        max_rule_combinations=cfg.max_rule_combinations,
+    )
+    optimizer = optim.Adam(actor_critic.parameters(), lr=cfg.learning_rate, eps=1e-5)
+    torchsummary.summary(actor_critic)
+
+    # set batch size and num iters same as in clean rl's PPO
+    batch_size = int(cfg.num_envs * cfg.num_steps)
+    minibatch_size = int(batch_size // cfg.num_minibatches)
+    num_iterations = cfg.total_timesteps // batch_size
+
+    # Start the game
+    global_step = 0
+    start_time = time.time()
+
+    # Initialize the environments
+    obs, infos = envs.reset()
+    next_state_vector, next_state_text = obs
+    next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32).to(device)
+    next_dones = torch.zeros(cfg.num_envs, dtype=torch.bool).to(device)
+
     # Training loop
-    for episode in range(100):
-        obs, info = env.reset()
-        state_emb = obs
-        done = False
-        step = 0
-        values = []
+    for iter in range(1, num_iterations + 1):
+        # Annealing the rate if instructed to do so.
+        if cfg.anneal_lr:
+            frac = 1.0 - (iter - 1.0) / num_iterations
+            lrnow = frac * cfg.learning_rate
+            optimizer.param_groups[0]["lr"] = lrnow
 
-        while not done:
-            state_text = info["obs_text"]
-            rules_text = gen_rules(
-                chat_model,
-                state_text,
-                action_state_text,
-                task_text,
-                num_rules,
-                verbose=False,
-            )
-            print(f"Generated {len(rules_text)} rules:")
-            rules_text = generate_rule_combinations(rules_text, max_combinations=2)
-            rules_emb = generate_embeddings_for_rules(rules_text, embed_model)
+        # Initialize the transitions
+        transitions = defaultdict(list)
 
-            # Convert embeddings to tensors
-            state_emb = torch.tensor(state_emb, dtype=torch.float32).unsqueeze(0)
-            rules_emb = torch.tensor(rules_emb, dtype=torch.float32)
+        for step in range(0, cfg.num_steps):
+            global_step += cfg.num_envs
 
-            # Here the action is the internal action (i.e.,) the rules
-            # Rules = Internal actions
+            # Add states and dones
+            transitions["state_vector"].append(next_state_vector)
+            transitions["state_text"].append(next_state_text)
+            transitions["dones"].append(next_dones)
+
+            # Get the action and value
             with torch.no_grad():
-                sel_rule_index, log_prob, entropy, rule_values = agent.select_rules(
-                    state_emb, rules_emb
+                # Use the term env_actions to differentiate from the internal actions
+                # which are the selected rules.
+                env_actions, outputs, _ = lang_agent(
+                    state_text=next_state_text, state_vector=next_state_vector
                 )
-            sel_rule_text = rules_text[sel_rule_index]
-            sel_rule_value = rule_values[sel_rule_index]
-            sel_log_prob = log_prob[sel_rule_index]
 
-            values.append(sel_rule_value)
+            # Append the rules
+            transitions["rules"].append(outputs["rules"])
+            transitions["rules_emb"].append(outputs["rules_emb"])
 
-            # Get external env action
-            env_action, expl = call_for_action(
-                chat_model,
-                state_text,
-                sel_rule_text,
-                action_state_text,
-                task_text,
-                verbose=False,
+            # Append the scalar quantities
+            for key in ["sel_idx", "sel_logprob", "value", "entropy"]:
+                transitions[key].append(torch.stack(outputs[key]))
+
+            # Step the environment
+            obs, rewards, terminated, truncated, infos = envs.step(env_actions)
+            next_state_vector, next_state_text = obs
+            next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32)
+            next_state_vector = next_state_vector.to(device)
+            next_dones = torch.FloatTensor(terminated | truncated).to(device)
+
+            # Store the reward
+            transitions["rewards"].append(list(rewards))
+
+            if "final_info" in infos:
+                for info in infos["final_info"]:
+                    if info and "episode" in info:
+                        print(
+                            f"global_step={global_step}, episodic_return={info['episode']['r']}"
+                        )
+                        writer.add_scalar(
+                            "charts/episodic_return", info["episode"]["r"], global_step
+                        )
+                        writer.add_scalar(
+                            "charts/episodic_length", info["episode"]["l"], global_step
+                        )
+
+        # convert the transitions to tensors
+        state_vector = torch.stack(transitions["state_vector"])
+        rules_emb, rules_padding_mask = pad_rules(transitions["rules_emb"])
+        dones = torch.stack(transitions["dones"])
+        values = torch.stack(transitions["value"])
+        logprobs = torch.stack(transitions["sel_logprob"])
+        sel_idxs = torch.stack(transitions["sel_idx"])
+        rewards = torch.FloatTensor(transitions["rewards"]).to(device)
+
+        # bootstrap value if not done
+        with torch.no_grad():
+            # need to call one last time to get the rules embeddings
+            _, outputs, _ = lang_agent(
+                state_text=next_state_text, state_vector=next_state_vector
             )
+            next_value = torch.stack(outputs["value"])
 
-            # Step environment
-            state_emb_next, reward, terminated, truncated, info = env.step(env_action)
-            done = terminated or truncated
-
-            # Store transition
-            agent.store_transition(
-                (
-                    state_emb,
-                    rules_emb,
-                    sel_rule_index,
-                    torch.tensor(
-                        state_emb_next, dtype=torch.float32
-                    ),  # currently not used
-                    sel_log_prob,
-                    sel_rule_value,
-                    torch.tensor(reward, dtype=torch.float32),
-                    torch.tensor(done, dtype=torch.bool),
+            # compute the advantages
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
+            for t in reversed(range(cfg.num_steps)):
+                if t == cfg.num_steps - 1:
+                    nextnonterminal = 1.0 - next_dones.float()
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones[t + 1]
+                    nextvalues = values[t + 1]
+                delta = (
+                    rewards[t] + cfg.gamma * nextvalues * nextnonterminal - values[t]
                 )
-            )
-            step += 1
-            state_emb = state_emb_next
+                advantages[t] = lastgaelam = (
+                    delta + cfg.gamma * cfg.gae_lambda * nextnonterminal * lastgaelam
+                )
+            returns = advantages + values
 
-            # Print info: step, state, selected rule, reward, done
-            print(f"Step: {step}")
-            print(f"State: {state_text}")
-            print(f"Selected Rule: {sel_rule_text}")
-            print(f"External Action: {env_action}")
-            print(f"Explanation: {expl}")
-            print(f"Reward: {reward}")
-            print(f"Done: {done}")
+        # flatten the batch
+        b_state = state_vector.reshape((-1,) + envs.single_observation_space[0].shape)
+        b_logprobs = logprobs.reshape(-1)
+        b_sel_idxs = sel_idxs.reshape(-1)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
+        b_values = values.reshape(-1)
+        b_rules = rules_emb.reshape((-1,) + rules_emb.shape[2:])
+        b_padding_mask = rules_padding_mask.reshape(
+            (-1,) + rules_padding_mask.shape[2:]
+        )
 
-            if step > 3:
+        # Optimizing the policy and value network
+        b_inds = np.arange(batch_size)
+        clipfracs = []
+        for epoch in range(cfg.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+
+                _, newlogprob, entropy, newvalue = lang_agent.get_action_and_value(
+                    b_state[mb_inds],
+                    b_rules[mb_inds],
+                    rules_padding_mask=b_padding_mask[mb_inds],
+                    sel_idxs=b_sel_idxs[mb_inds],
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [
+                        ((ratio - 1.0).abs() > cfg.clip_coef).float().mean().item()
+                    ]
+
+                mb_advantages = b_advantages[mb_inds]
+                if cfg.norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
+                        mb_advantages.std() + 1e-8
+                    )
+
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(
+                    ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef
+                )
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                # Value loss
+                newvalue = newvalue.view(-1)
+                if cfg.clip_vloss:
+                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+                    v_clipped = b_values[mb_inds] + torch.clamp(
+                        newvalue - b_values[mb_inds],
+                        -cfg.clip_coef,
+                        cfg.clip_coef,
+                    )
+                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    v_loss = 0.5 * v_loss_max.mean()
+                else:
+                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+
+                entropy_loss = entropy.mean()
+                loss = pg_loss - cfg.ent_coef * entropy_loss + v_loss * cfg.vf_coef
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    actor_critic.parameters(), cfg.max_grad_norm
+                )
+                optimizer.step()
+
+            if cfg.target_kl is not None and approx_kl > cfg.target_kl:
                 break
 
-        # Append final value for advantage calculation
-        # Mauricio: doesn't seem necessary and adding Nones creates an error with the stack
-        # agent.store_transition((None, None, None, None, None, torch.tensor(0.0), torch.tensor(0.0), True))
+        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        agent.update_policy()
-        print(f"Episode {episode + 1} complete")
+        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        writer.add_scalar(
+            "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
+        )
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
+        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        print("SPS:", int(global_step / (time.time() - start_time)))
+        writer.add_scalar(
+            "charts/SPS", int(global_step / (time.time() - start_time)), global_step
+        )
+
+    envs.close()
+    writer.close()
+
+
+if __name__ == "__main__":
+    main()
