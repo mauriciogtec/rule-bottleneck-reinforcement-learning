@@ -3,57 +3,56 @@ from torch import nn
 
 
 class MultiHeadAttentionWeightsOnly(nn.Module):
-    def __init__(self, q_dim, k_dim, num_heads, proj_dim, dropout=0.0):
+    def __init__(self, q_dim, k_dim, num_heads, embed_dim, dropout=0.0):
         super(MultiHeadAttentionWeightsOnly, self).__init__()
 
         assert (
-            proj_dim % num_heads == 0
+            embed_dim % num_heads == 0
         ), "Projection dimension must be divisible by the number of heads."
 
         self.q_dim = q_dim
         self.k_dim = k_dim
         self.num_heads = num_heads
-        self.proj_dim = proj_dim
-        self.head_dim = proj_dim // num_heads
+        self.proj_dim = embed_dim
+        self.head_dim = embed_dim // num_heads
 
         # Linear layers for query and key transformations
-        self.q_proj = nn.Linear(q_dim, proj_dim)
-        self.k_proj = nn.Linear(k_dim, proj_dim)
+        self.q_proj = nn.Linear(q_dim, embed_dim)
+        self.k_proj = nn.Linear(k_dim, embed_dim)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, attn_mask=None):
+    def forward(self, querys, keys, attn_mask=None, key_padding_mask=None):
         # Input shapes:
         #   query: (batch_size, query_len, q_dim)
         #   key: (batch_size, key_len, k_dim)
-        #   attn_mask: (batch_size, query_len, key_len)
+        #   attn_mask: (batch_size, key_len, key_len)
         # Output shape:
         #   attn_weights: (batch_size, query_len, key_len)
 
         # check key and query have the same batch dimension
         assert (
-            key.dim() == query.dim()
+            keys.dim() == querys.dim()
         ), "Query and key must have the same batch dimension."
 
         # check dimensions is 2D or 3D
-        assert key.dim() in [2, 3], "Input key must be 2D or 3D tensor."
-
+        assert keys.dim() in [2, 3], "Input key must be 2D or 3D tensor."
 
         # Add batch dimension if it doesn't exist
-        is_batched = key.dim() == 3
+        is_batched = keys.dim() == 3
         if not is_batched:
-            query = query.unsqueeze(0)
-            key = key.unsqueeze(0)
+            querys = querys.unsqueeze(0)
+            keys = keys.unsqueeze(0)
 
-        batch_size, query_len, q_dim = query.size()
-        _, key_len, k_dim = key.size()
+        batch_size, query_len, q_dim = querys.size()
+        _, key_len, k_dim = keys.size()
 
         assert q_dim == self.q_dim, "Query dimension must match the initialized q_dim."
         assert k_dim == self.k_dim, "Key dimension must match the initialized k_dim."
 
         # Linear transformations for query and key
-        Q = self.q_proj(query)  # (batch_size, query_len, proj_dim)
-        K = self.k_proj(key)  # (batch_size, key_len, proj_dim)
+        Q = self.q_proj(querys)  # (batch_size, query_len, proj_dim)
+        K = self.k_proj(keys)  # (batch_size, key_len, proj_dim)
 
         # Apply dropout after projections
         Q = self.dropout(Q)
@@ -70,11 +69,17 @@ class MultiHeadAttentionWeightsOnly(nn.Module):
         # Aggregate the attention weights across heads
         attn_weights = attn_weights.mean(dim=1)  # Aggregate across the head dimension
 
+        # merge key padding and attention mask
+        mask = torch.ones(batch_size, query_len, key_len).to(attn_weights.device)
+
+        if key_padding_mask is not None:
+            mask *= key_padding_mask.unsqueeze(1).float()
+
         if attn_mask is not None:
-            # Adjust binary mask (0 for masked positions, 1 for valid positions) to additive mask
-            # Here the unsqueezing is done to allow for broadcasting for the query_len dimension
-            additive_mask = (1.0 - attn_mask).unsqueeze(1) * -1e9
-            attn_weights += additive_mask  # TODO: debug this
+            mask *= attn_mask.float()
+
+        # Apply the mask
+        attn_weights = attn_weights + (1.0 - mask) * -1e9
 
         # Remove batch dimension if it was added for non-batch inputs
         if not is_batched:
@@ -84,68 +89,130 @@ class MultiHeadAttentionWeightsOnly(nn.Module):
 
 
 # Define the Attention-based Actor Network with Multi-Head Attention
-class AttentionActor(nn.Module):
-    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=8, dropout=0.0):
-        super(AttentionActor, self).__init__()
-        # self.query_proj = nn.Linear(state_dim, hidden_dim)
-        # self.key_proj = nn.Linear(rule_dim, hidden_dim)
-        # self.values_proj = nn.Linear(rule_dim, hidden_dim)
-        self.multihead_attn = MultiHeadAttentionWeightsOnly(
-            q_dim=state_dim,
-            k_dim=rule_dim,
-            proj_dim=hidden_dim,
+class AttentionActorCritic(nn.Module):
+    def __init__(
+        self,
+        q_dim,
+        k_dim,
+        hidden_dim,
+        num_heads: int = 8,
+        dropout: float = 0.0,
+        q_proj: bool = True,
+        k_proj: bool = True,
+        num_attention_layers: int = 2,
+        num_critic_layers: int = 2,
+    ):
+        super().__init__()
+        assert (
+            num_attention_layers >= 1
+        ), "Number of attention layers must be at least 1."
+        assert num_critic_layers >= 1, "Number of critic layers must be at least 1."
+
+        if q_proj:
+            self.q_proj = nn.Sequential(nn.Linear(q_dim, hidden_dim), nn.SiLU())
+            self.q_dim = hidden_dim
+        else:
+            self.q_dim = q_dim
+
+        if k_proj:
+            self.k_proj = nn.Sequential(nn.Linear(k_dim, hidden_dim), nn.SiLU())
+            self.k_dim = hidden_dim
+        else:
+            self.k_dim = k_dim
+
+        # cross-attention full multi-head attention
+        if num_attention_layers == 1:
+            self.attn_body = []
+        else:
+            self.attn_body = nn.ModuleList()
+            for i in range(num_attention_layers - 1):
+                embed_dim = self.q_dim if i == 0 else hidden_dim
+                self.attn_body.append(
+                    nn.MultiheadAttention(
+                        embed_dim=embed_dim,
+                        num_heads=num_heads,
+                        dropout=dropout,
+                        kdim=self.k_dim,
+                        vdim=hidden_dim,
+                        batch_first=True,
+                    )
+                )
+
+        # multi-head attention with weights only
+        self.attn_head = MultiHeadAttentionWeightsOnly(
+            q_dim=self.q_dim,
+            k_dim=self.k_dim,
+            embed_dim=hidden_dim,
             num_heads=num_heads,
             dropout=dropout,
         )
-        # self.actor_head = nn.Linear(hidden_dim, num_rules)  # Outputs logits over rules
 
-    def forward(self, query, keys, attn_mask=None):
-        # Project query and keys
-        # query_proj = self.query_proj(query)  # Shape: [batch_size, 1, hidden_dim]
-        # keys_proj = self.key_proj(keys)  # Shape: [batch_size, num_rules, hidden_dim]
+        # critic network
+        self.critic = nn.Sequential()
+        for i in range(num_critic_layers):
+            in_dim = self.q_dim if i == 0 else hidden_dim
+            out_dim = hidden_dim if i < num_critic_layers - 1 else 1
+            self.critic.append(nn.Linear(in_dim, out_dim))
+            if i < num_critic_layers - 1:
+                self.critic.append(nn.SiLU())
 
-        # Multi-Head Attention
-        attn_logits = self.multihead_attn(query, keys, attn_mask=attn_mask)
+        # initialize
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-        return attn_logits
+    def forward(self, query, keys, attn_mask=None, key_padding_mask=None):
+        # first project inputs if needed
+        if hasattr(self, "q_proj"):
+            query = self.q_proj(query)
 
-    def sample(self, query, keys, attn_mask=None):
-        attn_logits = self(query, keys, attn_mask=attn_mask)
-        attn_dist = torch.distributions.Categorical(logits=attn_logits)
-        rule_idx = attn_dist.sample()
-        return rule_idx, attn_dist.log_prob(rule_idx)
-    
+        if hasattr(self, "k_proj"):
+            keys = self.k_proj(keys)
 
+        # get value from critic network
+        value = self.critic(query).squeeze(-1)
 
-# Define the Attention-based Critic Network with Multi-Head Attention
-class AttentionCritic(nn.Module):
-    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=1, dropout=0.0):
-        super(AttentionCritic, self).__init__()
-        # self.query_proj = nn.Linear(state_dim, hidden_dim)
-        # self.key_proj = nn.Linear(rule_dim, hidden_dim)
-        self.multihead_attn = MultiHeadAttentionWeightsOnly(
-            q_dim=state_dim,
-            k_dim=rule_dim,
-            proj_dim=hidden_dim,
-            num_heads=num_heads,
-            dropout=dropout,
+        # loop through body attention layers
+        for attn_layer in self.attn_body:
+            query, _ = attn_layer(
+                query,
+                keys,
+                keys,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+            )
+            query = torch.nn.functional.silu(query)
+
+        # final attention layer
+        attn_logits = self.attn_head(
+            query, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
         )
-        # self.critic_head = nn.Linear(hidden_dim, 1)  # Outputs state value
 
-    def forward(self, query, keys, attn_mask=None):
-        # Project query and keys
-        # query_proj = self.query_proj(query).unsqueeze(
-        #     1
-        # )  # Shape: [batch_size, 1, hidden_dim]
-        # keys_proj = self.key_proj(keys)  # Shape: [batch_size, num_rules, hidden_dim]
+        return attn_logits, value
 
-        # Multi-Head Attention
-        # Multi-Head Attention
-        values = self.multihead_attn(
-            query, keys, attn_mask=attn_mask
-        )  # Shape: [batch_size, 1, num_rules]
 
-        # Critic: Estimate state value
-        # state_value = self.critic_head(attn_output).squeeze(-1)  # Shape: [batch_size]
+if __name__ == "__main__":
+    # Test the MultiHeadAttentionWeightsOnly module
+    querys = torch.randn(2, 5, 8)
+    keys = torch.randn(2, 7, 32)
+    # atn mask must be a 2D tensor of
+    attn_mask = torch.rand(5, 7).round().bool()
+    key_padding_mask = torch.tensor(
+        [[0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1]], dtype=torch.bool
+    )
+    # Test the AttentionActorCritic module
+    actor = AttentionActorCritic(
+        q_dim=8,
+        k_dim=32,
+        hidden_dim=64,
+        num_heads=8,
+        dropout=0.25,
+        q_proj=True,
+        k_proj=True,
+    )
 
-        return values
+    attn_logits, value = actor(querys, keys, attn_mask, key_padding_mask)
+
+    print("Attention logits shape:", attn_logits.shape)
