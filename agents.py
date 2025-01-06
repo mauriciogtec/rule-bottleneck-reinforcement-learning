@@ -337,7 +337,9 @@ class RulesSelectorActorCritic(BaseAgent):
         rule = outputs["sel_rule"]
 
         # dummy implementation
-        outputs["sel_reward"] = -len(rule) / 1000
+        sel_reward = torch.tensor(-len(rule) / 1000, dtype=torch.float32)
+        device = outputs["state_vector"].device
+        outputs["sel_reward"] = sel_reward.to(device)
 
     def post_action(self, outputs, messages):
         self.gen_explanation(outputs, messages)
