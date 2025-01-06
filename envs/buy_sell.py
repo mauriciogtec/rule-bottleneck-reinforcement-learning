@@ -1,5 +1,4 @@
-from typing import Optional
-import warnings
+from typing import Dict, Optional
 import numpy as np
 from gymnasium import Env, spaces
 from langchain_together import Together, TogetherEmbeddings
@@ -9,15 +8,16 @@ from datetime import date, timedelta
 from envs.language_wrapper import LanguageWrapper
 
 
-class BuySellHold(Env):
+class BuySellText(Env):
     """In this environment, the agent must decide whether to buy, sell, or hold a stock.
     It can only do so once during each episode.
     Action = 0 -> Buy
-    Action = 1 -> Sell
-    Action = 2 -> Hold
+    Action = 1 -> Hold
+    Action = 2 -> Sell
     Budget = 1  # The agent starts with a budget of 1, after buying goes to 0, game ends when selling
                 # forced to sell when budget is 0
     An LLM based generator creates "news" about the stock that can be used to make decisions.
+    The transition in this version of the environment is based on the LLM.
     """
 
     init_outlook_prompt = (
@@ -88,10 +88,11 @@ class BuySellHold(Env):
         self.current_budget = 1
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9 + 768,))
 
-    def reset(self, **kwargs):
-        # note that seed here is ignored since the env is random
-        if "seed" in kwargs:
-            warnings.warn("Seed is ignored in this environment")
+        raise NotImplementedError("This environment is not yet implemented")
+
+    def reset(self, seed=None, options=None):
+        # note, seed and options are not used
+        # but are there for compatibility with the gym interface
 
         self.current_budget = 1
         self.current_date = date(2022, 4, 1)
@@ -186,13 +187,15 @@ class BuySellHold(Env):
             self.buying_date = self.current_date
             reward = 0
         elif action == 1:
+            # Hold
+            terminated = False
+            reward = 0
+        elif action == 2:
             # Sell
             terminated = True
             reward = self.prices[-1] - self.buying_price
         else:
-            # Hold
-            terminated = False
-            reward = 0
+            raise ValueError("Invalid action")
 
         text_obs = self.state_template.format(
             self.initial_outlook,
@@ -227,7 +230,7 @@ if __name__ == "__main__":
     import sys  # not needed, just to stay within tradition of successful runs ending with 0
     from envs.language_wrapper import FinanceWrapper
 
-    env = BuySellHold()
+    env = BuySellText()
     # step, info = env.reset()
     # state1, reward1, terminated1, truncated1, info1 = env.step(0)
     # state2, reward2, terminated2, truncated2, info2 = env.step(1)
@@ -246,13 +249,14 @@ if __name__ == "__main__":
     sys.exit(0)
 
 
-class BuySellHoldLang(LanguageWrapper):
+class BuySellTextLang(LanguageWrapper):
     """
     A wrapper for the Finance environment.
     """
-    def __init__(self, embeddings_model: Optional[TogetherEmbeddings] = None, **kwargs):
-        env = BuySellHold(**kwargs)
-        super().__init__(env, embeddings_model)
+
+    def __init__(self, **kwargs):
+        env = BuySellText(**kwargs)
+        super().__init__(env)
 
     state_template = (
         "## Initial outlook\n"
@@ -269,7 +273,7 @@ class BuySellHoldLang(LanguageWrapper):
     def task_text(self) -> str:
         return (
             "You are assisting a financial analyst in making optimized decisions about"
-            " when two buy or sell a single stock. You will determine the action by"
+            " when to buy or sell a single stock. You will determine the action by"
             " considering the current stock price, the stock price history, the"
             " analyst's predictions, and news articles about the stock."
         )
@@ -311,3 +315,169 @@ class BuySellHoldLang(LanguageWrapper):
         )
 
         return text_state
+
+
+class BuySell(Env):
+    """In this environment, the agent must decide whether to buy, sell, or hold a stock.
+    It can only do so once during each episode.
+    Action = 0 -> Buy
+    Action = 1 -> Hold
+    Action = 2 -> Sell
+
+    Budget = 1  # The agent starts with a budget of 1, after buying goes to 0, game ends when selling
+                # forced to sell when budget is 0
+
+    This version of the environment is numerical.
+    The transition function of the price is a discretized geometric Brownian motion
+    with drift and volatility are the underlying parameters.
+    The agent observes the drift and volatility, the current price, and indicator of having bought, and the buying price if available.
+    """
+
+    def _update_drift_volatily():
+        """
+        The volatility starts at 0.1. It follows a geoemtric random walk where it decreasesd by 25% with probability 0.1
+        and increases by 50% with probability 0.1.
+        The drift starts at 0.0 and follows a random walk with step size given by the volatility.
+        """
+
+    def __init__(self):
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,))
+        self.rng = np.random.default_rng()
+
+    def reset(self, seed: Optional[int] = None, options: Dict = {}):
+        self.price = options.get("price", 1)
+        self.volatility = options.get("volatility", 0.1)
+        self.drift = options.get("drift", 0.0)
+
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+
+        self.current_budget = 1
+        self.buying_price = 0
+
+        state = np.array(
+            [
+                self.drift,
+                self.volatility,
+                self.price,
+                self.current_budget,
+                self.buying_price,
+            ]
+        )
+
+        return state, {}
+
+    def _update_drift_and_volatility(self):
+        if self.rng.random() < 0.1:
+            self.volatility *= 0.75
+        elif self.rng.random() < 0.1:
+            self.volatility *= 1.5
+
+        self.drift = self.volatility * self.rng.normal()
+
+    def _update_price(self):
+        self.price = self.price * np.exp(
+            self.drift + self.volatility * self.rng.normal()
+        )
+
+    def step(self, action):
+        self._update_drift_and_volatility()
+        self._update_price()
+        truncated = False
+
+        if action == 0:
+            # Buy
+            self.current_budget = 0
+            self.buying_price = self.price
+            reward = 0
+            done = False
+        elif action == 1:
+            # Hold
+            reward = 0
+            done = False
+        elif action == 2:
+            # Sell
+            reward = self.price - self.buying_price
+            done = True
+        else:
+            raise ValueError("Invalid action")
+
+        state = np.array(
+            [
+                self.drift,
+                self.volatility,
+                self.price,
+                self.current_budget,
+                self.buying_price,
+            ]
+        )
+
+        return state, reward, done, truncated, {}
+
+
+class BuySellLang(LanguageWrapper):
+    """
+    A wrapper for the Finance environment.
+    """
+
+    def __init__(self):
+        env = BuySell()
+        super().__init__(env)
+
+    @property
+    def task_text(self) -> str:
+        return (
+            "You are assisting a financial analyst in making optimized decisions about"
+            " when to buy or sell a single stock. You will determine the action by"
+            " considering the current stock price, the stock price history, and the analyst's predictions."
+            " It is known that the stock price follows a geometric Brownian motion of the form:\n"
+            " price(t+1) = price(t) * np.exp(drift + volatility * Z)\n"
+            " where Z is a standard normal random variable."
+            "\n\nYou will be given the current estimated drift and volatility of the stock, the current price, and an indicator"
+            " of whether the stock has been bought or not, and at which price. "
+            " The value of the drift and volatility at the decision time is not known, you only known the analyst's estimates."
+            " But it is known that it follows a random walk with small deviations from the current estimated values."
+        )
+
+    @property
+    def action_space_text(self) -> str:
+        return (
+            "A single integer value representing the decision:"
+            "0 = buy the stock\n"
+            "1 = hold the stock\n"
+            "2 = sell the stock\n"
+        )
+
+    def state_descriptor(self, obs, _):
+        """
+        Convert the observation into a text description specific to the Finance environment.
+
+        Args:
+            obs (Any): The observation to convert into text.
+            info (dict[str, Any]): Additional information about the observation.
+
+        Returns:
+            str: The text description of the observation.
+        """
+
+        drift = obs[0]
+        volatility = obs[1]
+        current_price = obs[2]
+        current_budget = obs[3]
+        buying_price = obs[4]
+
+        # First the current price
+        text = f"Current price: ${current_price}\n"
+
+        # Then the estimated drift and volatility
+        text += f"Estimated drift: {drift}\n"
+        text += f"Estimated volatility: {volatility}\n"
+
+        # Is the stock currently in the portfolio? If so, what was the buying price?
+        if current_budget == 0:
+            text += f"Stock in portfolio. Bought at ${buying_price}\n"
+        else:
+            text += "Stock not in portfolio.\n"
+
+        return text
