@@ -104,10 +104,14 @@ class BaseAgent:
         post_action: bool = True,
         **kwargs,
     ) -> Tuple[ActType, Dict, List[Dict]]:
-        outputs = {"state_text": state_text, "state_vector": state_vector, **kwargs}
-        messages = [
-            {"role": "system", "content": self.system_prompt_with_state(state_text)}
-        ]
+        initial_prompt = self.system_prompt_with_state(state_text)
+        outputs = {
+            "state_text": state_text,
+            "state_vector": state_vector,
+            "initial_prompt": initial_prompt,
+            **kwargs,
+        }
+        messages = [{"role": "system", "content": initial_prompt}]
 
         # Pre-action step (e.g., stores thoughts in the outputs)
         self.pre_action(outputs, messages)
@@ -275,7 +279,7 @@ class RulesSelectorActorCritic(BaseAgent):
         """
         # get the state, throw error if state is not present
         assert (
-            "state_vector" in outputs
+            outputs["state_vector"] is not None
         ), "passing state_vector when calling the agent is required."
         state_vector = outputs["state_vector"]
         device = state_vector.device
@@ -327,6 +331,17 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["sel_rule"] = sel_rule
         outputs["entropy"] = entropy
         outputs["value"] = value.squeeze()
+
+    def gen_rule_scores(self, outputs: Dict, messages: List[Dict]) -> Dict:
+        """Generate rule scores based on the current state and the set of rules."""
+        rule = outputs["sel_rule"]
+
+        # dummy implementation
+        outputs["sel_reward"] = -len(rule) / 1000
+
+    def post_action(self, outputs, messages):
+        self.gen_explanation(outputs, messages)
+        self.gen_rule_scores(outputs, messages)
 
     def get_action_and_value(
         self,
