@@ -114,11 +114,12 @@ class AttentionActor(nn.Module):
         attn_dist = torch.distributions.Categorical(logits=attn_logits)
         rule_idx = attn_dist.sample()
         return rule_idx, attn_dist.log_prob(rule_idx)
+    
 
 
 # Define the Attention-based Critic Network with Multi-Head Attention
 class AttentionCritic(nn.Module):
-    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=8, dropout=0.0):
+    def __init__(self, state_dim, rule_dim, hidden_dim, num_heads=1, dropout=0.0):
         super(AttentionCritic, self).__init__()
         # self.query_proj = nn.Linear(state_dim, hidden_dim)
         # self.key_proj = nn.Linear(rule_dim, hidden_dim)
