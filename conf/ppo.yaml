@@ -40,7 +40,7 @@ log_examples_interval: 20
 # Algorithm specific arguments
 env_id: "BuySell"
 # the id of the environment
-total_timesteps: 5000  # removed two zeros, originally 500000
+total_timesteps: 10000  # 50x reduction
 # total timesteps of the experiments
 learning_rate: 2.5e-4
 # the learning rate of the optimizer
@@ -54,7 +54,7 @@ gamma: 0.99
 # the discount factor gamma
 gae_lambda: 0.95
 # the lambda for the general advantage estimation
-num_minibatches: 8  # 4
+num_minibatches: 32  # 4
 # the number of mini-batches
 update_epochs: 10  # 4
 # the K epochs to update the policy
