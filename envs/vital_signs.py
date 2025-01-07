@@ -1,21 +1,13 @@
-## Create gym environment here.
-# import os
-import re
-from typing import Optional, Sequence
-import numpy as np
-
-# import torch
-from gymnasium import Env, spaces
-
-# from gymnasium.spaces import Discrete, Box
-from sklearn.mixture import GaussianMixture
 import math
+import re
+from typing import Sequence
+
+import numpy as np
 import pandas as pd
+from gymnasium import Env, spaces
+from sklearn.mixture import GaussianMixture
 
-# from together import Embeddings
-from language_wrapper import LanguageWrapper
-
-# from envs.language_wrapper import LanguageWrapper
+from envs.language_wrapper import LanguageWrapper
 
 
 def temperature_penalty(temperature):
@@ -1379,7 +1371,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
                     s += f"- Last value: {signs_history[j][-1]:.2f}\n"
                     s += f"- Mean: {mean[j]:.2f}\n"
                     s += f"- Standard deviation: {std[j]:.2f}\n\n"
-                
+
             desc_bits.append(s)
 
         desc += "\n".join(desc_bits)
