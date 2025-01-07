@@ -1,6 +1,7 @@
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Literal  # , Optional, Tuple, SupportsFloat
+from typing import Any, Dict, List, Literal, Sequence
+import warnings  # , Optional, Tuple, SupportsFloat
 
 # import numpy as np
 from gymnasium import Env, Wrapper, spaces
@@ -30,7 +31,7 @@ class LanguageWrapper(Wrapper, ABC):
         env: Env,
         obs_type: Literal["text", "original", "both"] = "both",
         max_text_length: int = 2048,
-        parse_action: bool = False,
+        parse_action: bool = True,
         # embeddings_model: Optional[Embeddings] = None,
         # embeddings_dim: int = 768,
     ) -> None:
@@ -162,7 +163,7 @@ class LanguageWrapper(Wrapper, ABC):
 
         return obs, info
 
-    def action_parser(self, s: str) -> int | List[int]:
+    def action_parser(self, s: str) -> int | Sequence[int]:
         """
         Convert the action into a text description.
 
@@ -172,8 +173,19 @@ class LanguageWrapper(Wrapper, ABC):
         Returns:
             str: The text description of the action.
         """
-        # Uses regex to extract all integers
-        # If only one is found, returns it as an integer
-        #   otherwise, returns a list of integers
-        out = [int(i) for i in re.findall(r"\d+", s)]
-        return out[0] if len(out) == 1 else out
+        act_space = self.env.action_space
+        if isinstance(act_space, spaces.Discrete):
+            # get the first int
+            numbers = re.findall(r"\d+", s)
+            # grab the first number in the state space
+            for num in numbers:
+                if int(num) < act_space.n:
+                    return int(num)
+
+            # we got here if no valid action was found
+            # log a warning and return a sample action
+            warnings.warn(f"Invalid action: {s}, returning a random action")
+            act = act_space.sample()
+            return act
+        else:
+            raise ValueError("action space not supported by action parser")
