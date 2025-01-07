@@ -40,7 +40,7 @@ capture_video: false
 # whether to capture videos of the agent performances (check out `videos` folder)
 log_examples_interval: 20
 # the interval to log examples
-save_interval: 4
+save_interval: 1
 # the interval to save the model
 
 # PPO specific arguments

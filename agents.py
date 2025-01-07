@@ -55,12 +55,10 @@ class BaseAgent:
         task_text: str,
         action_space_text: str,
         llm: BaseChatModel,
-        action_parser: Callable[[str], ActType] = default_action_parser,
     ):
         self.task_text = task_text
         self.action_space_text = action_space_text
         self.llm = llm
-        self.action_parser = action_parser
 
     def __call__(
         self,
@@ -128,8 +126,8 @@ class BaseAgent:
     def system_prompt_with_state(self, state_text: str) -> str:
         return (
             f"### Task\n\n {self.task_text}"
-            f"\n\n### Possible actions\n\n {self.action_space_text}"
-            f"\n\n### Current state of the environment\n\n {state_text}\n"
+            f"\n\n### Possible actions\n\n{self.action_space_text}"
+            f"\n\n### Current state of the environment\n\n{state_text}"
         )
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
@@ -142,9 +140,9 @@ class BaseAgent:
             "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
             "Do not provide additional information or context for your answer, only the action as follows. "
             f"\n\n### Possible actions:\n\n {self.action_space_text}"
-            "\n\n### Your response:"
+            # "\n\n### Your response:"
         )
-        messages += [{"role": "user", "content": action_prompt}]
+        messages.append({"role": "user", "content": action_prompt})
 
         outputs["action_str"] = self.llm.invoke(messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action_str"]})
@@ -176,7 +174,7 @@ class BaseAgent:
     def gen_explanation(self, outputs: Dict, messages: List[Dict]) -> str:
         """Generate explanation and update message list"""
         explanation_prompt = (
-            "Explain why you chose the optimal action given the current state of the environment and the set of priorization rules. "
+            "Explain why you chose the optimal action based on the previous thoughts and discussion. "
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -199,13 +197,11 @@ class LLMRulesAgent(BaseAgent):
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
-        action_parser: Callable[[str], ActType] = default_action_parser,
     ):
         super().__init__(
             task_text=task_text,
             action_space_text=action_space_text,
             llm=llm,
-            action_parser=action_parser,
         )
         self.num_rules = num_rules
         self.example_rules = example_rules
@@ -251,13 +247,11 @@ class RulesSelectorActorCritic(BaseAgent):
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
-        action_parser: Callable[[str], ActType] = default_action_parser,
     ):
         super().__init__(
             task_text=task_text,
             action_space_text=action_space_text,
             llm=llm,
-            action_parser=action_parser,
         )
         assert isinstance(actor_critic, layers.AttentionActorCritic)
 
@@ -305,6 +299,8 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
         )
+        rules_str = "\n".join(rules)
+        messages.append({"role": "assistant", "content": rules_str})
 
         # get the rules and state embeddings
         # rules_emb = self._generate_embeddings_for_rules(rules)
@@ -345,7 +341,26 @@ class RulesSelectorActorCritic(BaseAgent):
         self.gen_explanation(outputs, messages)
         self.gen_rule_scores(outputs, messages)
 
-    def get_action_and_value(
+    def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
+        # get actions
+        action_prompt = (
+            f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
+            f"{outputs['sel_rule']}\n\n"
+            "### The decision\n\n"
+            "Now, choose the optimal action given the current state of the environment and the chosen priorization rules."
+            " Your decision should be made considering the thoughts and selected priorization rules."
+            " Your answer should be one of the valid actions described below "
+            " without additional information or justification. Your response start withand only consist of the action.\n\n"
+            f"### Valid actions\n\n{self.action_space_text}\n\n"
+            "### Your response:"  # This somehow helps with the instruction following
+        )
+        messages.append({"role": "user", "content": action_prompt})
+
+        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        messages.append({"role": "assistant", "content": outputs["action"]})
+        return outputs["action"]
+
+    def get_action_and_value_from_embeddings(
         self,
         state_vector: torch.Tensor,
         rules_emb: torch.Tensor,

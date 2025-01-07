@@ -463,8 +463,8 @@ class BuySellLang(LanguageWrapper):
             "1 = hold/wait\n"
             "2 = sell\n"
             "You can only buy the stock if not bought yet, and you can only sell if it is already in the portfolio."
-            " You will be penalized if selecting to sell the stock when it has not been bought"
-            " or if selecting to buy the stock when it has already been bought."
+            # " You will be penalized if selecting to sell the stock when it has not been bought"
+            # " or if selecting to buy the stock when it has already been bought."
         )
 
     def state_descriptor(self, obs, _):
@@ -496,6 +496,6 @@ class BuySellLang(LanguageWrapper):
         if current_budget == 0:
             text += f"Stock in portfolio. Bought at ${buying_price:.2f}\n"
         else:
-            text += "Stock not in portfolio.\n"
+            text += "Stock not in portfolio."
 
         return text

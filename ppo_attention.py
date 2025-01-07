@@ -67,7 +67,7 @@ def load_checkpoint(checkpoint_path, device):
 
 @hydra.main(config_path="conf", config_name="ppo", version_base=None)
 def main(cfg: DictConfig):
-    def make_env(seed):
+    def make_env():
         def thunk():
             env = gym.make(cfg.env_id)
             env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -75,7 +75,7 @@ def main(cfg: DictConfig):
 
         return thunk
 
-    env_funs = [make_env(cfg.seed + i) for i in range(cfg.num_envs)]
+    env_funs = [make_env() for i in range(cfg.num_envs)]
     envs = (
         gym.vector.AsyncVectorEnv(env_funs, shared_memory=False)
         if cfg.parallel
@@ -135,6 +135,7 @@ def main(cfg: DictConfig):
     global_step = 0
     start_time = time.time()
     best_total_reward = -float("inf")
+    best_model = None
 
     checkpoint = load_checkpoint(ckpt_path, device)
     if checkpoint:
@@ -146,6 +147,7 @@ def main(cfg: DictConfig):
         global_step = checkpoint["global_step"]
         start_time = time.time() - checkpoint["elapsed_time"]
         best_total_reward = checkpoint["best_total_reward"]
+        best_model = checkpoint["best_model"]
         logging.info(f"Resumed training from checkpoint at step {global_step}.")
 
     batch_size = int(cfg.num_envs * cfg.num_steps)
@@ -224,7 +226,12 @@ def main(cfg: DictConfig):
                     f"### Environment Action\n {env_actions[0]}\n"
                     f"### Explanation\n {outputs['explanation'][0]}"
                 )
+
+                conversation = "\n".join(
+                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+                )
                 writer.add_text("text/examples", example, global_step)
+                writer.add_text("text/conversation", conversation, global_step)
 
         # convert the transitions to tensors
         state_vector = torch.stack(transitions["state_vector"])
@@ -235,13 +242,13 @@ def main(cfg: DictConfig):
         sel_idxs = torch.stack(transitions["sel_idx"])
         rewards = torch.FloatTensor(transitions["rewards"]).to(device)
         sel_rule_rewards = torch.stack(transitions["sel_reward"])
-        rewards += sel_rule_rewards
+        # rewards += sel_rule_rewards
 
         # save best model
         total_reward = rewards.mean().item()
         if best_total_reward < total_reward:
             best_total_reward = total_reward
-            torch.save(actor_critic.state_dict(), ckpt_path)
+            best_model = actor_critic.state_dict()
 
         if iter % cfg.save_interval == 0 or iter == num_iterations:
             save_checkpoint(
@@ -251,6 +258,7 @@ def main(cfg: DictConfig):
                     "global_step": global_step,
                     "elapsed_time": time.time() - start_time,
                     "best_total_reward": best_total_reward,
+                    "best_model": best_model,
                 },
                 ckpt_path,
             )
@@ -306,7 +314,7 @@ def main(cfg: DictConfig):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = lang_agent.get_action_and_value(
+                _, newlogprob, entropy, newvalue = lang_agent.get_action_and_value_from_embeddings(
                     b_states_vec[mb_inds],
                     b_rules_emb[mb_inds],
                     rules_padding_mask=b_padding_mask[mb_inds],
