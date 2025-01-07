@@ -325,7 +325,7 @@ class BuySellTextLang(LanguageWrapper):
         return text_state
 
 
-class BuySell(Env):
+class BuySellSimple(Env):
     """In this environment, the agent must decide whether to buy, sell, or hold a stock.
     It can only do so once during each episode.
     Action = 0 -> Buy
@@ -431,13 +431,13 @@ class BuySell(Env):
         return state, reward, done, truncated, {}
 
 
-class BuySellLang(LanguageWrapper):
+class BuySellSimpleLang(LanguageWrapper):
     """
     A wrapper for the Finance environment.
     """
 
     def __init__(self):
-        env = BuySell()
+        env = BuySellSimple()
         super().__init__(env)
 
     @property
