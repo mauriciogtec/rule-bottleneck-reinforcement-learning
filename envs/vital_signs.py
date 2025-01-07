@@ -11,9 +11,9 @@ from gymnasium import Env, spaces
 from sklearn.mixture import GaussianMixture
 import math
 import pandas as pd
-from together import Embeddings
-
-from envs.language_wrapper import LanguageWrapper
+# from together import Embeddings
+from language_wrapper import LanguageWrapper
+# from envs.language_wrapper import LanguageWrapper
 
 
 def temperature_penalty(temperature):
@@ -473,105 +473,146 @@ class VitalSignsEnv(Env):
             )
         return agent_matrix.flatten()
 
-    def step(self, action):
-
-        self.remaining_planning_length -= 1
-        time_passed = self.T - self.remaining_planning_length
-        if time_passed % self.joining_interval == 0:
-            num_joining_agents = self.joining_number
-        else:
-            num_joining_agents = 0
-
-        ## All new patients should receive a device
-        if num_joining_agents > self.budget:
-            raise ValueError("Not enough device for every incoming patient")
-
-        ## This variable tracks how many
-        ## devices are kept from last round
+    def _advance_step(self, action, step_forward, check_device = False):
+        ## This variable tracks how many devices are kept from last round
+        ## Only true when there is incoming agent
         device_kept_from_last_round = 0
+        if (check_device):
+            if not (step_forward == 1):
+                raise ValueError("Need to handle incoming agents before advancing to the next step")
+        # else:
+        #     ## When there is no incoming agent, action must be all 0's
+        #     if not np.all(action == 0): # Check if all elements in the array are 0
+        #         raise ValueError("Invalid Action: when there is no incoming agents, you cannot take device away from people")
 
         ## Accumulated reward from this round
         overall_reward_this_step = 0
+        leaving_shifting_index = 0
+        # leaving_agent_index = []
 
-        for i in range(len(self.agent_states)):
-            agent_info = self.agent_states[i]
-            agent_id = agent_info["id"]
-            time_joined = agent_info["time_joined"]
-            has_device = agent_info["has_device"]
-            mean = agent_info["mean"]
-            cov = agent_info["cov"]
+        ## Number of steps ahead
+        for j in range(step_forward):
+            for i in range(len(self.agent_states)):
+                i -= leaving_shifting_index
+                agent_info = self.agent_states[i]
+                agent_id = agent_info["id"]
+                time_joined = agent_info["time_joined"]
+                has_device = agent_info["has_device"]
+                mean = agent_info["mean"]
+                cov = agent_info["cov"]
 
-            if (action[i] == 0) and (has_device == 1):
-                ## The agent has device in the last round and
-                ## keeps the device
-                if time_joined >= self.t_max:
-                    raise ValueError(
-                        f"patient {agent_id} has received device for more than {self.t_max} rounds"
-                    )
-                device_kept_from_last_round += 1
-                # Update the state under active action
-                new_state, reward = self._simulate_one_step(i, intervention=True)
-                overall_reward_this_step += reward
-            elif (action[i] == 0) and (has_device == 0):
-                ## The agent doesn't have device in the last round
-                ## and maintain the status
-                # Update the state under passive action
-                new_state, reward = self._simulate_one_step(i, intervention=False)
-                overall_reward_this_step += reward
-            elif (action[i] == 1) and (has_device == 1):
-                ## The agent has device in te last round and the
-                ## device got taken away
-                if time_joined < self.t_min:
-                    raise ValueError(
-                        f"Patient {agent_id} has not received device by at least {self.t_min} rounds"
-                    )
-                # Update the state under active action
-                new_state, reward = self._simulate_one_step(i, intervention=False)
-                overall_reward_this_step += reward
-                has_device = 0  ## change the device status
-            else:
-                ## The agent doesn't have device in the last round
-                ## and you want to take device from them, raise an Error
-                raise ValueError(f"No device to be taken from Patient {agent_id}")
+                if (action[i] == 0) and (has_device == 1):
+                    ## The agent has device in the last round and
+                    ## keeps the device
 
-            time_joined += 1
-            new_vitals = new_state[0]
-            new_variability = new_state[1]
-            new_signs_history = new_state[2]
-            self.agent_states[i]["vitals"] = new_vitals
-            self.agent_states[i]["variability"] = new_variability
-            self.agent_states[i]["signs_history"] = new_signs_history
-            self.agent_states[i]["time_joined"] = time_joined
-            self.agent_states[i]["has_device"] = has_device
+                    ## We temporarily remove the t_max constraint
 
-            if time_joined >= self.system_duration:
-                self.agent_states.pop(i)
+                    # if time_joined >= self.t_max:
+                    #     raise ValueError(
+                    #         f"patient {agent_id} has received device for more than {self.t_max} rounds"
+                    #     )
+                    if (check_device):
+                        device_kept_from_last_round += 1
+                    # Update the state under active action
+                    new_state, reward = self._simulate_one_step(i, intervention=True)
+                    overall_reward_this_step += reward
+                elif (action[i] == 0) and (has_device == 0):
+                    ## The agent doesn't have device in the last round
+                    ## and maintain the status
+                    # Update the state under passive action
+                    new_state, reward = self._simulate_one_step(i, intervention=False)
+                    overall_reward_this_step += reward
+                elif (action[i] == 1) and (has_device == 1):
+                    ## The agent has device in te last round and the
+                    ## device got taken away
 
-        if device_kept_from_last_round + num_joining_agents > self.budget:
-            raise ValueError("Not enough device to allocate according to the policy")
+                    ## We temporarily remove the t_min constraint
+                    # if time_joined < self.t_min:
+                    #     raise ValueError(
+                    #         f"Patient {agent_id} has not received device by at least {self.t_min} rounds"
+                    #     )
+                    # Update the state under active action
+                    new_state, reward = self._simulate_one_step(i, intervention=False)
+                    overall_reward_this_step += reward
+                    has_device = 0  ## change the device status
+                else:
+                    ## The agent doesn't have device in the last round
+                    ## and you want to take device from them, raise an Error
+                    raise ValueError(f"No device to be taken from Patient {agent_id}")
 
-        ## Update the number of agents
-        self.num_agents = self.num_agents + num_joining_agents
-        if self.num_agents > self.max_num_agents:
-            raise ValueError("Exceeds the max number of agents")
+                time_joined += 1
+                new_vitals = new_state[0]
+                new_variability = new_state[1]
+                new_signs_history = new_state[2]
+                self.agent_states[i]["vitals"] = new_vitals
+                self.agent_states[i]["variability"] = new_variability
+                self.agent_states[i]["signs_history"] = new_signs_history
+                self.agent_states[i]["time_joined"] = time_joined
+                self.agent_states[i]["has_device"] = has_device
+                
+                if time_joined >= self.system_duration:
+                    # leaving_agent_index.append(i)
+                    # print(f"I hit here")
+                    self.agent_states.pop(i)
+                    leaving_shifting_index += 1
+                    self.num_agents -= 1
+            # for i in leaving_agent_index:
+            #     print
+            #     self.agent_states.pop(i)
+            self.remaining_planning_length -= 1
+            if (self.remaining_planning_length <= 0):
+                break
 
-        for i in range(num_joining_agents):
-            state, component, mean, cov = self._sample_agent()
-            agent_id = self.next_agent_id
-            self.next_agent_id += 1
-            new_agent_info = {
-                "id": agent_id,
-                "mean": mean,
-                "cov": cov,
-                "component": component,
-                "vitals": state[0],
-                "variability": state[1],
-                "signs_history": state[2],
-                "has_device": 1,
-                "time_joined": 1,  # TODO: why would this be the case in step? likely wrong
-            }
-            self.agent_states.append(new_agent_info)
+        return device_kept_from_last_round, overall_reward_this_step
 
+    def step(self, action):
+        # print(f"the current action is {action}")
+        # print(f"remaining length is {self.remaining_planning_length}")
+        # print(self.agent_states)
+        time_passed = self.T - self.remaining_planning_length
+        print(f"Beginning time_passed is {time_passed}")
+
+        if time_passed % self.joining_interval == 0:
+            # print(f"Location A")
+            num_joining_agents = self.joining_number
+            if num_joining_agents > self.budget:
+                raise ValueError("Not enough device for every incoming patient")
+            step_forward = 1
+            check_device = True
+            device_kept_from_last_round, overall_reward_this_step = self._advance_step(action, step_forward, check_device)
+      
+            if device_kept_from_last_round + num_joining_agents > self.budget:
+                raise ValueError("Not enough device to allocate according to the policy")
+            
+             ## Update the number of agents
+            self.num_agents = self.num_agents + num_joining_agents
+            if self.num_agents > self.max_num_agents:
+                raise ValueError("Exceeds the max number of agents")
+
+            for i in range(num_joining_agents):
+                state, component, mean, cov = self._sample_agent()
+                agent_id = self.next_agent_id
+                self.next_agent_id += 1
+                new_agent_info = {
+                    "id": agent_id,
+                    "mean": mean,
+                    "cov": cov,
+                    "component": component,
+                    "vitals": state[0],
+                    "variability": state[1],
+                    "signs_history": state[2],
+                    "has_device": 1,
+                    "time_joined": 1,  # TODO: why would this be the case in step? likely wrong
+                }
+                self.agent_states.append(new_agent_info)
+        else:
+            # print(f"Location B")
+            num_joining_agents = 0
+            step_forward = self.joining_interval - 1
+            check_device = False
+            device_kept_from_last_round, overall_reward_this_step = self._advance_step(action, step_forward, check_device)
+
+        # self.remaining_planning_length -= 1
         # Check if the planning is done
         if self.remaining_planning_length <= 0:
             done = True
@@ -651,7 +692,7 @@ class VitalSignsLang(LanguageWrapper):
         return (
             "A vector which contains a subset of the indices of patients currently in"
             " the system. Each patient whose index appears in the vector will be"
-            " stop wearing the device. The device will be reallicate to the new patients"
+            " stop wearing the device. The device will be reallocate to the new patients"
             " For example, [0, 1] means that the first two patients will stop wearing the device."
             " ### Example answers: [0, 1], [1, 2], [0, 2], [0, 1]"
         )
@@ -667,11 +708,18 @@ class VitalSignsLang(LanguageWrapper):
         min_max = self.env.min_max  # ranges for unnormalized values
 
         agents_with_device = [d for d in env.agent_states if d["has_device"]]
+        time_passed = self.env.T - self.env.remaining_planning_length
+        print(f"After time passed is {time_passed}")
+        if time_passed % self.env.joining_interval == 0:
+            num_joining_agents = self.env.joining_number
+        else:
+            num_joining_agents = 0
+
         desc = (
             f"Number of agents: {env.num_agents}\n"
-            f"Number of incoming agents: {env.joining_number}\n"
+            f"Number of incoming agents: {num_joining_agents}\n"
             f"Number of available devices for the new patients: {len(agents_with_device)}\n"
-            f"Agents with available device: {', '.join(str(d['id']) for d in agents_with_device)}\n"
+            f"Agents with available device: {', '.join(str(d['id']) for d in agents_with_device)}\n"  ## TODO
             "Vital signs of those agents:"
         )
 
@@ -689,8 +737,8 @@ class VitalSignsLang(LanguageWrapper):
                 sign_value, sign_variability = d["vitals"][j], d["variability"][j]
                 # TODO # use min_max to unnormalize
                 # something like this...
-                #  sign_value = sign_value * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
-                #  sign_variability = sign_variability * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
+                sign_value = sign_value * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
+                sign_variability = sign_variability * (min_max[v][1] - min_max[v][0]) + min_max[v][0]
                 val_text = f"{sign_value:.2f} +/- {sign_variability:.2f}"
                 aux.append((key, val_text))
 
@@ -704,22 +752,50 @@ class VitalSignsLang(LanguageWrapper):
 
         return desc
 
+    # def action_parser(self, action_string: str) -> Sequence[int]:
+    #     """This functions takes a list of indices in text mode (with possible spaces and unnecessary text)
+    #     and returns a binary list of indices"""
+    #     # 1. extract all integers
+    #     int_list = [int(s) for s in re.findall(r"\d+", action_string)]
+       
+    #     if not int_list:  # If int_list is empty
+    #         raise ValueError("Devices have not been assigned")
+        
+
+    #     # 2. covert to binary list with size max_num_agents
+    #     action = np.zeros(self.env.max_num_agents, dtype=int)
+    #     action[np.array(int_list)] = 1
+       
+    #     return action
     def action_parser(self, action_string: str) -> Sequence[int]:
-        """This functions takes a list of indices in text mode (with possible spaces and unnecessary text)
-        and returns a binary list of indices"""
-        # 1. extract all integers
+        """This function takes a list of indices in text mode (with possible spaces and unnecessary text)
+        and returns a binary list of indices representing whether to take a device away from each agent."""
+        # 1. Extract all integers
         int_list = [int(s) for s in re.findall(r"\d+", action_string)]
-
-        # 2. covert to binary list with size max_num_agents
+        
+        # Initialize the binary action list
         action = np.zeros(self.env.max_num_agents, dtype=int)
-        action[np.array(int_list)] = 1
 
+        # 2. Loop through agent states and determine the action for each agent
+        for i, agent_state in enumerate(self.env.agent_states):
+            has_device = agent_state['has_device']  # Check if the agent currently has a device
+
+            if has_device == 1:
+                if i in int_list:
+                    # If the agent has a device and is in the list, no action needed (keep device)
+                    action[i] = 0
+                else:
+                    # If the agent has a device but is NOT in the list, take the device away
+                    action[i] = 1
+            else:
+                # If the agent does not have a device, no action needed
+                action[i] = 0
+        
         return action
 
 
 if __name__ == "__main__":
     env = VitalSignsLang(path="models/uganda.npz", parse_action=True)
-
 
     # task step
     print(f"\n\n== Task Step ==\n{env.task_text}")
@@ -731,11 +807,57 @@ if __name__ == "__main__":
     obs, info = env.reset()
     print(f"Initial state:\n {obs[1]}")
 
-    for step in range(5):
-        print(f"\n\n== Step: {step} == ")
-        # action
-        obs, reward, terminated, truncated, info = env.step("[0, 1]")
-        print(f"State:\n {obs[1]}")
-        print(f"Reward: {reward}")
-        print(f"Terminated: {terminated}")
-        print(f"Truncated: {truncated}")
+    print(f"\n\n== Step: {0} == ")
+    ## One step 
+    obs, reward, terminated, truncated, info = env.step("[]")
+    print(f"State:\n {obs[1]}")
+    print(f"Reward: {reward}")
+    print(f"Terminated: {terminated}")
+    print(f"Truncated: {truncated}")
+
+    print(f"\n\n== Step: {1} == ")
+    ## Four steps
+    obs, reward, terminated, truncated, info = env.step("[2, 3]")
+    print(f"State:\n {obs[1]}")
+    print(f"Reward: {reward}")
+    print(f"Terminated: {terminated}")
+    print(f"Truncated: {truncated}")
+
+    print(f"\n\n== Step: {2} == ")
+    ## One step
+    obs, reward, terminated, truncated, info = env.step("[]")
+    print(f"State:\n {obs[1]}")
+    print(f"Reward: {reward}")
+    print(f"Terminated: {terminated}")
+    print(f"Truncated: {truncated}")
+
+    print(f"\n\n== Step: {3} == ")
+    ## Four steps
+    obs, reward, terminated, truncated, info = env.step("[4, 5]")
+    print(f"State:\n {obs[1]}")
+    print(f"Reward: {reward}")
+    print(f"Terminated: {terminated}")
+    print(f"Truncated: {truncated}")
+
+    print(f"\n\n== Step: {4} == ")
+    ## One step
+    obs, reward, terminated, truncated, info = env.step("[]")
+    print(f"State:\n {obs[1]}")
+    print(f"Reward: {reward}")
+    print(f"Terminated: {terminated}")
+    print(f"Truncated: {truncated}")
+
+
+
+
+
+
+
+    # for step in range(5):
+    #     print(f"\n\n== Step: {step} == ")
+    #     # action
+    #     obs, reward, terminated, truncated, info = env.step("[0, 1]")
+    #     print(f"State:\n {obs[1]}")
+    #     print(f"Reward: {reward}")
+    #     print(f"Terminated: {terminated}")
+    #     print(f"Truncated: {truncated}")
