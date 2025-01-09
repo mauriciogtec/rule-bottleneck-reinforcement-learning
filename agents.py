@@ -4,6 +4,7 @@ import re
 from itertools import combinations
 from typing import Callable, Dict, Sequence, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from gymnasium.core import ActType
@@ -103,12 +104,18 @@ class BaseAgent:
         **kwargs,
     ) -> Tuple[ActType, Dict, List[Dict]]:
         initial_prompt = self.system_prompt_with_state(state_text)
+
+        # outputs is dictionary that collects all intermediate outputs
+        # by all steps of the pipeline
         outputs = {
             "state_text": state_text,
             "state_vector": state_vector,
             "initial_prompt": initial_prompt,
             **kwargs,
         }
+
+        # messages collects the conversation between the user and the LLM
+        # in the format required by the openai API
         messages = [{"role": "system", "content": initial_prompt}]
 
         # Pre-action step (e.g., stores thoughts in the outputs)
@@ -127,7 +134,7 @@ class BaseAgent:
         return (
             f"### Task\n\n {self.task_text}"
             f"\n\n### Possible actions\n\n{self.action_space_text}"
-            f"\n\n### Current state of the environment\n\n{state_text}"
+            f"\n\n### Current state of the decision problem\n\n{state_text}"
         )
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
@@ -137,17 +144,17 @@ class BaseAgent:
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the environment and the set of priorization rules. "
+            "Now, choose the optimal action given the current state of the p and the set of priorization rules. "
             "Do not provide additional information or context for your answer, only the action as follows. "
             f"\n\n### Possible actions:\n\n {self.action_space_text}"
             # "\n\n### Your response:"
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action_str"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action_str"]})
 
-        outputs["action"] = self.action_parser(outputs["action_str"])
+        # outputs["action"] = self.action_parser(outputs["action_str"])
         return outputs["action"]
 
     def post_action(self, outputs: Dict, messages: List[Dict]) -> None:
@@ -159,7 +166,7 @@ class BaseAgent:
 
         thought_prompt = (
             "First, reason about what elements should be considered when choosing the optimal action"
-            and " in the given task of the decision making agent."
+            " in the given task of the decision making agent."
             " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
             " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
             " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
@@ -332,10 +339,80 @@ class RulesSelectorActorCritic(BaseAgent):
         """Generate rule scores based on the current state and the set of rules."""
         rule = outputs["sel_rule"]
 
-        # dummy implementation
-        sel_reward = torch.tensor(-len(rule) / 1000, dtype=torch.float32)
+        # Get only the task prompt with state and prompt the LLM to check whether the
+        # selected rule is enough to understand
+        # 1) What will the agent to next (action prediction)?
+        # 2) Is the rule relevant to the current state?
+        # 3) Is the justification of the rule clear and relates to the task?
+
+        sel_rule = outputs["sel_rule"]
+        temp_system_prompt = (
+            f"{self.system_prompt_with_state(outputs['state_text'])}"
+            "To solve the task above, an algorithm has suggested the following priorization rule:\n\n"
+            f"### Selected rule\n\n{sel_rule}\n\n"
+            "You will be given a series of questions you need to answer with a simple 'yes' or 'no'"
+            " without any additional information or justification. Your response should be a single word."
+        )
+        q1 = "1. Is the rule sufficient to understand what action should you (the agent) do next?"
+        q2 = "2. Is the rule applicable to the current state of the decision problem?"
+        q3 = "3. Is the rule appropriately justified, without fallacies or hallucination?"
+        q4 = f"4. The agent chose action {outputs['action']} based on the selected rule. Is the selected rule sufficient to explain it?"
+        q5 = "5. Below is the explanation by the agent for the selected rule. Rate it in a scale from 1 to 10."
+
+        coda = "\nAnswer the following questions with a simple 'yes' or 'no'.\n\n### Your response:"
+        coda2 = f"\n\n{outputs['explanation']}\n\nRespond with a single number from 1 to 10 without any additional information.\n\n### Your response:"
+
+        # Answer q1
+        temp_messages = [
+            {"role": "system", "content": temp_system_prompt},
+            {"role": "user", "content": q1 + coda},
+        ]
+        r1_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r1 = float('yes' in r1_.lower())
+        temp_messages.append({"role": "assistant", "content": r1_})
+
+        # Answer q2
+        temp_messages.append({"role": "user", "content": q2 + coda})
+        r2_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r2 = float('yes' in r2_.lower())
+        temp_messages.append({"role": "assistant", "content": r2_})
+
+        # Answer q3
+        temp_messages.append({"role": "user", "content": q3 + coda})
+        r3_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r3 = float('yes' in r3_.lower())
+        temp_messages.append({"role": "assistant", "content": r3_})
+
+        # Answer q4
+        q4_with_action = q4 + f"Selected action: {outputs['action']}\n\n"
+        q4_with_action += f"Post-hoc explanation: {outputs['explanation']}\n\n"
+        temp_messages.append({"role": "user", "content": q4_with_action + coda})
+        r4_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r4 = float('yes' in r4_.lower())
+        temp_messages.append({"role": "assistant", "content": r4_})
+
+        # Answer q5
+        temp_messages.append({"role": "user", "content": q5 + coda2})
+        r5_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        try:
+            r5 = float(re.findall(r"\d+", r5_)[0]) / 10 # get the first number
+        except:
+            # random
+            r5 = np.random.rand()
+        temp_messages.append({"role": "assistant", "content": r5_})
+
+        # Calculate the reward
+        sel_reward = (r1 + r2 + r3 + r4 + r5) / 5
         device = outputs["state_vector"].device
-        outputs["sel_reward"] = sel_reward.to(device)
+        sel_reward = torch.tensor(sel_reward, dtype=torch.float32).to(device)
+        outputs["sel_reward"] = sel_reward
+
+        outputs["sel_reward_scores"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_, q5: r5_}
+
+        # # dummy implementation #TODO
+        # sel_reward = torch.tensor(-len(rule) / 1000, dtype=torch.float32)
+        # device = outputs["state_vector"].device
+        # outputs["sel_reward"] = sel_reward.to(device)
 
     def post_action(self, outputs, messages):
         self.gen_explanation(outputs, messages)
@@ -347,7 +424,7 @@ class RulesSelectorActorCritic(BaseAgent):
             f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
             "### The decision\n\n"
-            "Now, choose the optimal action given the current state of the environment and the chosen priorization rules."
+            "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
             " Your decision should be made considering the thoughts and selected priorization rules."
             " Your answer should be one of the valid actions described below "
             " without additional information or justification. Your response start withand only consist of the action.\n\n"
