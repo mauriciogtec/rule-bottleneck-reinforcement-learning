@@ -5,7 +5,7 @@ from langchain_together import Together, TogetherEmbeddings
 import re
 from datetime import date, timedelta
 
-from envs.language_wrapper import LanguageWrapper
+from envs.wrappers import LanguageWrapper
 
 
 class BuySellText(Env):
@@ -236,7 +236,7 @@ class BuySellText(Env):
 
 if __name__ == "__main__":
     import sys  # not needed, just to stay within tradition of successful runs ending with 0
-    from envs.language_wrapper import FinanceWrapper
+    from envs.wrappers import FinanceWrapper
 
     env = BuySellText()
     # step, info = env.reset()

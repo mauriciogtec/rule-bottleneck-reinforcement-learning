@@ -1,13 +1,13 @@
 import math
 import re
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 from gymnasium import Env, spaces
 from sklearn.mixture import GaussianMixture
 
-from envs.language_wrapper import LanguageWrapper
+from envs.wrappers import LanguageWrapper
 
 
 def temperature_penalty(temperature):
@@ -45,7 +45,7 @@ def blood_penalty(blood_pressure):
         return -math.exp(abs(blood_pressure - 127) / 5)  # Exponential penalty
 
 
-def reward_function(sign_dict, min_max):
+def reward_function(sign_dict, min_max, clip_value=5, scaler=0.1):
     reward = 0
     sign_dict = {
         sign: c * (min_max[sign][1] - min_max[sign][0]) + min_max[sign][0]
@@ -60,6 +60,10 @@ def reward_function(sign_dict, min_max):
             reward += respiratory_penalty(sign_dict[signs])
         elif signs == "SPO2":
             reward += spo2_penalty(sign_dict[signs])
+
+    # Clip the reward to avoid large values
+    reward = np.clip(scaler * reward, -clip_value, clip_value)
+
     return reward
 
 
@@ -73,7 +77,6 @@ class VitalSignsEnv(Env):
         init_agents=2,  # B=3 in the paper
         max_num_agents=10,  # N=20 in the paper
         budget=2,  # They have a budget, which does not necessarily equal to init_agent
-        T=20,  # T = 100 in the paper
         t_min=1,  # t_min = 3 in the paper
         t_max=5,  # t_max = 5 in the paper
         joining_number=2,  # = two patients in the paper, no letter
@@ -82,6 +85,7 @@ class VitalSignsEnv(Env):
         degree_of_arm_noise=0.15,
         intervention_success_rate=0.7,
         variability_window=5,
+        T: Optional[int] = None,
     ):
         """
         Parameters:
@@ -829,7 +833,6 @@ class VitalSignsSimple(Env):
         init_agents=1,  # B=3 in the paper
         # max_num_agents=10,  # N=20 in the paper
         budget=2,  # They have a budget, which does not necessarily equal to init_agent
-        # T=20,  # T = 100 in the paper
         # t_min=1,  # t_min = 3 in the paper
         # t_max=5,  # t_max = 5 in the paper
         system_duration=10,  # = 50 in the paper, no letter
@@ -838,6 +841,7 @@ class VitalSignsSimple(Env):
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
         joining_interval=5,  # Here, simulate the number of internal vital signs steps
+        T: Optional[int] = None,  # planning length / for finite horizon evaluation, only use for evaluation
     ):
         """
         Parameters:
@@ -856,6 +860,7 @@ class VitalSignsSimple(Env):
 
         ## Random number generator
         self.rng = np.random.default_rng()
+        self.T = T
 
         # load GMM
         self._load_gmm(path)
@@ -935,13 +940,17 @@ class VitalSignsSimple(Env):
 
         return agent_matrix.flatten()
 
-    def reset(self, seed=None, options={}):
+    def reset(self, seed=None, options=None):
+        # Reset time counter
+        self.t = 0
+
         # Set seed
         self.rng = np.random.default_rng(seed)
 
         # Empty the device states
 
         # Initialize agents at time step 0
+        options = options if options is not None else {}
         init_agents = options.get("init_agents", self.init_agents)
         self._initialize_agents(init_agents=init_agents)
 
@@ -959,6 +968,7 @@ class VitalSignsSimple(Env):
         Args:
             action (int): This is the device that we want to assign to a new patient
         """
+        self.t += 1
         # 1. Assign the device, if the device has a current holder. If it does, compute the
         #    remaining reward/cost by simulating the rest of their time in the system.
         #    if the device is free, no reward, just assign the device to the new patient
@@ -971,7 +981,7 @@ class VitalSignsSimple(Env):
 
         # This will be an infinite horizon problem, and we will let gym
         # handle the time limit, which will set truncated to True when max steps reached
-        terminated = False
+        terminated = (self.t >= self.T) if self.T else False
         truncated = False
 
         # Sample the new patient
@@ -985,12 +995,18 @@ class VitalSignsSimple(Env):
             # simulate the rest of the time for the current holder
             mean, cov = self.device_states[action]["gmm"]
             time_worn = self.device_states[action]["time_worn"]
-            for t in range(time_worn, self.system_duration):
+
+            if self.T is not None:
+                remaining = min(self.T - self.t, self.system_duration - time_worn)
+            else:
+                remaining = self.system_duration - time_worn
+
+            for _ in range(remaining):
                 # device is free, simulate remaining time without device
                 state, r = self._simulate_one_step(action, intervention=False)
 
                 # update agent state
-                self.device_states[action]["time_worn"] = t + 1
+                self.device_states[action]["time_worn"] += 1
                 self.device_states[action]["vitals"] = current_vital
                 self.device_states[action]["variability"] = variability
                 self.device_states[action]["signs_history"] = signs_history
@@ -1018,7 +1034,36 @@ class VitalSignsSimple(Env):
                 self.device_states[i]["variability"] = state[1]
                 self.device_states[i]["signs_history"] = state[2]
 
+                reward += r
+
+                # remove them from the system if system duration reached
+                if self.device_states[i]["time_worn"] >= self.system_duration:
+                    self.device_states[i]["time_worn"] = 0
+                    self.device_states[i]["vitals"] = np.zeros(self.nv)
+                    self.device_states[i]["variability"] = np.zeros(self.nv)
+                    sign_history = np.zeros((self.nv, self.variability_window))
+                    self.device_states[i]["signs_history"] = sign_history
+
         obs = self._state_to_obs()
+
+        if terminated:
+            # for all devices compute the reward for the remaining time
+            for i in range(self.budget):
+                is_free = self.device_states[i]["time_worn"] == 0
+                if not is_free:
+                    mean, cov = self.device_states[i]["gmm"]
+                    time_worn = self.device_states[i]["time_worn"]
+                    for t in range(time_worn, self.system_duration):
+                        # device is free, simulate remaining time without device
+                        state, r = self._simulate_one_step(i, intervention=True)
+
+                        # update agent state
+                        self.device_states[i]["time_worn"] = t + 1
+                        self.device_states[i]["vitals"] = state[0]
+                        self.device_states[i]["variability"] = state[1]
+                        self.device_states[i]["signs_history"] = state[2]
+
+                        reward += r
 
         return obs, reward, terminated, truncated, {}
 
@@ -1073,7 +1118,6 @@ class VitalSignsSimple(Env):
         """
         vital_signs = self.vital_signs
         min_max = self.min_max
-        given_indices = np.arange(len(vital_signs))
 
         rew = reward_function(dict(zip(vital_signs, vital_values)), min_max)
         if rew >= 0:
@@ -1283,10 +1327,8 @@ class VitalSignsSimpleLang(LanguageWrapper):
             " and covered skin temperature.\n\n"
             " Each device can be allocated to a patient to help manage their"
             " vital signs. It is known that patients wearing the device can improve"
-            " their vital signs and prevent abnormality.\n\n"
-            "The goal is to minimize the long-term cumulative cost of abnormal vital signs."
-            " A cost is incurred each time a patient's vital signs are outside the normal range."
-            " The normal vital signs range is defined as follows: A heart rate above 120,"
+            " their vital signs when abormal, and prevent abnormality.\n\n"
+            "The normal vital signs range is defined as follows: A heart rate above 120,"
             " a temperature above 38°C, a respiratory rate above 30, and an SPO2 rate below 90.\n\n"
             "The reward function (negative of cost) of the decision problem is calculated as "
             "follows: For a heart rate h, the penalty is -exp(|h-120|/17). For a temperature t,"
@@ -1297,13 +1339,13 @@ class VitalSignsSimpleLang(LanguageWrapper):
             " varying for each vital sign.\n\n"
             "### Problem description\n\n"
             "At each time step, you will be asked which device to allocate to the new incoming patient."
-            " Since there are only a limited number of devices, you will need to decide which patient"
-            " to take the device away from."
+            " Since there are only a limited number of devices, when a device is not gree, you will need device "
+            " currently in use will be reallocated to the new incoming patient."
             " You will be given the list of devices and information about whether it is currently assigned to"
             " a patient, along with information about the vital signs of the patient.\n\n"
             "New patients **always** need to be assigned a device."
             " The cost function will continue to be calculated for the previous holder until they leave the"
-            " system. A patient can wear a device for a maximum of {env.system_duration} time steps, and then they"
+            f" system. A patient can wear a device for a maximum of {self.env.system_duration} time steps, and then they"
             " exit the system.\n\n"
             "### Goal\n\n"
             "The goal is to minimize the long-term cumulative cost of abnormal vital signs by intelligently"
@@ -1314,12 +1356,10 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "An integer representing the index of the device to be allocated to the new patient."
-            " The device index should be between 0 and the number of devices available.\n\n"
-            "### Example answers:\n\n"
-            " - 0\n"
-            " - 9\n"
-            " - 1\n"
+            "\n\n### Expected Answer\n\nA single integer with the device id, which goes from zero to the number of devices."
+            f" The answer should be a single integer from [0, 1, ..., {self.env.budget - 1}].\n\n"
+            "Even if a device is in use, you can still assign it to the new patient. Assining free devices if available,"
+            " otherwise, reassign a device currently in use."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -1350,7 +1390,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
 
             if is_free[i]:
                 # device is free
-                s += "Device is currently free and can be allocated to a new patient.\n\n"
+                s += "Device is currently free.\n\n"
             else:
                 # device is currently assigned
                 s += "Device is currently assigned to a patient with the following description:\n\n"
@@ -1441,14 +1481,21 @@ if __name__ == "__main__":
     #     print(f"Terminated: {terminated}")
     #     print(f"Truncated: {truncated}")
 
-    env = VitalSignsSimpleLang(path="models/uganda.npz")
+    import envs as E
+    import gymnasium as gym
+
+    # env = VitalSignsSimpleLang(path="models/uganda.npz")
+    env = gym.make("Uganda")
 
     # reset
     obs, _ = env.reset()
 
     print(f"Initial state:\n {obs}")
 
-    for i in range(100):
+    for i in range(18):
         print(f"\n\n== Step: {i} == ")
         obs, reward, terminated, truncated, _ = env.step(0)
+        print(obs[1])
         print(f"Reward: {reward}")
+
+    0
