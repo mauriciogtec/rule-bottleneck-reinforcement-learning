@@ -5,6 +5,7 @@ torch
 torchvision
 torchaudio
 torch-summary
+jsonlines
 wandb
 scikit-learn
 git+https://github.com/NSAPH-Projects/weather2alert@dev
