@@ -6,9 +6,11 @@ import itertools
 import logging
 import os
 import random
+import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 import gymnasium as gym
 import hydra
@@ -22,6 +24,7 @@ from torch.nested import nested_tensor, to_padded_tensor
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from apis import HUITMistralModel
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic
 from layers import AttentionActorCritic
@@ -29,6 +32,28 @@ from layers import AttentionActorCritic
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+
+import jsonlines
+
+ValidModels = Literal[
+    "google/gemma-2b-it",
+    "meta-llama/Llama-3.2-3B-Instruct-Turbo",
+    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "meta.llama3-1-8b-instruct-v1:0",
+    "meta.llama3-1-70b-instruct-v1:0",
+]
+
+ModelDict = {
+    "google/gemma-2b-it": ChatTogether,
+    "meta-llama/Llama-3.2-3B-Instruct-Turbo": ChatTogether,
+    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo": ChatTogether,
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo": ChatTogether,
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": ChatTogether,
+    "meta.llama3-1-8b-instruct-v1:0": HUITMistralModel,
+    "meta.llama3-1-70b-instruct-v1:0": HUITMistralModel,
+}
 
 
 def set_seed(seed: int):
@@ -123,7 +148,7 @@ def main(args: DictConfig):
         else gym.vector.SyncVectorEnv(eval_env_funs)
     )
 
-    chat_model = ChatTogether(model=args.chat_lm)
+    chat_model = ModelDict[args.chat_lm](model=args.chat_lm)
     embed_model = TogetherEmbeddings(model=args.embedder_lm)
 
     state_dim = envs.single_observation_space[0].shape[0]
@@ -134,9 +159,8 @@ def main(args: DictConfig):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    run_id = (
-        f"{__file__.replace('.py', '')}_{args.env_id}__{args.exp_name}__{args.seed}"
-    )
+    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.seed}"
+
     run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
     params = OmegaConf.to_container(args, resolve=True)
 
@@ -173,7 +197,10 @@ def main(args: DictConfig):
     optimizer = optim.Adam(actor_critic.parameters(), lr=args.learning_rate, eps=1e-5)
     torchsummary.summary(actor_critic)
 
-    ckpt_path = f"checkpoints/{__file__.replace('.py', '')}/best_{run_id}.state"
+    ckpt_path = f"checkpoints/ppo_attention/best_{run_id}.state"
+    text_logs_path = f"text_logs/ppo_attention/{run_id}.jsonl"
+    json_logger_mode = "w" if not args.resume else "a"
+    jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
 
     global_step = 0
     start_time = time.time()
@@ -202,14 +229,19 @@ def main(args: DictConfig):
     next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32).to(device)
     next_dones = torch.zeros(args.num_envs, dtype=torch.bool).to(device)
 
-    for iter in range(1, num_iterations + 1):
+    # TODO: include iteration in the checkpoint
+    # deduce first iteration from global step
+    iter_start = (global_step // args.total_timesteps) + 1
+    for iter in range(iter_start, num_iterations + 1):
         if args.anneal_lr:
             frac = 1.0 - (iter - 1.0) / num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
         transitions = defaultdict(list)
-        for step in tqdm(range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"):
+        for step in tqdm(
+            range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
+        ):
             global_step += args.num_envs
 
             # Add states and dones
@@ -242,8 +274,12 @@ def main(args: DictConfig):
             next_state_vector = next_state_vector.to(device)
             next_dones = torch.FloatTensor(terminated | truncated).to(device)
 
-            # Store the reward
+            # Store the reward and explainability scores
             transitions["rewards"].append(list(rewards))
+            transitions["sel_reward_scores_raw"].append(
+                outputs["sel_reward_scores_raw"]
+            )
+            transitions["sel_reward_scores"].append(outputs["sel_reward_scores"])
 
             if "episode" in infos:
                 for i in range(args.num_envs):
@@ -257,21 +293,22 @@ def main(args: DictConfig):
                         )
 
             if step == 0 or step % args.log_examples_interval == 0:
-                # log the final selected rule and explanation
                 rules_str = "\n".join(outputs["rules"][0])
-                rules_scores = "\n".join(
-                    f"{k}: {v}" for k, v in outputs["sel_reward_scores"][0].items()
-                )
+                rules_scores = [
+                    f"{k}: {v}" for k, v in outputs["sel_reward_scores_raw"][0].items()
+                ]
+                rules_scores_str = "\n".join(rules_scores)
                 example = (
                     f"{outputs['initial_prompt'][0]}\n"
-                    f"### Thoughts\n {outputs['thoughts'][0]}\n"
-                    f"### Rules\n {rules_str}\n"
-                    f"### Selected Rule\n {outputs['sel_rule'][0]}\n"
-                    f"### Selected Rule Probability\n {outputs['sel_logprob'][0].exp():.2f}\n"
+                    f"### Thoughts\n{outputs['thoughts'][0]}\n"
+                    f"### Rules\n{rules_str}\n"
+                    f"### Selected Rule\n{outputs['sel_rule'][0]}\n"
+                    f"### Selected Rule Probability\n{outputs['sel_logprob'][0].exp():.2f}\n"
                     f"### Selected Rule Reward\n {outputs['sel_reward'][0]}\n"
-                    f"### Selected Rule Explainability\n{rules_scores}\n"
-                    f"### Environment Action\n {env_actions[0]}\n"
-                    f"### Explanation\n {outputs['explanation'][0]}"
+                    f"### Selected Rule Explainability\n{rules_scores_str}\n"
+                    f"### Environment Action\n{env_actions[0]}\n"
+                    f"### Explanation with thoughts and all rules\n{outputs['explanation'][0]}\n"
+                    f"### Explanation with only selected rule\n{outputs['explanation_rule_only'][0]}"
                 )
 
                 conversation = "\n".join(
@@ -279,6 +316,15 @@ def main(args: DictConfig):
                 )
                 writer.add_text("text/examples", example, global_step)
                 writer.add_text("llm_prompts/conversation", conversation, global_step)
+
+                # log the conversation and example in jsonl
+                jsonl_logger.write(
+                    {
+                        "global_step": global_step,
+                        "example": example,
+                        "conversation": conversation,
+                    }
+                )
 
         # convert the transitions to tensors
         state_vector = torch.stack(transitions["state_vector"])
@@ -290,6 +336,8 @@ def main(args: DictConfig):
         env_rewards = torch.FloatTensor(transitions["rewards"]).to(device)
         sel_rule_rewards = torch.stack(transitions["sel_reward"])
         rewards = sel_rule_rewards + env_rewards
+
+        sel_reward_scores = np.array(transitions["sel_reward_scores"])
 
         # save best model
         total_reward = rewards.mean().item()
@@ -445,11 +493,17 @@ def main(args: DictConfig):
 
         env_rewards = env_rewards.mean().item()
         sel_rule_rewards = sel_rule_rewards.mean().item()
-        writer.add_scalar("charts/env_reward", env_rewards, global_step)
-        writer.add_scalar("charts/sel_rule_reward", sel_rule_rewards, global_step)
+        writer.add_scalar("charts/env_return", env_rewards, global_step)
+        writer.add_scalar("charts/sel_rule_return", sel_rule_rewards, global_step)
+
+        # log sel_reward_scores
+        # get means for but the last dimension
+        sel_reward_scores = np.mean(sel_reward_scores, axis=(0, 1))
+        for i, x in enumerate(sel_reward_scores):
+            writer.add_scalar(f"charts/sel_reward_scores/q{i}", x, global_step)
 
         # Run eval episodes
-        if iter % args.eval_interval == 0:
+        if iter % args.eval_interval == 0 or iter == num_iterations:
             eval_rewards = []
             sel_rewards = []
             obs, _ = eval_envs.reset(seed=args.seed)
