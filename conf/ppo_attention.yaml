@@ -6,7 +6,8 @@ embedder_lm: "togethercomputer/m2-bert-80M-8k-retrieval"
 embed_dim: 768
 # the dimension of the mbeddings model
 # chat_lm: "meta-llama/Llama-3.2-3B-Instruct-Turbo"
-chat_lm: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+chat_lm: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+# chat_lm: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
 # the chat model to use
 parallel_envs: false  # no need for this since the bottleneck is the LLM calls, not in the env steps
 parallel_pipeline: true  # parallelize the LLM calls
@@ -51,7 +52,7 @@ total_timesteps: 10000  # 50x reduction
 # total timesteps of the experiments
 learning_rate: 2.5e-4
 # the learning rate of the optimizer
-num_envs: 4
+num_envs: 8
 # the number of parallel game environments
 num_steps: 16  # 128
 # the number of steps to run in each environment per policy rollout
@@ -61,7 +62,7 @@ gamma: 0.99
 # the discount factor gamma
 gae_lambda: 0.95
 # the lambda for the general advantage estimation
-num_minibatches: 4 
+num_minibatches: 16 
 # the number of mini-batches
 update_epochs: 20  # 4
 # the K epochs to update the policy
