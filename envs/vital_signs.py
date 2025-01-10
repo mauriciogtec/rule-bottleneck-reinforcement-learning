@@ -74,9 +74,9 @@ class VitalSignsEnv(Env):
     def __init__(
         self,
         path: str,
-        init_agents=2,  # B=3 in the paper
+        init_agents=3,  # B=3 in the paper
         max_num_agents=10,  # N=20 in the paper
-        budget=2,  # They have a budget, which does not necessarily equal to init_agent
+        budget=5,  # They have a budget, which does not necessarily equal to init_agent
         t_min=1,  # t_min = 3 in the paper
         t_max=5,  # t_max = 5 in the paper
         joining_number=2,  # = two patients in the paper, no letter
@@ -112,7 +112,7 @@ class VitalSignsEnv(Env):
         ## We are in a finite time horizon
         self.T = T
         self.remaining_planning_length = T
-        ## Number of agents at the initial time step
+        ## Number of agents at the initial timestep
         self.init_agents = init_agents
         self.num_agents = init_agents
         self.max_num_agents = max_num_agents
@@ -163,13 +163,13 @@ class VitalSignsEnv(Env):
         self.agent_states = []
 
         ## Random number generator
-        self.rng = np.random.default_rng()
+        self.np_random = np.random.default_rng()
 
-        ## Initialize agents at time step 0
+        ## Initialize agents at timestep 0
         self._initialize_agents()
 
     def _initialize_agents(self):
-        """Initialize the agents' states at time step 0"""
+        """Initialize the agents' states at timestep 0"""
         for agent_id in range(self.num_agents):
             ## Sample the initial state for each agent from the mixture
             ## of Gaussian models in IAAI paper
@@ -238,7 +238,7 @@ class VitalSignsEnv(Env):
         weights /= np.sum(weights)
 
         # Sample an index based on the weights
-        component = self.rng.choice(len(weights), p=weights)
+        component = self.np_random.choice(len(weights), p=weights)
 
         mean = means[component]
         cov = covariances[component]
@@ -275,22 +275,28 @@ class VitalSignsEnv(Env):
             }
 
         # print(sign_dict)
-        if self.rng.random() < self.intervention_success_rate:
+        if self.np_random.random() < self.intervention_success_rate:
             for signs in sign_dict:
                 if signs == "COVERED_SKIN_TEMPERATURE":
                     if temperature_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(1.5, 0.5)
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
+                            1.5, 0.5
+                        )
                 elif signs == "PULSE_RATE":
                     if pulse_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(15, 5)
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
+                            15, 5
+                        )
                 elif signs == "RESPIRATORY_RATE":
                     if respiratory_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
                             10, 10 / 3
                         )
                 elif signs == "SPO2":
                     if spo2_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] + self.rng.normal(3, 1)
+                        sign_dict[signs] = sign_dict[signs] + self.np_random.normal(
+                            3, 1
+                        )
 
         if min_max:
             # renormalize
@@ -335,7 +341,9 @@ class VitalSignsEnv(Env):
             - cov_remaining_given @ cov_inv_given_given @ cov_given_remaining
         )
 
-        v = self.rng.multivariate_normal(mean=conditional_mean, cov=conditional_cov)
+        v = self.np_random.multivariate_normal(
+            mean=conditional_mean, cov=conditional_cov
+        )
 
         return np.clip(v, 0, 1)
 
@@ -411,7 +419,8 @@ class VitalSignsEnv(Env):
         vital_signs = list(min_max.keys())
         given_indices = np.arange(len(vital_signs))
 
-        sample = self.rng.multivariate_normal(mean=mean, cov=cov)
+        # sample = self.np_random.multivariate_normal(mean=mean, cov=cov)
+        sample = self.np_random.multivariate_normal(mean=mean, cov=cov)
         sample = np.clip(sample, 0, 1)
 
         current_signs = [sample[i] for i in given_indices]
@@ -448,7 +457,7 @@ class VitalSignsEnv(Env):
         weights /= np.sum(weights)
 
         # Sample an index based on the weights
-        component = self.rng.choice(len(weights), p=weights)
+        component = self.np_random.choice(len(weights), p=weights)
 
         means = gmm.means_
         covariances = gmm.covariances_
@@ -456,10 +465,12 @@ class VitalSignsEnv(Env):
         cov = covariances[component]
         state, _ = self._resample_values()
 
-        perturb = self.rng.choice([i for i in range(len(weights)) if i != component])
+        perturb = self.np_random.choice(
+            [i for i in range(len(weights)) if i != component]
+        )
 
-        x = self.rng.uniform(0, self.degree_of_arm_noise)
-        y = self.rng.uniform(0, self.degree_of_arm_noise)
+        x = self.np_random.uniform(0, self.degree_of_arm_noise)
+        y = self.np_random.uniform(0, self.degree_of_arm_noise)
 
         mean = (1 - x) * mean + x * means[perturb]
         cov = (1 - y) * cov + y * covariances[perturb]
@@ -654,17 +665,19 @@ class VitalSignsEnv(Env):
     def render(self):
         pass
 
-    def reset(self, seed=None, options={}):
+    def reset(self, seed=None, options: Optional[dict] = None):
+        super().reset(seed=seed)
+
         # Set the seed
         if seed is not None:
-            self.rng = np.random.default_rng(seed)
+            self.np_random = np.random.default_rng(seed)
 
         # Reinitialize agent states
         self.remaining_planning_length = self.T
         self.num_agents = self.init_agents
         self.agent_states = []
 
-        # Initialize agents at time step 0
+        # Initialize agents at timestep 0
         self._initialize_agents()
 
         self.next_agent_id = self.num_agents
@@ -770,7 +783,7 @@ class VitalSignsLang(LanguageWrapper):
                 val_text = f"{sign_value:.2f} +/- {sign_variability:.2f}"
                 aux.append((key, val_text))
 
-            key = "Time steps since joined (will exit the system after 50 steps)"
+            key = "timesteps since joined (will exit the system after 50 steps)"
             aux.append((key, time_joined))
 
             desc += f"\n=== Agent {i} ===\n" + "\n".join(f"{k}: {v}" for k, v in aux)
@@ -832,7 +845,7 @@ class VitalSignsSimple(Env):
         path: str,
         init_agents=1,  # B=3 in the paper
         # max_num_agents=10,  # N=20 in the paper
-        budget=2,  # They have a budget, which does not necessarily equal to init_agent
+        budget=5,  # They have a budget, which does not necessarily equal to init_agent
         # t_min=1,  # t_min = 3 in the paper
         # t_max=5,  # t_max = 5 in the paper
         system_duration=10,  # = 50 in the paper, no letter
@@ -841,7 +854,9 @@ class VitalSignsSimple(Env):
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
         joining_interval=5,  # Here, simulate the number of internal vital signs steps
-        T: Optional[int] = None,  # planning length / for finite horizon evaluation, only use for evaluation
+        T: Optional[
+            int
+        ] = None,  # planning length / for finite horizon evaluation, only use for evaluation
     ):
         """
         Parameters:
@@ -859,7 +874,7 @@ class VitalSignsSimple(Env):
         ), "The number of agents should be less than or equal to the budget"
 
         ## Random number generator
-        self.rng = np.random.default_rng()
+        self.np_random = np.random.default_rng()
         self.T = T
 
         # load GMM
@@ -868,7 +883,7 @@ class VitalSignsSimple(Env):
         ## We are in a finite time horizon
         # self.T = T
         # self.remaining_planning_length = T
-        ## Number of agents at the initial time step
+        ## Number of agents at the initial timestep
         self.init_agents = init_agents
         self.num_agents = init_agents
         self.budget = budget
@@ -900,7 +915,7 @@ class VitalSignsSimple(Env):
         self.device_states = [{} for _ in range(self.budget)]
 
     def _initialize_agents(self, init_agents=None):
-        """Initialize the agents' states at time step 0"""
+        """Initialize the agents' states at timestep 0"""
         assignments = set(np.random.choice(self.budget, init_agents, replace=False))
         for i in range(self.budget):
             if i in assignments:
@@ -940,16 +955,15 @@ class VitalSignsSimple(Env):
 
         return agent_matrix.flatten()
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        super().reset(seed=seed)
+
         # Reset time counter
         self.t = 0
 
-        # Set seed
-        self.rng = np.random.default_rng(seed)
-
         # Empty the device states
 
-        # Initialize agents at time step 0
+        # Initialize agents at timestep 0
         options = options if options is not None else {}
         init_agents = options.get("init_agents", self.init_agents)
         self._initialize_agents(init_agents=init_agents)
@@ -1101,7 +1115,9 @@ class VitalSignsSimple(Env):
             - cov_remaining_given @ cov_inv_given_given @ cov_given_remaining
         )
 
-        v = self.rng.multivariate_normal(mean=conditional_mean, cov=conditional_cov)
+        v = self.np_random.multivariate_normal(
+            mean=conditional_mean, cov=conditional_cov
+        )
 
         return np.clip(v, 0, 1)
 
@@ -1207,7 +1223,7 @@ class VitalSignsSimple(Env):
         weights /= np.sum(weights)
 
         # Sample an index based on the weights
-        component = self.rng.choice(len(weights), p=weights)
+        component = self.np_random.choice(len(weights), p=weights)
 
         means = gmm.means_
         covariances = gmm.covariances_
@@ -1215,10 +1231,12 @@ class VitalSignsSimple(Env):
         cov = covariances[component]
         state, _ = self._resample_values(mean, cov)
 
-        perturb = self.rng.choice([i for i in range(len(weights)) if i != component])
+        perturb = self.np_random.choice(
+            [i for i in range(len(weights)) if i != component]
+        )
 
-        x = self.rng.uniform(0, self.degree_of_arm_noise)
-        y = self.rng.uniform(0, self.degree_of_arm_noise)
+        x = self.np_random.uniform(0, self.degree_of_arm_noise)
+        y = self.np_random.uniform(0, self.degree_of_arm_noise)
 
         mean = (1 - x) * mean + x * means[perturb]
         cov = (1 - y) * cov + y * covariances[perturb]
@@ -1241,7 +1259,7 @@ class VitalSignsSimple(Env):
         min_max = self.min_max
         given_indices = np.arange(len(vital_signs))
 
-        sample = self.rng.multivariate_normal(mean=mean, cov=cov)
+        sample = self.np_random.multivariate_normal(mean=mean, cov=cov)
         sample = np.clip(sample, 0, 1)
 
         current_signs = [sample[i] for i in given_indices]
@@ -1279,22 +1297,28 @@ class VitalSignsSimple(Env):
             }
 
         # print(sign_dict)
-        if self.rng.random() < self.intervention_success_rate:
+        if self.np_random.random() < self.intervention_success_rate:
             for signs in sign_dict:
                 if signs == "COVERED_SKIN_TEMPERATURE":
                     if temperature_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(1.5, 0.5)
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
+                            1.5, 0.5
+                        )
                 elif signs == "PULSE_RATE":
                     if pulse_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(15, 5)
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
+                            15, 5
+                        )
                 elif signs == "RESPIRATORY_RATE":
                     if respiratory_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.rng.normal(
+                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
                             10, 10 / 3
                         )
                 elif signs == "SPO2":
                     if spo2_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] + self.rng.normal(3, 1)
+                        sign_dict[signs] = sign_dict[signs] + self.np_random.normal(
+                            3, 1
+                        )
 
         if min_max:
             # renormalize
@@ -1338,28 +1362,30 @@ class VitalSignsSimpleLang(LanguageWrapper):
             " The effect of the intervention is probabilistic, with the magnitude of the adjustment"
             " varying for each vital sign.\n\n"
             "### Problem description\n\n"
-            "At each time step, you will be asked which device to allocate to the new incoming patient."
-            " Since there are only a limited number of devices, when a device is not gree, you will need device "
+            "At each timestep, you will be asked which device to allocate to the new incoming patient."
+            " Since there are only a limited number of devices, when a device is not free, you will need device "
             " currently in use will be reallocated to the new incoming patient."
             " You will be given the list of devices and information about whether it is currently assigned to"
             " a patient, along with information about the vital signs of the patient.\n\n"
             "New patients **always** need to be assigned a device."
             " The cost function will continue to be calculated for the previous holder until they leave the"
-            f" system. A patient can wear a device for a maximum of {self.env.system_duration} time steps, and then they"
+            f" system. A patient can wear a device for a maximum of {self.env.system_duration} timesteps, and then they"
             " exit the system.\n\n"
             "### Goal\n\n"
             "The goal is to minimize the long-term cumulative cost of abnormal vital signs by intelligently"
-            " choosing which device to allocate to the new patient, considering that the previous holder"
-            " will stop benefiting from the device when they stop wearing it."
+            " by prioritizing reassining free devices to the incoming patients, and when all are busy, prioritizing "
+            " taking away the device from a patient who has the least necessity for the device/intervention due to normal "
+            " vital signs and low risk."
         )
 
     @property
     def action_space_text(self) -> str:
         return (
-            "\n\n### Expected Answer\n\nA single integer with the device id, which goes from zero to the number of devices."
-            f" The answer should be a single integer from [0, 1, ..., {self.env.budget - 1}].\n\n"
-            "Even if a device is in use, you can still assign it to the new patient. Assining free devices if available,"
-            " otherwise, reassign a device currently in use."
+            "Choose the id of the device that will be reallocate to the new incoming patient."
+            "Your answer should be a single integer i from 0 to {self.env.budget - 1} (the number of devices) such that:\n"
+            "- If device i is currently worn by a patient, then this patient will stop benefiting from the intervention."
+            "- If device i is free, then no active patient will stop benefiting from the intervention."
+            "Your answer should start with the device id as an integer value and do not provide any additional information."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -1403,7 +1429,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
                 std = signs_history.std(axis=1)
 
                 s += f"**Patient information**\n\n"
-                s += f"*Time steps wearing the device*\n{time_worn}\n\n"
+                s += f"*timesteps wearing the device*\n{time_worn}\n\n"
                 for j, v in enumerate(env.vital_signs):
                     hist = ", ".join(f"{x:.2f}" for x in signs_history[j])
                     s += f"*{self._state_mapping[v]}*\n"
