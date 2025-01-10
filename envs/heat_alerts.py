@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from together import Embeddings
 
-from envs.language_wrapper import LanguageWrapper
+from envs.wrappers import LanguageWrapper
 
 
 class HeatAlertsLang(LanguageWrapper):

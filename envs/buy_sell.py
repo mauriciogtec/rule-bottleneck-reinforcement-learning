@@ -5,7 +5,7 @@ from langchain_together import Together, TogetherEmbeddings
 import re
 from datetime import date, timedelta
 
-from envs.language_wrapper import LanguageWrapper
+from envs.wrappers import LanguageWrapper
 
 
 class BuySellText(Env):
@@ -236,7 +236,7 @@ class BuySellText(Env):
 
 if __name__ == "__main__":
     import sys  # not needed, just to stay within tradition of successful runs ending with 0
-    from envs.language_wrapper import FinanceWrapper
+    from envs.wrappers import FinanceWrapper
 
     env = BuySellText()
     # step, info = env.reset()
@@ -443,7 +443,7 @@ class BuySellSimpleLang(LanguageWrapper):
     @property
     def task_text(self) -> str:
         return (
-            "You are assisting a financial analyst in making optimized decisions about"
+            "You are an agent assisting a financial analyst in making optimized decisions about"
             " when to buy or sell a single stock. You will determine the action by"
             " considering the current stock price, the stock price history, and the analyst's predictions."
             " It is known that the stock price follows a geometric Brownian motion of the form:\n"
@@ -453,6 +453,7 @@ class BuySellSimpleLang(LanguageWrapper):
             " of whether the stock has been bought or not, and at which price. "
             " The value of the drift and volatility at the decision time is not known, you only known the analyst's estimates."
             " But it is known that it follows a random walk with small deviations from the current estimated values."
+            " Your reward is obtained at selling time, and it is the difference between the selling price and the buying price."
         )
 
     @property

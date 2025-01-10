@@ -1,9 +1,13 @@
+import math
 import re
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Literal, Sequence
 import warnings  # , Optional, Tuple, SupportsFloat
+from abc import ABC, abstractmethod
+from functools import partial
+from typing import Any, Dict, List, Literal, Sequence
 
 # import numpy as np
+import gym
+import numpy as np
 from gymnasium import Env, Wrapper, spaces
 
 # from gymnasium.core import ActType
@@ -176,7 +180,7 @@ class LanguageWrapper(Wrapper, ABC):
         act_space = self.env.action_space
         if isinstance(act_space, spaces.Discrete):
             # get the first int
-            numbers = re.findall(r"\d+", s)
+            numbers = re.findall(r"\d+", str(s))
             # grab the first number in the state space
             for num in numbers:
                 if int(num) < act_space.n:
@@ -189,3 +193,11 @@ class LanguageWrapper(Wrapper, ABC):
             return act
         else:
             raise ValueError("action space not supported by action parser")
+
+
+def symlog(x: float) -> float:
+    """Apply the symmetric log transformation to the reward."""
+    return math.copysign(math.log1p(abs(x)), x)
+
+
+SymlogRewardsWrapper = partial(gym.wrappers.TransformReward, symlog)

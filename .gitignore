@@ -11,6 +11,10 @@
 # hydra / wandb / tensorboard / other logging
 multirun/
 outputs/
-runs/
+runs*/
 wandb/
 checkpoints/
+text_logs/
+
+# data analysis
+notebooks/
