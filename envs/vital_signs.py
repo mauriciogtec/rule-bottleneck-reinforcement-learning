@@ -1351,7 +1351,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
             " and covered skin temperature.\n\n"
             " Each device can be allocated to a patient to help manage their"
             " vital signs. It is known that patients wearing the device can improve"
-            " their vital signs when abormal, and prevent abnormality.\n\n"
+            " their vital signs when outside the normal range, and prevent abnormality.\n\n"
             "The normal vital signs range is defined as follows: A heart rate above 120,"
             " a temperature above 38°C, a respiratory rate above 30, and an SPO2 rate below 90.\n\n"
             "The reward function (negative of cost) of the decision problem is calculated as "
@@ -1372,20 +1372,27 @@ class VitalSignsSimpleLang(LanguageWrapper):
             f" system. A patient can wear a device for a maximum of {self.env.system_duration} timesteps, and then they"
             " exit the system.\n\n"
             "### Goal\n\n"
-            "The goal is to minimize the long-term cumulative cost of abnormal vital signs by intelligently"
-            " by prioritizing reassining free devices to the incoming patients, and when all are busy, prioritizing "
-            " taking away the device from a patient who has the least necessity for the device/intervention due to normal "
-            " vital signs and low risk."
+            "The goal is to minimize the long-term cumulative cost of abnormal vital signs by"
+            " prioritizing assigning free devices to the incoming patients. Or, when no devices are free, prioritizing "
+            " taking away the device from a patient who has the least necessity for it, e.g., due to normal signs and low risk."
         )
 
     @property
     def action_space_text(self) -> str:
+        # return (
+        #     "Choose the id of the device that will be reallocate to the new incoming patient."
+        #     f"Your answer should be a single integer i from 0 to {self.env.budget - 1} (the number of devices) such that:\n"
+        #     "- If device i is currently worn by a patient, then this patient will stop benefiting from the intervention.\n"
+        #     "- If device i is free, then no active patient will stop benefiting from the intervention."
+        #     "Your answer should start with the device id as an integer value and do not provide any additional information."
+        # )
         return (
-            "Choose the id of the device that will be reallocate to the new incoming patient."
-            "Your answer should be a single integer i from 0 to {self.env.budget - 1} (the number of devices) such that:\n"
-            "- If device i is currently worn by a patient, then this patient will stop benefiting from the intervention."
-            "- If device i is free, then no active patient will stop benefiting from the intervention."
-            "Your answer should start with the device id as an integer value and do not provide any additional information."
+            "Choose the id of the device that will be reallocated to the new incoming patient."
+            "Your answer should be a single integer i from 0 to 4 (the number of devices) such that:\n\n"
+            "- Always choose a free device if available\n"
+            "- If no free device is available, then choose device i whose current patient is at least risk or"
+            " would benefit less from wearing the device."
+            "Your answer should begin with and only contain the device id i as an integer value. Do not provide any additional information."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -1428,8 +1435,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
                 mean = signs_history.mean(axis=1)
                 std = signs_history.std(axis=1)
 
-                s += f"**Patient information**\n\n"
-                s += f"*timesteps wearing the device*\n{time_worn}\n\n"
+                s += f"*Timesteps wearing the device*: {time_worn}\n\n"
                 for j, v in enumerate(env.vital_signs):
                     hist = ", ".join(f"{x:.2f}" for x in signs_history[j])
                     s += f"*{self._state_mapping[v]}*\n"
