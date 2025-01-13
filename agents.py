@@ -196,7 +196,7 @@ class BaseAgent:
         """Generate explanation and update message list"""
         temp_system_prompt = f"{self.system_prompt_with_state(outputs['state_text'])}"
         explanation_prompt = (
-            "Explain why you chose these action."
+            f"Explain why you chose action {outputs['action']}. "
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -256,7 +256,7 @@ class LLMRulesAgent(BaseAgent):
             f"### Selected rule\n\n{rules}\n\n"
         )
         explanation_prompt = (
-            "Explain why you chose these action. Does the rule explain it?"
+            f"Explain why you chose action {outputs['action']}. Does the rule explain it?"
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -302,7 +302,7 @@ class LLMRulesAgent(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. Follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
             " the task and the agent's goals."
             " Your answer should start with the character ```- "
@@ -568,15 +568,15 @@ class RulesSelectorActorCritic(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
-            f"{outputs['sel_rule']}\n\n"
-            "### The decision\n\n"
-            "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
-            " Your decision should be made considering the thoughts and selected priorization rules."
-            " Your answer should be one of the valid actions described below "
-            " without additional information or justification. Your response start withand only consist of the action.\n\n"
-            f"\n\n{self.action_space_text}\n\n"
-            "### Your response:"  # This somehow helps with the instruction following
+                f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
+                f"{outputs['sel_rule']}\n\n"
+                "### The decision\n\n"
+                "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
+                " Your decision should be made considering the thoughts and selected priorization rules."
+                " Your answer should be one of the valid actions described below "
+                " without additional information or justification. Your response start withand only consist of the action.\n\n"
+                f"\n\n{self.action_space_text}\n\n"
+                "### Your response:"  # This somehow helps with the instruction following
         )
         messages.append({"role": "user", "content": action_prompt})
 
@@ -613,8 +613,7 @@ class RulesSelectorActorCritic(BaseAgent):
             f"### Selected rule\n\n{sel_rule}\n\n"
         )
         explanation_prompt = (
-            "### Question\n\n"
-            "Explain why you chose these action. Does the rule explain it?"
+            f"Explain why you chose action {outputs['action']}. Does the rule explain it?"
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
