@@ -55,7 +55,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "rulebots-eval-llm"
     """the wandb's project name"""
