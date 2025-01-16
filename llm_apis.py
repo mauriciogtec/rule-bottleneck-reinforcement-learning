@@ -225,9 +225,12 @@ def invoke_with_retries(
             result = model.invoke(messages, *args, **kwargs)
             return result
         except Exception as e:
-            logging.error(f"Attempt {attempts} failed: {e}")
+            warnings.warn(f"Attempt {attempts} failed: {e}")
             attempts += 1
             time.sleep(wait_time_between_attempts)
+    
+    if attempts >= max_attempts:
+        raise RuntimeError("Failed to get a response from the endpoint.")
 
 
 def get_llm_api(model: ValidModels) -> Any:
