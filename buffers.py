@@ -1,6 +1,8 @@
-import torch
-import numpy as np
 from collections import defaultdict, deque
+from functools import partial
+
+import numpy as np
+import torch
 
 
 class SimpleDictReplayBuffer:
@@ -19,7 +21,7 @@ class SimpleDictReplayBuffer:
         self.device = torch.device(device)
 
         # Dictionary to store data buffers
-        self.buffers = defaultdict(lambda: deque(maxlen=self.buffer_size))
+        self.buffers = defaultdict(partial(deque, maxlen=self.buffer_size))
 
     def add(self, data_dict):
         """
@@ -30,6 +32,17 @@ class SimpleDictReplayBuffer:
         for key, value in data_dict.items():
             # Append the value to the deque
             self.buffers[key].append(value)
+
+    def size(self):
+        """
+        Get the current size of the buffer.
+
+        :return: Number of elements in the buffer.
+
+        Size is computed from the first key
+        """
+        key = next(iter(self.buffers.keys()), None)
+        return 0 if key is None else len(self.buffers[key])
 
     def sample(self, batch_size):
         """
