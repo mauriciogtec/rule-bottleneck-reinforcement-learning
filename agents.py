@@ -1,17 +1,20 @@
-from collections import defaultdict
-import json
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+import os
 import re
+from collections import defaultdict
 from itertools import combinations
-from typing import Callable, Dict, Sequence, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 from gymnasium.core import ActType
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 import layers
+
+ValidAgents = Literal["base_agent", "llm_rules_agent", "no_thoughts_agent"]
 
 
 def default_action_parser(s: str) -> ActType:
@@ -61,74 +64,134 @@ class BaseAgent:
         self.action_space_text = action_space_text
         self.llm = llm
 
-    def __call__(
-        self,
-        state_text: str | list[str],
-        state_vector: Optional[Sequence[float] | List[Sequence[float]]] = None,
-        post_action: bool = True,
-        **kwargs,
-    ):
-        # Initialize outputs and messages that will be updated by each pipeline step
-        #    all intermediate outputs and finall results will be stored in the outputs
-        #    all messages exchanged between the user and the llm assistant are stored in the messages
+    # def __call__(
+    #     self,
+    #     state_text: str | list[str],
+    #     state_vector: Optional[Sequence[float] | List[Sequence[float]]] = None,
+    #     post_action: bool = True,
+    #     **kwargs,
+    # ):
+    #     # Initialize outputs and messages that will be updated by each pipeline step
+    #     #    all intermediate outputs and finall results will be stored in the outputs
+    #     #    all messages exchanged between the user and the llm assistant are stored in the messages
 
-        # Call in a vectorized way when state_text is a list
-        if isinstance(state_text, str):
-            return self.pipeline(
-                state_text, state_vector=state_vector, post_action=post_action, **kwargs
-            )
-        else:
-            # call for each
-            all_actions = []
-            all_messages = []
-            all_outputs = defaultdict(list)
-            for i in range(len(state_text)):
-                action, outputs, messages = self.pipeline(
-                    state_text[i],
-                    state_vector=state_vector[i] if state_vector is not None else None,
-                    post_action=post_action,
-                    **kwargs,
-                )
-                all_actions.append(action)
-                all_messages.append(messages)
-                for k, v in outputs.items():
-                    all_outputs[k].append(v)
+    #     # Call in a vectorized way when state_text is a list
+    #     if isinstance(state_text, str):
+    #         return self.pipeline(
+    #             state_text,
+    #             state_vector=state_vector,
+    #             include_post_action=post_action,
+    #             **kwargs,
+    #         )
+    #     else:
+    #         # call for each
+    #         all_actions = []
+    #         all_messages = []
+    #         all_outputs = defaultdict(list)
+    #         for i in range(len(state_text)):
+    #             action, outputs, messages = self.pipeline(
+    #                 state_text[i],
+    #                 state_vector=state_vector[i] if state_vector is not None else None,
+    #                 include_post_action=post_action,
+    #                 **kwargs,
+    #             )
+    #             all_actions.append(action)
+    #             all_messages.append(messages)
+    #             for k, v in outputs.items():
+    #                 all_outputs[k].append(v)
 
-            return all_actions, dict(all_outputs), all_messages
+    #         return all_actions, dict(all_outputs), all_messages
 
     def pipeline(
         self,
         state_text: str,
         state_vector: Optional[Sequence[float]] = None,
-        post_action: bool = True,
+        pre_action_only: bool = False,
+        include_post_action: bool = True,
+        pre_action_outputs: Optional[Dict] = None,
+        pre_action_messages: Optional[List[Dict]] = None,
         **kwargs,
     ) -> Tuple[ActType, Dict, List[Dict]]:
         initial_prompt = self.system_prompt_with_state(state_text)
 
-        # outputs is dictionary that collects all intermediate outputs
-        # by all steps of the pipeline
-        outputs = {
-            "state_text": state_text,
-            "state_vector": state_vector,
-            "initial_prompt": initial_prompt,
-            **kwargs,
-        }
+        # check that either both prev_outputs and prev_messages are None or both are not None
+        if pre_action_outputs is not None:
+            outputs = pre_action_outputs
+            messages = pre_action_messages
 
-        # messages collects the conversation between the user and the LLM
-        # in the format required by the openai API
-        messages = [{"role": "system", "content": initial_prompt}]
+        else:
+            # outputs is dictionary that collects all intermediate outputs
+            # by all steps of the pipeline
+            outputs = {
+                "state_text": state_text,
+                "state_vector": state_vector,
+                "initial_prompt": initial_prompt,
+                **kwargs,
+            }
+            # messages collects the conversation between the user and the LLM
+            # in the format required by the openai API
+            messages = [{"role": "system", "content": initial_prompt}]
 
-        # Pre-action step (e.g., stores thoughts in the outputs)
-        self.pre_action(outputs, messages)
+            # Pre-action step (e.g., stores thoughts in the outputs)
+            self.pre_action(outputs, messages)
+
+            if pre_action_only:
+                return outputs, messages
 
         # Get action (e.g., asks the user to choose an action and parses the response)
-        action = self.get_action(outputs, messages)
+        self.get_action(outputs, messages)
 
         # Post-action step (e.g., stores explanation in the outputs)
-        if post_action:
+        if include_post_action:
             self.post_action(outputs, messages)
 
-        return action, outputs, messages
+        return outputs, messages
+
+    def parallel_pipeline(
+        self,
+        state_text: List[str],
+        state_vector: Optional[Sequence[Sequence[float]]] = None,
+        post_action: bool = True,
+        num_procs: Optional[int] = None,
+        pre_action_only: bool = False,
+        include_post_action: bool = True,
+        pre_action_outputs: Optional[List[Dict]] = None,
+        pre_action_messages: Optional[List[List[Dict]]] = None,
+    ):
+        if state_vector is None:
+            state_vector = [None] * len(state_text)
+        
+        if pre_action_outputs is None:
+            pre_action_outputs = [None] * len(state_text)
+        
+        if pre_action_messages is None:
+            pre_action_messages = [None] * len(state_text)
+
+        # Get the action and value in parallel
+        def call_pipeline(i):
+
+            with torch.no_grad():
+                return self.pipeline(
+                    state_text=state_text[i],
+                    state_vector=state_vector[i],
+                    post_action=post_action,
+                    pre_action_only=pre_action_only,
+                    include_post_action=include_post_action,
+                    pre_action_outputs=pre_action_outputs[i],
+                    pre_action_messages=pre_action_messages[i],
+                )
+
+        num_envs = len(state_text)
+        if num_procs is None:
+            num_procs = os.cpu_count() - 1
+        with ThreadPoolExecutor(max_workers=num_procs) as executor:
+            results = list(executor.map(call_pipeline, range(num_envs)))
+            outputs, messages = zip(*results)
+            # outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
+            messages = list(messages)
+            outputs = list(outputs)
+
+        return outputs, messages
 
     def system_prompt_with_state(self, state_text: str) -> str:
         return (
@@ -392,7 +455,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def __init__(
         self,
-        actor_critic: layers.AttentionActorCritic,
+        actor: layers.AttentionNetwork,
         task_text: str,
         action_space_text: str,
         llm: BaseChatModel,
@@ -402,15 +465,16 @@ class RulesSelectorActorCritic(BaseAgent):
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
+        critic: Optional[layers.AttentionNetwork] = None,
     ):
         super().__init__(
             task_text=task_text,
             action_space_text=action_space_text,
             llm=llm,
         )
-        assert isinstance(actor_critic, layers.AttentionActorCritic)
 
-        self.actor_critic = actor_critic
+        self.actor = actor
+        self.critic = critic
         self.max_rule_combinations = max_rule_combinations
         self.embedder = embededder
         self.num_rules = num_rules
@@ -467,9 +531,8 @@ class RulesSelectorActorCritic(BaseAgent):
 
         # get the rule scores
         query, keys = state_vector.unsqueeze(0), rules_emb
-        logits, value = self.actor_critic(query, keys)
+        logits = self.actor(query, keys)
         logits = logits.squeeze(0)
-        value = value.squeeze()
 
         dist = torch.distributions.Categorical(logits=logits)
         sel_idx = dist.sample()
@@ -483,7 +546,10 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["sel_idx"] = sel_idx
         outputs["sel_rule"] = sel_rule
         outputs["entropy"] = entropy
-        outputs["value"] = value
+
+        if hasattr(self, "critic") and self.critic is not None:
+            value = self.critic(query, keys)
+            outputs["value"] = value.squeeze()
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         """Generate rule scores based on the current state and the set of rules."""
@@ -568,15 +634,15 @@ class RulesSelectorActorCritic(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-                f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
-                f"{outputs['sel_rule']}\n\n"
-                "### The decision\n\n"
-                "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
-                " Your decision should be made considering the thoughts and selected priorization rules."
-                " Your answer should be one of the valid actions described below "
-                " without additional information or justification. Your response start withand only consist of the action.\n\n"
-                f"\n\n{self.action_space_text}\n\n"
-                "### Your response:"  # This somehow helps with the instruction following
+            f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
+            f"{outputs['sel_rule']}\n\n"
+            "### The decision\n\n"
+            "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
+            " Your decision should be made considering the thoughts and selected priorization rules."
+            " Your answer should be one of the valid actions described below "
+            " without additional information or justification. Your response start withand only consist of the action.\n\n"
+            f"\n\n{self.action_space_text}\n\n"
+            "### Your response:"  # This somehow helps with the instruction following
         )
         messages.append({"role": "user", "content": action_prompt})
 
@@ -591,7 +657,7 @@ class RulesSelectorActorCritic(BaseAgent):
         rules_padding_mask: Optional[torch.Tensor] = None,
         sel_idxs: Optional[torch.Tensor] = None,
     ):
-        logits, values = self.actor_critic(
+        logits = self.actor(
             state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
         )
         logits = logits.squeeze(1)
@@ -601,7 +667,25 @@ class RulesSelectorActorCritic(BaseAgent):
         entropy = dist.entropy()
         log_prob = dist.log_prob(sel_idxs)
 
+        values = self.critic(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
+
         return sel_idxs, log_prob, entropy, values
+
+    def get_policy_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.distributions.Categorical:
+        logits = self.actor(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
+        logits = logits.squeeze(1)
+        dist = torch.distributions.Categorical(logits=logits)
+
+        return dist
 
     def gen_explanation_rule_only(self, outputs, messages):
         """Generate rule scores based on the current state and the set of rules."""
