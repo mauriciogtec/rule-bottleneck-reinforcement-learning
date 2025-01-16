@@ -23,7 +23,7 @@ class HUITLLM:
         self,
         model: str = "mistral.mistral-large-2407-v1:0",
         max_attempts: int = 3,
-        wait_time_between_attempts: int = 3,
+        wait_time_between_attempts: int = 15,
     ):
         valid = ["mistral", "meta"]
         assert any([model.startswith(v) for v in valid]), f"Invalid model: {model}"
@@ -163,7 +163,6 @@ class HUITOpenAI:
                     self.metadata["endpoint_url"],
                     headers=headers,
                     data=payload,
-                    # timeout=60,
                 )
 
                 response.raise_for_status()
@@ -210,6 +209,25 @@ ValidModels = Literal[
     "gpt-4o-mini-huit",
     "gpt-4o-mini",
 ]
+
+
+def invoke_with_retries(
+    model: ValidModels,
+    messages: List[Dict[Literal["role", "content"], str]],
+    *args,
+    max_attempts: int = 3,
+    wait_time_between_attempts: int = 60,
+    **kwargs,
+):
+    attempts = 0
+    while attempts < max_attempts:
+        try:
+            result = model.invoke(messages, *args, **kwargs)
+            return result
+        except Exception as e:
+            logging.error(f"Attempt {attempts} failed: {e}")
+            attempts += 1
+            time.sleep(wait_time_between_attempts)
 
 
 def get_llm_api(model: ValidModels) -> Any:

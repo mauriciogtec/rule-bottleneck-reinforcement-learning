@@ -1,8 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 import os
 import re
-from collections import defaultdict
 from itertools import combinations
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
@@ -13,6 +11,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 import layers
+from llm_apis import invoke_with_retries
 
 ValidAgents = Literal["base_agent", "llm_rules_agent", "no_thoughts_agent"]
 
@@ -112,6 +111,7 @@ class BaseAgent:
         pre_action_messages: Optional[List[Dict]] = None,
         **kwargs,
     ) -> Tuple[ActType, Dict, List[Dict]]:
+        """Runs the pipeline for the agent"""
         initial_prompt = self.system_prompt_with_state(state_text)
 
         # check that either both prev_outputs and prev_messages are None or both are not None
@@ -160,10 +160,10 @@ class BaseAgent:
     ):
         if state_vector is None:
             state_vector = [None] * len(state_text)
-        
+
         if pre_action_outputs is None:
             pre_action_outputs = [None] * len(state_text)
-        
+
         if pre_action_messages is None:
             pre_action_messages = [None] * len(state_text)
 
@@ -214,7 +214,9 @@ class BaseAgent:
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         # outputs["action"] = self.action_parser(outputs["action_str"])
@@ -237,8 +239,8 @@ class BaseAgent:
         )
 
         messages.append({"role": "user", "content": thought_prompt})
-        outputs["thoughts"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["thoughts"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
@@ -250,8 +252,8 @@ class BaseAgent:
         )
 
         messages.append({"role": "user", "content": explanation_prompt})
-        outputs["explanation"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["explanation"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["explanation"]})
 
@@ -268,7 +270,7 @@ class BaseAgent:
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_no_thoughts"] = response
 
 
@@ -328,7 +330,7 @@ class LLMRulesAgent(BaseAgent):
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_rule_only"] = response
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
@@ -340,8 +342,8 @@ class LLMRulesAgent(BaseAgent):
             " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
         )
         messages.append({"role": "user", "content": thought_prompt})
-        outputs["thoughts"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["thoughts"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
@@ -354,7 +356,7 @@ class LLMRulesAgent(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         return outputs["action"]
@@ -373,7 +375,7 @@ class LLMRulesAgent(BaseAgent):
 
         # send second call using the OpenAI API
         messages.append({"role": "user", "content": rules_prompt})
-        response = self.llm.invoke(messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, messages, max_tokens=200).content
         outputs["rules"] = parse_rules(response)
         rules_str = "\n".join(outputs["rules"])
         messages.append({"role": "assistant", "content": rules_str})
@@ -408,19 +410,19 @@ class LLMRulesAgent(BaseAgent):
             {"role": "system", "content": temp_system_prompt},
             {"role": "user", "content": q1 + coda},
         ]
-        r1_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r1_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r1 = float("yes" in r1_.lower())
         temp_messages.append({"role": "assistant", "content": r1_})
 
         # Answer q2
         temp_messages.append({"role": "user", "content": q2 + coda})
-        r2_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r2_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r2 = float("yes" in r2_.lower())
         temp_messages.append({"role": "assistant", "content": r2_})
 
         # Answer q3
         temp_messages.append({"role": "user", "content": q3 + coda})
-        r3_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r3_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r3 = float("yes" in r3_.lower())
         temp_messages.append({"role": "assistant", "content": r3_})
 
@@ -430,13 +432,13 @@ class LLMRulesAgent(BaseAgent):
             f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
         )
         temp_messages.append({"role": "user", "content": q4_with_action + coda})
-        r4_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r4_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r4 = float("yes" in r4_.lower())
         temp_messages.append({"role": "assistant", "content": r4_})
 
         # Answer q5
         temp_messages.append({"role": "user", "content": q5 + coda2})
-        r5_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         try:
             r5 = float(re.findall(r"\d+", r5_)[0]) / 10  # get the first number
         except:
@@ -512,7 +514,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
         # send second call using the OpenAI API
         tmp_messages = messages + [{"role": "user", "content": rules_prompt}]
-        response = self.llm.invoke(tmp_messages, max_tokens=512).content
+        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=512).content
 
         rules = parse_rules(response)
         outputs["rules"] = rules = generate_rule_combinations(
@@ -581,19 +583,19 @@ class RulesSelectorActorCritic(BaseAgent):
             {"role": "system", "content": temp_system_prompt},
             {"role": "user", "content": q1 + coda},
         ]
-        r1_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r1_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r1 = float("yes" in r1_.lower())
         temp_messages.append({"role": "assistant", "content": r1_})
 
         # Answer q2
         temp_messages.append({"role": "user", "content": q2 + coda})
-        r2_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r2_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r2 = float("yes" in r2_.lower())
         temp_messages.append({"role": "assistant", "content": r2_})
 
         # Answer q3
         temp_messages.append({"role": "user", "content": q3 + coda})
-        r3_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r3_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r3 = float("yes" in r3_.lower())
         temp_messages.append({"role": "assistant", "content": r3_})
 
@@ -603,13 +605,13 @@ class RulesSelectorActorCritic(BaseAgent):
             f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
         )
         temp_messages.append({"role": "user", "content": q4_with_action + coda})
-        r4_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r4_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r4 = float("yes" in r4_.lower())
         temp_messages.append({"role": "assistant", "content": r4_})
 
         # Answer q5
         temp_messages.append({"role": "user", "content": q5 + coda2})
-        r5_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         try:
             r5 = float(re.findall(r"\d+", r5_)[0]) / 10  # get the first number
         except:
@@ -646,7 +648,7 @@ class RulesSelectorActorCritic(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]
 
@@ -706,5 +708,5 @@ class RulesSelectorActorCritic(BaseAgent):
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_rule_only"] = response
