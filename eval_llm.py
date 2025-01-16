@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 import agents
 import envs as E  # registers the gym environments during import
-from apis import HUITMistralModel
+from llm_apis import HUITLLM
 
 logger = logging.getLogger(__name__)
 # logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -42,8 +42,8 @@ ModelDict = {
     "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo": ChatTogether,
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": ChatTogether,
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": ChatTogether,
-    "meta.llama3-1-8b-instruct-v1:0": HUITMistralModel,
-    "meta.llama3-1-70b-instruct-v1:0": HUITMistralModel,
+    "meta.llama3-1-8b-instruct-v1:0": HUITLLM,
+    "meta.llama3-1-70b-instruct-v1:0": HUITLLM,
 }
 
 
