@@ -155,7 +155,10 @@ class VitalSignsEnv(Env):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(max_num_agents * self.obs_dim,),
+            shape=(
+                max_num_agents,
+                self.obs_dim,
+            ),
             dtype=float,
         )
 
@@ -498,7 +501,7 @@ class VitalSignsEnv(Env):
             agent_matrix[j, :] = np.array(
                 vitals + variability + [has_device, time_joined]
             )
-        return agent_matrix.flatten()
+        return agent_matrix  # .flatten()
 
     def _advance_step(self, action, step_forward, check_device=False):
         ## This variable tracks how many devices are kept from last round
@@ -909,7 +912,10 @@ class VitalSignsSimple(Env):
 
         self.per_device_dim = 1 + (self.variability_window + 2) * self.nv
         self.total_dim = self.budget * self.per_device_dim
-        self.observation_space = spaces.Box(0, 1.0, shape=(self.total_dim,))
+        # self.observation_space = spaces.Box(0, 1.0, shape=(self.total_dim,))
+        self.observation_space = spaces.Box(
+            0, 1.0, shape=(self.budget, self.per_device_dim), dtype=np.float32
+        )
 
         ## Track agent states
         self.device_states = [{} for _ in range(self.budget)]
@@ -953,7 +959,7 @@ class VitalSignsSimple(Env):
                 [[time_worn], signs_history.flatten(), mean, std]
             )
 
-        return agent_matrix.flatten()
+        return agent_matrix # .flatten()
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
