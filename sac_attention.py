@@ -58,7 +58,7 @@ class Args:
     # Environment
     env_id: str = "Uganda"
     """the id of the environment"""
-    num_envs: int = 8
+    num_envs: int = 4
     """the number of parallel game environments"""
     agent: ValidAgents = "llm_rules_agent"
     """the agent to use"""
