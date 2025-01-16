@@ -200,4 +200,4 @@ def symlog(x: float) -> float:
     return math.copysign(math.log1p(abs(x)), x)
 
 
-SymlogRewardsWrapper = partial(gym.wrappers.TransformReward, symlog)
+SymlogRewardsWrapper = partial(gym.wrappers.TransformReward, f=symlog)
