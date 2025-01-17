@@ -35,9 +35,9 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "rulebots-eval-llm"
+    wandb_project_name: str = "rulebots"
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
@@ -49,19 +49,19 @@ class Args:
     # Environment
     env_id: str = "Uganda"
     """the id of the environment"""
-    num_envs: int = 8
+    num_envs: int = 4
     """the number of parallel game environments"""
     agent: ValidAgents = "llm_rules_agent"
     """the agent to use"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
-    llm: ValidModels = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+    llm: ValidModels = "gpt-4o-mini-huit"
     """the language model to use"""
 
     # eval
-    num_steps: int = 64
+    num_steps: int = 16
     """the number of steps to run in each eval environment per policy rollout"""
-    num_iterations: int = 5
+    num_episodes: int = 5
     """the number of eval iterations"""
 
     # Algorithm
@@ -76,48 +76,8 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
 
 
-def save_checkpoint(state, checkpoint_path):
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    torch.save(state, checkpoint_path)
-
-
-def load_checkpoint(checkpoint_path, device):
-    if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device, weights_only=False)
-    else:
-        logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
-        return None
-
-
-def parallel_pipeline(lang_agent, state_text, state_vector=None, post_action=True):
-    # Get the action and value in parallel
-    def call_pipeline(i):
-        with torch.no_grad():
-            return lang_agent(
-                state_text=state_text[i],
-                state_vector=state_vector[i] if state_vector is not None else None,
-                post_action=post_action,
-            )
-
-    num_envs = len(state_text)
-    num_procs = min(os.cpu_count() - 1, num_envs)
-    with ThreadPoolExecutor(max_workers=num_procs) as executor:
-        results = list(executor.map(call_pipeline, range(num_envs)))
-        env_actions, outputs, messages = zip(*results)
-        env_actions = list(env_actions)
-        outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
-        messages = list(messages)
-
-    return env_actions, outputs, messages
-
-
 def main(args: Args):
     def make_env(env_id, eval=False):
-        def symlog(x: float) -> float:
-            import math
-
-            return math.copysign(math.log1p(abs(x)), x)
-
         def thunk():
             if eval:
                 env = gym.make(env_id, max_episode_steps=None, T=args.num_steps)
@@ -125,7 +85,6 @@ def main(args: Args):
                 env = gym.make(env_id)
 
             env = gym.wrappers.RecordEpisodeStatistics(env)
-            env = gym.wrappers.TransformReward(env, symlog)
             return env
 
         return thunk
@@ -135,7 +94,6 @@ def main(args: Args):
     chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     t = int(time())
     run_name = f"eval_llm_{args.env_id}__{args.agent}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
@@ -183,7 +141,7 @@ def main(args: Args):
     else:
         raise ValueError(f"Unknown baseline: {args.agent}")
 
-    text_logs_path = f"text_logs/eval_llm/{run_name}.jsonl"
+    text_logs_path = f"text_logs/{run_name}.jsonl"
     json_logger_mode = "w"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
@@ -193,111 +151,135 @@ def main(args: Args):
     obs, infos = envs.reset()
     _, next_state_text = obs
 
-    # TODO: include iteration in the checkpoint
-    for iter in range(1, args.num_iterations + 1):
-        transitions = defaultdict(list)
-        for step in tqdm(
-            range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
-        ):
-            global_step += args.num_envs
+    _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
 
-            # Get the action and value in parallel
-            if args.parallel_pipeline:
-                env_actions, outputs, messages = parallel_pipeline(
-                    lang_agent, next_state_text, post_action=True
-                )
-            else:
-                env_actions, outputs, messages = lang_agent(
-                    next_state_text, post_action=True
-                )
+    all_mean_rewards = []
 
-            # Append the rules
-            if args.agent == "llm_rules_agent":
-                transitions["rules"].append(outputs["rules"])
-                transitions["sel_reward_scores"].append(outputs["sel_reward_scores"])
-                transitions["sel_reward"].append(outputs["sel_reward"])
+    total_episodes = 0
+    step = 0
+    while total_episodes < args.num_episodes:
+        global_step += args.num_envs
 
-            # Step the environment
-            obs, rewards, _, _, infos = envs.step(env_actions)
-            _, next_state_text = obs
+        # Get the action and value in parallel
+        if args.parallel_pipeline:
+            outputs, messages = lang_agent.parallel_pipeline(next_state_text)
+        else:
+            outputs, messages = lang_agent(next_state_text)
 
-            # Store the reward
-            transitions["rewards"].append(list(rewards))
-
-            if "episode" in infos:
-                for i in range(args.num_envs):
-                    if infos["_episode"][i]:
-                        r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
-                        writer.add_scalar("charts/episodic_return", r, global_step)
-                        writer.add_scalar("charts/episodic_length", l, global_step)
-
-                        logging.info(
-                            f"global_step={global_step}, episodic_return={r:.4f}"
-                        )
-
-            if step == 0 or step % args.log_examples_interval == 0:
-                if args.agent == "llm_rules_agent":
-                    rules_str = "\n".join(outputs["rules"][0])
-                    rules_scores = [
-                        f"{k}: {v}"
-                        for k, v in outputs["sel_reward_scores_raw"][0].items()
-                    ]
-                    rules_scores_str = "\n".join(rules_scores)
-                    example = (
-                        f"{outputs['initial_prompt'][0]}\n"
-                        f"### Thoughts\n {outputs['thoughts'][0]}\n"
-                        f"### Rules\n {rules_str}\n"
-                        f"### Selected Rules Explainability\n{rules_scores_str}\n"
-                        f"### Environment Action\n {env_actions[0]}\n"
-                        f"### Explanation\n {outputs['explanation'][0]}\n"
-                        f"### Explanation rules only\n {outputs['explanation_rule_only'][0]}"
-                    )
-                elif args.agent == "no_thoughts_agent":
-                    example = (
-                        f"{outputs['initial_prompt'][0]}\n"
-                        f"### Environment Action\n {env_actions[0]}\n"
-                        f"### Explanation\n {outputs['explanation'][0]}"
-                    )
-                elif args.agent == "base_agent":
-                    example = (
-                        f"{outputs['initial_prompt'][0]}\n"
-                        f"### Thoughts\n {outputs['thoughts'][0]}\n"
-                        f"### Environment Action\n {env_actions[0]}\n"
-                        f"### Explanation\n {outputs['explanation'][0]}"
-                        f"### Explanation no thoughts\n {outputs['explanation_no_thoughts'][0]}"
-                    )
-
-                conversation = "\n".join(
-                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
-                )
-                writer.add_text("text/examples", example, global_step)
-                writer.add_text("llm_prompts/conversation", conversation, global_step)
-
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
-                )
-
-        env_rewards = torch.FloatTensor(transitions["rewards"]).to(device)
-        env_rewards = env_rewards.mean().item()
-        writer.add_scalar("charts/env_return", env_rewards, global_step)
+        # Step the environment
+        env_actions = [x["action"] for x in outputs]
+        obs, env_rewards, terminations, truncations, infos = envs.step(env_actions)
+        _, next_state_text = obs
 
         if args.agent == "llm_rules_agent":
-            sel_rule_rewards = np.array(transitions["sel_reward"]).mean().item()
-            rewards = sel_rule_rewards + env_rewards
-            total_reward = sel_rule_rewards + env_rewards
+            sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
+            sel_rewards = [x["sel_reward"] for x in outputs]
 
-            writer.add_scalar("charts/sel_rule_return", sel_rule_rewards, global_step)
-            writer.add_scalar("charts/total_return", total_reward, global_step)
+        # accumulate and log the rewards
+        for j in range(args.num_envs):
+            done_now = terminations[j] or truncations[j]
+            if not done_now:
+                _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
+                if args.agent == "llm_rules_agent":
+                    _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
+                    _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j])
+                    _ep_buffer["total_rewards"][j].append(env_rewards[j].item())
+            else:
+                mean_reward = np.mean(_ep_buffer["env_rewards"][j])
+                all_mean_rewards.append(mean_reward)
+                # log the rewards
+                writer.add_scalar(
+                    f"charts/episodic_env_rewards",
+                    mean_reward,
+                    global_step,
+                )
+                _ep_buffer["env_rewards"][j].clear()
 
-            sel_reward_scores = np.array(transitions["sel_reward_scores"])
-            sel_reward_scores = np.mean(sel_reward_scores, axis=(0, 1))
-            for i, x in enumerate(sel_reward_scores):
-                writer.add_scalar(f"charts/sel_reward_scores/q{i}", x, global_step)
+                if args.agent == "llm_rules_agent":
+                    m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
+                    for i, x in enumerate(m):
+                        writer.add_scalar(
+                            f"charts/sel_reward_scores/q{i}", x, global_step
+                        )
+                    m = np.mean(_ep_buffer["sel_rewards_total"][j])
+                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar(
+                        "charts/episodic_total_rewards",
+                        np.sum(_ep_buffer["total_rewards"][j]),
+                        global_step,
+                    )
+                    _ep_buffer["sel_rewards_scores"][j].clear()
+                    _ep_buffer["sel_rewards_total"][j].clear()
+                    _ep_buffer["total_rewards"][j].clear()
+
+                total_episodes += 1
+
+        if "episode" in infos:
+            for i in range(args.num_envs):
+                if infos["_episode"][i]:
+                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                    writer.add_scalar("charts/episodic_return", r, global_step)
+                    writer.add_scalar("charts/episodic_length", l, global_step)
+
+                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
+
+        if step == 0 or step % args.log_examples_interval == 0:
+            if args.agent == "llm_rules_agent":
+                rules_str = "\n".join(outputs[0]["rules"])
+                rules_scores = [
+                    f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                ]
+                rules_scores_str = "\n".join(rules_scores)
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                    f"### Rules\n {rules_str}\n"
+                    f"### Selected Rules Explainability\n{rules_scores_str}\n"
+                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}\n"
+                    f"### Explanation rules only\n {outputs[0]['explanation_rule_only']}"
+                )
+            elif args.agent == "no_thoughts_agent":
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
+                )
+            elif args.agent == "base_agent":
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
+                    f"### Explanation no thoughts\n {outputs[0]['explanation_no_thoughts']}"
+                )
+
+            conversation = "\n".join(
+                [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+            )
+            writer.add_text("text/examples", example, global_step)
+            writer.add_text("llm_prompts/conversation", conversation, global_step)
+
+            # log the conversation and example in jsonl
+            jsonl_logger.write(
+                {
+                    "global_step": global_step,
+                    "example": example,
+                    "conversation": conversation,
+                }
+            )
+
+        if step % 64 == 0:
+            logging.info(
+                f"global_step={global_step}, total_episodes={total_episodes}/{args.num_episodes}"
+            )
+        step += 1
+
+    # Log summary statistics
+    mean_reward = np.mean(all_mean_rewards)
+    std_reward = np.std(all_mean_rewards)
+    writer.add_scalar("mean_reward", mean_reward, 0)
+    writer.add_scalar("std_reward", std_reward, 0)
 
     envs.close()
     writer.close()
