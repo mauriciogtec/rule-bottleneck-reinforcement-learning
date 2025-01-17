@@ -169,7 +169,7 @@ class LanguageWrapper(Wrapper, ABC):
 
         return obs, info
 
-    def action_parser(self, s: str) -> int | Sequence[int]:
+    def action_parser(self, s: str) -> int:
         """
         Convert the action into a text description.
 
@@ -192,7 +192,7 @@ class LanguageWrapper(Wrapper, ABC):
             # log a warning and return a sample action
             warnings.warn(f"Invalid action: {s}, returning a random action")
             act = act_space.sample()
-            return act
+            return int(act)
         else:
             raise ValueError("action space not supported by action parser")
 
