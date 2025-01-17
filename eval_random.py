@@ -110,5 +110,3 @@ if __name__ == "__main__":
 
     env.close()
     writer.close()
-    if args.track:
-        wandb.finish()
