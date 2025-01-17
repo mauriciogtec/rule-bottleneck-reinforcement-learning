@@ -857,9 +857,7 @@ class VitalSignsSimple(Env):
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
         joining_interval=5,  # Here, simulate the number of internal vital signs steps
-        T: Optional[
-            int
-        ] = None,  # planning length / for finite horizon evaluation, only use for evaluation
+        T: Optional[int] = None,  # planning length / for finite horizon evaluation
     ):
         """
         Parameters:
@@ -959,7 +957,7 @@ class VitalSignsSimple(Env):
                 [[time_worn], signs_history.flatten(), mean, std]
             )
 
-        return agent_matrix # .flatten()
+        return agent_matrix  # .flatten()
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
