@@ -269,6 +269,8 @@ if __name__ == "__main__":
     torchsummary.summary(qf1)
 
     # language agent
+    example_rules = envs.envs[0].metadata["example_rules"]
+    example_rules = "".join(f"- {x}\n" for x in example_rules)
     lang_agent = RulesSelectorActorCritic(
         actor=actor,
         task_text=envs.envs[0].metadata["task_text"],
@@ -277,6 +279,7 @@ if __name__ == "__main__":
         llm=chat_model,
         embededder=embed_model,
         max_rule_combinations=1,
+        example_rules=example_rules,
     )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
