@@ -45,7 +45,7 @@ def blood_penalty(blood_pressure):
         return -math.exp(abs(blood_pressure - 127) / 5)  # Exponential penalty
 
 
-def reward_function(sign_dict, min_max, clip_value=5, scaler=0.1):
+def reward_function(sign_dict, min_max, clip_value=20, scaler=0.1):
     reward = 0
     sign_dict = {
         sign: c * (min_max[sign][1] - min_max[sign][0]) + min_max[sign][0]
@@ -62,9 +62,9 @@ def reward_function(sign_dict, min_max, clip_value=5, scaler=0.1):
             reward += spo2_penalty(sign_dict[signs])
 
     # Clip the reward to avoid large values
-    reward = np.clip(scaler * reward, -clip_value, clip_value)
+    reward = np.clip(reward, reward - clip_value, reward + clip_value)
 
-    return reward
+    return scaler * reward
 
 
 class VitalSignsEnv(Env):
@@ -74,7 +74,7 @@ class VitalSignsEnv(Env):
     def __init__(
         self,
         path: str,
-        init_agents=3,  # B=3 in the paper
+        init_agents=4,  # B=3 in the paper
         max_num_agents=10,  # N=20 in the paper
         budget=5,  # They have a budget, which does not necessarily equal to init_agent
         t_min=1,  # t_min = 3 in the paper
@@ -269,8 +269,9 @@ class VitalSignsEnv(Env):
         towards the normal. This seems to be the model used in the final paper.
         """
 
-        mean, cov, min_max = self._read_gmm_minmax()
-        if min_max:
+        # mean, cov, min_max = self._read_gmm_minmax()
+        min_max = self.min_max
+        if min_max is not None:
             # normalize
             sign_dict = {
                 sign: c * (min_max[sign][1] - min_max[sign][0]) + min_max[sign][0]
@@ -301,7 +302,7 @@ class VitalSignsEnv(Env):
                             3, 1
                         )
 
-        if min_max:
+        if min_max is not None:
             # renormalize
             sign_dict = {
                 sign: (c - min_max[sign][0]) / (min_max[sign][1] - min_max[sign][0])
@@ -846,7 +847,7 @@ class VitalSignsSimple(Env):
     def __init__(
         self,
         path: str,
-        init_agents=1,  # B=3 in the paper
+        init_agents=4,  # B=3 in the paper
         # max_num_agents=10,  # N=20 in the paper
         budget=5,  # They have a budget, which does not necessarily equal to init_agent
         # t_min=1,  # t_min = 3 in the paper
@@ -858,17 +859,8 @@ class VitalSignsSimple(Env):
         # joining_number=2,  # Here, vital signs only advance after N patients join
         joining_interval=5,  # Here, simulate the number of internal vital signs steps
         T: Optional[int] = None,  # planning length / for finite horizon evaluation
+        time_discount: Optional[float] = 0.99,  # discount factor for time,
     ):
-        """
-        Parameters:
-            path: path to the gmm and minmax data
-            num_agents: number of agents in the beginning
-            budget: the # of medical device available
-            max_num_agents: the max # of agents that could possibly appear at the same time
-            T: time horizon
-            t_min: minimum number of time to wear the device
-            t_max: maximum number of time to wear the device
-        """
         ## Check inputs
         assert (
             init_agents <= budget
@@ -917,6 +909,9 @@ class VitalSignsSimple(Env):
 
         ## Track agent states
         self.device_states = [{} for _ in range(self.budget)]
+
+        # Time discount for future reward computation.
+        self.time_discount = time_discount
 
     def _initialize_agents(self, init_agents=None):
         """Initialize the agents' states at timestep 0"""
@@ -1009,6 +1004,8 @@ class VitalSignsSimple(Env):
         is_free = self.device_states[action]["time_worn"] == 0
         reward = 0.0
 
+        gamma = self.time_discount
+
         if not is_free:
             # simulate the rest of the time for the current holder
             mean, cov = self.device_states[action]["gmm"]
@@ -1019,7 +1016,7 @@ class VitalSignsSimple(Env):
             else:
                 remaining = self.system_duration - time_worn
 
-            for _ in range(remaining):
+            for t in range(remaining):
                 # device is free, simulate remaining time without device
                 state, r = self._simulate_one_step(action, intervention=False)
 
@@ -1029,7 +1026,7 @@ class VitalSignsSimple(Env):
                 self.device_states[action]["variability"] = variability
                 self.device_states[action]["signs_history"] = signs_history
 
-                reward += r
+                reward += r * (gamma**t)
 
         # Assign the device to the new patient
         self.device_states[action]["time_worn"] = 1
@@ -1071,17 +1068,18 @@ class VitalSignsSimple(Env):
                 if not is_free:
                     mean, cov = self.device_states[i]["gmm"]
                     time_worn = self.device_states[i]["time_worn"]
+                    gamma = self.time_discount
                     for t in range(time_worn, self.system_duration):
                         # device is free, simulate remaining time without device
                         state, r = self._simulate_one_step(i, intervention=True)
 
                         # update agent state
-                        self.device_states[i]["time_worn"] = t + 1
+                        self.device_states[i]["time_worn"] += 1
                         self.device_states[i]["vitals"] = state[0]
                         self.device_states[i]["variability"] = state[1]
                         self.device_states[i]["signs_history"] = state[2]
 
-                        reward += r
+                        reward += r * (gamma ** (t - time_worn))
 
         return obs, reward, terminated, truncated, {}
 
