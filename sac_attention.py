@@ -88,7 +88,7 @@ class Args:
     """target smoothing coefficient (default: 1)"""
     batch_size: int = 32
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 64
+    learning_starts: int = 256
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -567,7 +567,8 @@ if __name__ == "__main__":
                     # use Q-values only for the taken actions
                     obs_vec = data["obs_vec"]
                     rules_emb = data["rules_emb"]
-                    sel_idxs = data["sel_idxs"].unsqueeze(1).long()
+                    sel_idxs = torch.LongTensor(data["sel_idxs"])
+                    sel_idxs = sel_idxs.unsqueeze(1).to(device)
 
                     if obs_vec.dim() == 2:
                         obs_vec = obs_vec.unsqueeze(1)
