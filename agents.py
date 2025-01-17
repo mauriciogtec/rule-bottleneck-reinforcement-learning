@@ -207,7 +207,7 @@ class BaseAgent:
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the decision problem. "
+            "Now, choose the optimal action given the current state of the problem state. "
             "Do not provide additional information or context for your answer, only the action as follows. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             # "\n\n### Your response:"
@@ -351,8 +351,9 @@ class LLMRulesAgent(BaseAgent):
         # get actions
         action_prompt = (
             "Now, choose the optimal action given the current state of the decision problem and the decision rules. "
-            "Do not provide additional information or context for your answer, only the action as follows. "
+            "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
         messages.append({"role": "user", "content": action_prompt})
 
@@ -534,7 +535,7 @@ class RulesSelectorActorCritic(BaseAgent):
         # get the rule scores
         if state_vector.dim() == 1:
             state_vector = state_vector.unsqueeze(0)
-        
+
         query, keys = state_vector, rules_emb
         logits = self.actor(query, keys)
 
@@ -644,12 +645,10 @@ class RulesSelectorActorCritic(BaseAgent):
             f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
             "### The decision\n\n"
-            "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
-            " Your decision should be made considering the thoughts and selected priorization rules."
-            " Your answer should be one of the valid actions described below "
-            " without additional information or justification. Your response start withand only consist of the action.\n\n"
-            f"\n\n{self.action_space_text}\n\n"
-            "### Your response:"  # This somehow helps with the instruction following
+            "Now, choose the optimal action given the current state of the problem state and the chosen priorization rules. "
+            "Your answer must consist exclusively of one of the following actions:"
+            f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
         messages.append({"role": "user", "content": action_prompt})
 
