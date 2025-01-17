@@ -694,7 +694,7 @@ class RulesSelectorActorCritic(BaseAgent):
             state_vector, rules_emb, key_padding_mask=rules_padding_mask
         )
         # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(1)
+        logits = logits.mean(-2)
         dist = torch.distributions.Categorical(logits=logits)
 
         return dist
