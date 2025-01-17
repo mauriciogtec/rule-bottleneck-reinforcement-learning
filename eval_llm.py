@@ -240,7 +240,7 @@ def main(args: Args):
                     f"### Thoughts\n {outputs[0]['thoughts']}\n"
                     f"### Rules\n {rules_str}\n"
                     f"### Selected Rules Explainability\n{rules_scores_str}\n"
-                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Environment Action {outputs[0]['action']}\n"
                     f"### Explanation\n {outputs[0]['explanation']}\n"
                     f"### Explanation rules only\n {outputs[0]['explanation_rule_only']}"
                 )
