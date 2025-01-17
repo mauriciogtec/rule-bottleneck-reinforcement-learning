@@ -59,13 +59,13 @@ class Args:
     """the language model to use"""
 
     # eval
-    num_steps: int = 16
-    """the number of steps to run in each eval environment per policy rollout"""
-    num_episodes: int = 5
+    num_episodes: int = 64
     """the number of eval iterations"""
+    num_eval_steps: int = 16
+    """the number of steps per eval iteration"""
 
     # Algorithm
-    num_rules: int = 3
+    num_rules: int = 1
     """The number of rules for rule-based LLM-only agent"""
 
 
@@ -80,7 +80,7 @@ def main(args: Args):
     def make_env(env_id, eval=False):
         def thunk():
             if eval:
-                env = gym.make(env_id, max_episode_steps=None, T=args.num_steps)
+                env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
             else:
                 env = gym.make(env_id)
 
@@ -126,11 +126,14 @@ def main(args: Args):
             llm=chat_model,
         )
     elif args.agent == "llm_rules_agent":
+        example_rules = envs.envs[0].metadata["example_rules"]
+        example_rules = "".join(f"- {x}\n" for x in example_rules)
         lang_agent = agents.LLMRulesAgent(
             task_text=envs.metadata["task_text"],
             action_space_text=envs.metadata["action_space_text"],
             num_rules=args.num_rules,
             llm=chat_model,
+            example_rules=example_rules,
         )
     elif args.agent == "no_thoughts_agent":
         lang_agent = agents.NoThoughtsAgent(
@@ -158,7 +161,7 @@ def main(args: Args):
     total_episodes = 0
     step = 0
     while total_episodes < args.num_episodes:
-        global_step += args.num_envs
+        global_step += 1
 
         # Get the action and value in parallel
         if args.parallel_pipeline:
@@ -179,11 +182,13 @@ def main(args: Args):
         for j in range(args.num_envs):
             done_now = terminations[j] or truncations[j]
             if not done_now:
-                _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
+                _ep_buffer["env_rewards"][j].append(env_rewards[j])
                 if args.agent == "llm_rules_agent":
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                     _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j])
-                    _ep_buffer["total_rewards"][j].append(env_rewards[j].item())
+                    _ep_buffer["total_rewards"][j].append(
+                        env_rewards[j] + sel_rewards[j]
+                    )
             else:
                 mean_reward = np.mean(_ep_buffer["env_rewards"][j])
                 all_mean_rewards.append(mean_reward)
@@ -205,7 +210,7 @@ def main(args: Args):
                     writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
                     writer.add_scalar(
                         "charts/episodic_total_rewards",
-                        np.sum(_ep_buffer["total_rewards"][j]),
+                        np.mean(_ep_buffer["total_rewards"][j]),
                         global_step,
                     )
                     _ep_buffer["sel_rewards_scores"][j].clear()
@@ -269,7 +274,7 @@ def main(args: Args):
                 }
             )
 
-        if step % 64 == 0:
+        if step % 16 == 0:
             logging.info(
                 f"global_step={global_step}, total_episodes={total_episodes}/{args.num_episodes}"
             )
