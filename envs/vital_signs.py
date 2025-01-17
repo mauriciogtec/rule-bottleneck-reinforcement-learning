@@ -1,6 +1,6 @@
 import math
 import re
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -32,7 +32,8 @@ def respiratory_penalty(respiratory_rate):
 
 
 def spo2_penalty(spo2):
-    if 90 <= spo2:
+    # if 90 <= spo2: # HUGE BUG!!!
+    if spo2 >= 90:
         return 0
     else:
         return -math.exp(abs(spo2 - 90) / 4)  # Exponential penalty
@@ -1451,6 +1452,33 @@ class VitalSignsSimpleLang(LanguageWrapper):
         desc += "\n".join(desc_bits)
 
         return desc
+
+    @property
+    def example_rules(self) -> List[str]:
+        rule_1 = (
+            "There is no advantage of having unused wearable devices; therefore, assign a free device to "
+            "incoming patients whenever possible. This rule applies to the current free devices [0, 1, 3]. "
+            "If these devices are re-allocated to the incoming patient, no current patient will be affected "
+            "negatively. This rule aligns with the goal of maximizing the number of patients wearing a device.\n"
+        )
+
+        rule_2 = (
+            "Patients with high volatility in their vital signs are at higher risk of abnormal vital signs even "
+            "if their last observed signs are normal. Therefore, do not reallocate their device to the new patient "
+            "unless there are no other options. Currently, no device is free. All patients have normal signs; however, "
+            "patient wearing device #3 has a high volatility in its blood pressure (128 +- 30). If device #3 were given "
+            "to the new patient, this can result in abnormal signs for the patient currently wearing it. Reallocating the "
+            "device of a patient with low volatility is safer. The agent’s goal is to ensure patients at risk are wearing a device.\n"
+        )
+
+        rule_3 = (
+            "Because patients with current abnormal vital signs will benefit from continued use of the device, do not reallocate "
+            "their devices, and instead reallocate devices of patients with normal vital signs. In the current problem state, the "
+            "patient wearing device #2 has low SPO2 (85%), while the vital signs of other patients are normal. If device #2 is selected "
+            "for reallocation, the vitals of its current patient will not improve as fast; therefore, reallocating other devices is preferable. "
+            "This rule aligns with the agent’s goal of ensuring patients at risk are wearing a device."
+        )
+        return [rule_1, rule_2, rule_3]
 
 
 if __name__ == "__main__":
