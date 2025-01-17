@@ -1456,7 +1456,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def example_rules(self) -> List[str]:
         rule_1 = (
-            "There is no advantage of having unused wearable devices; therefore, assign a free device to "
+            "There is no advantage in having unused wearable devices; therefore, assign a free device to "
             "incoming patients whenever possible. This rule applies to the current free devices [0, 1, 3]. "
             "If these devices are re-allocated to the incoming patient, no current patient will be affected "
             "negatively. This rule aligns with the goal of maximizing the number of patients wearing a device.\n"
