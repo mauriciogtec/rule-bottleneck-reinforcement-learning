@@ -179,6 +179,17 @@ class AttentionNetwork(nn.Module):
                 head.bias_v.requires_grad = False
 
     def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
+        if keys.is_nested:
+            # TMP FIX if keys is nested tensor, convert to padded tensor
+            key_padding_mask = [torch.zeros(x.shape[0]) for x in keys.unbind()]
+            key_padding_mask = torch.nested.nested_tensor(key_padding_mask)
+            key_padding_mask = torch.nested.to_padded_tensor(key_padding_mask, 1.0)
+            key_padding_mask = key_padding_mask.bool().to(keys.device)
+            keys = torch.nested.to_padded_tensor(keys, 0.0)
+
+        if queries.is_nested:
+            raise ValueError("Nested queries not supported yet.")
+
         if self.normalize_inputs:
             queries = self.query_norm(queries)
             keys = self.key_norm(keys)
