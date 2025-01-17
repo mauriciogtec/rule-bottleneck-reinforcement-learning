@@ -404,7 +404,7 @@ class LLMRulesAgent(BaseAgent):
             " without any additional information or justification. Your response should be a single word."
         )
         q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem state?"
-        q2 = "2. Are the rules specific to the current state of the decision problem?"
+        q2 = "2. Are the rules specific to the current problem state (i.e., they mention specific values or features)?"
         q3 = "3. Are the rules appropriately justified, without fallacies or hallucination?"
         q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Are the selected rules alone sufficient to explain the decision gven the problem state?"
         q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
@@ -524,13 +524,13 @@ class RulesSelectorActorCritic(BaseAgent):
 
         # send second call using the OpenAI API
         tmp_messages = messages + [{"role": "user", "content": rules_prompt}]
-        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=512).content
+        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=768).content
 
         rules = parse_rules(response)
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
         )
-        rules_str = "\n".join(rules)
+        # rules_str = "\n".join(rules)
 
         # dont' add all rules, confuses the LLM and increases the cost
         # messages.append({"role": "assistant", "content": rules_str})
@@ -545,11 +545,8 @@ class RulesSelectorActorCritic(BaseAgent):
         if state_vector.dim() == 1:
             state_vector = state_vector.unsqueeze(0)
 
-        query, keys = state_vector, rules_emb
-        logits = self.actor(query, keys)
-
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(-2)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys)
 
         dist = torch.distributions.Categorical(logits=logits)
         sel_idx = dist.sample()
@@ -565,7 +562,7 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["entropy"] = entropy
 
         if hasattr(self, "critic") and self.critic is not None:
-            value = self.critic(query, keys)
+            value = self.critic(queries, keys)
             outputs["value"] = value.squeeze()
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
@@ -585,7 +582,7 @@ class RulesSelectorActorCritic(BaseAgent):
             " without any additional information or justification. Your response should be a single word."
         )
         q1 = "1. Is the rule alone sufficient to predict what action should be taken next gven the problem state?"
-        q2 = "2. Is the rule specific to the current state of the decision problem?"
+        q2 = "2. Is the rule specific to the current problem state (i.e., it mentions specific values or features)?"
         q3 = "3. Is the rule appropriately justified, without fallacies or hallucination?"
         q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Is the selected rule alone sufficient to explain it given the problem state?"
         q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
@@ -674,11 +671,8 @@ class RulesSelectorActorCritic(BaseAgent):
         rules_padding_mask: Optional[torch.Tensor] = None,
         sel_idxs: Optional[torch.Tensor] = None,
     ):
-        logits = self.actor(
-            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
-        )
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(-2)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
 
         dist = torch.distributions.Categorical(logits=logits)
         if sel_idxs is None:
@@ -700,11 +694,13 @@ class RulesSelectorActorCritic(BaseAgent):
     ) -> torch.distributions.Categorical:
         if state_vector.dim() == 2:
             state_vector = state_vector.unsqueeze(1)
-        logits = self.actor(
-            state_vector, rules_emb, key_padding_mask=rules_padding_mask
-        )
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(-2)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        if logits.is_nested:
+            # pad them with a negative number
+            logits = torch.nested.to_padded_tensor(logits, -100.0)
+
         dist = torch.distributions.Categorical(logits=logits)
 
         return dist
