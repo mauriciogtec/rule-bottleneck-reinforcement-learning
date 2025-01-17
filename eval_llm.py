@@ -5,46 +5,26 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from time import time
-from typing import Literal, Optional
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.optim
 import tyro
-from langchain_together import ChatTogether
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import agents
+from agents import ValidAgents
 import envs as E  # registers the gym environments during import
-from apis import HUITMistralModel
+from llm_apis import get_llm_api, ValidModels
 
 logger = logging.getLogger(__name__)
-# logging.getLogger("httpx").setLevel(logging.WARNING)
-# logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 import jsonlines
-
-ValidAgents = Literal["base_agent", "llm_rules_agent", "no_thoughts_agent"]
-ValidModels = Literal[
-    "google/gemma-2b-it",
-    "meta-llama/Llama-3.2-3B-Instruct-Turbo",
-    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-    "meta.llama3-1-8b-instruct-v1:0",
-    "meta.llama3-1-70b-instruct-v1:0",
-]
-ModelDict = {
-    "google/gemma-2b-it": ChatTogether,
-    "meta-llama/Llama-3.2-3B-Instruct-Turbo": ChatTogether,
-    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo": ChatTogether,
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo": ChatTogether,
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": ChatTogether,
-    "meta.llama3-1-8b-instruct-v1:0": HUITMistralModel,
-    "meta.llama3-1-70b-instruct-v1:0": HUITMistralModel,
-}
 
 
 @dataclass
@@ -55,7 +35,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "rulebots-eval-llm"
     """the wandb's project name"""
@@ -152,7 +132,7 @@ def main(args: Args):
 
     eval_env_funs = [make_env(args.env_id, eval=True) for i in range(args.num_envs)]
     envs = gym.vector.SyncVectorEnv(eval_env_funs)
-    chat_model = ModelDict[args.llm](model=args.llm)
+    chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")

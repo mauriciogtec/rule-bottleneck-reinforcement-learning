@@ -1,17 +1,19 @@
-from collections import defaultdict
-import json
+from concurrent.futures import ThreadPoolExecutor
+import os
 import re
 from itertools import combinations
-from typing import Callable, Dict, Sequence, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 from gymnasium.core import ActType
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 import layers
+from llm_apis import invoke_with_retries
+
+ValidAgents = Literal["base_agent", "llm_rules_agent", "no_thoughts_agent"]
 
 
 def default_action_parser(s: str) -> ActType:
@@ -61,74 +63,135 @@ class BaseAgent:
         self.action_space_text = action_space_text
         self.llm = llm
 
-    def __call__(
-        self,
-        state_text: str | list[str],
-        state_vector: Optional[Sequence[float] | List[Sequence[float]]] = None,
-        post_action: bool = True,
-        **kwargs,
-    ):
-        # Initialize outputs and messages that will be updated by each pipeline step
-        #    all intermediate outputs and finall results will be stored in the outputs
-        #    all messages exchanged between the user and the llm assistant are stored in the messages
+    # def __call__(
+    #     self,
+    #     state_text: str | list[str],
+    #     state_vector: Optional[Sequence[float] | List[Sequence[float]]] = None,
+    #     post_action: bool = True,
+    #     **kwargs,
+    # ):
+    #     # Initialize outputs and messages that will be updated by each pipeline step
+    #     #    all intermediate outputs and finall results will be stored in the outputs
+    #     #    all messages exchanged between the user and the llm assistant are stored in the messages
 
-        # Call in a vectorized way when state_text is a list
-        if isinstance(state_text, str):
-            return self.pipeline(
-                state_text, state_vector=state_vector, post_action=post_action, **kwargs
-            )
-        else:
-            # call for each
-            all_actions = []
-            all_messages = []
-            all_outputs = defaultdict(list)
-            for i in range(len(state_text)):
-                action, outputs, messages = self.pipeline(
-                    state_text[i],
-                    state_vector=state_vector[i] if state_vector is not None else None,
-                    post_action=post_action,
-                    **kwargs,
-                )
-                all_actions.append(action)
-                all_messages.append(messages)
-                for k, v in outputs.items():
-                    all_outputs[k].append(v)
+    #     # Call in a vectorized way when state_text is a list
+    #     if isinstance(state_text, str):
+    #         return self.pipeline(
+    #             state_text,
+    #             state_vector=state_vector,
+    #             include_post_action=post_action,
+    #             **kwargs,
+    #         )
+    #     else:
+    #         # call for each
+    #         all_actions = []
+    #         all_messages = []
+    #         all_outputs = defaultdict(list)
+    #         for i in range(len(state_text)):
+    #             action, outputs, messages = self.pipeline(
+    #                 state_text[i],
+    #                 state_vector=state_vector[i] if state_vector is not None else None,
+    #                 include_post_action=post_action,
+    #                 **kwargs,
+    #             )
+    #             all_actions.append(action)
+    #             all_messages.append(messages)
+    #             for k, v in outputs.items():
+    #                 all_outputs[k].append(v)
 
-            return all_actions, dict(all_outputs), all_messages
+    #         return all_actions, dict(all_outputs), all_messages
 
     def pipeline(
         self,
         state_text: str,
         state_vector: Optional[Sequence[float]] = None,
-        post_action: bool = True,
+        pre_action_only: bool = False,
+        include_post_action: bool = True,
+        pre_action_outputs: Optional[Dict] = None,
+        pre_action_messages: Optional[List[Dict]] = None,
         **kwargs,
     ) -> Tuple[ActType, Dict, List[Dict]]:
+        """Runs the pipeline for the agent"""
         initial_prompt = self.system_prompt_with_state(state_text)
 
-        # outputs is dictionary that collects all intermediate outputs
-        # by all steps of the pipeline
-        outputs = {
-            "state_text": state_text,
-            "state_vector": state_vector,
-            "initial_prompt": initial_prompt,
-            **kwargs,
-        }
+        # check that either both prev_outputs and prev_messages are None or both are not None
+        if pre_action_outputs is not None:
+            outputs = pre_action_outputs
+            messages = pre_action_messages
 
-        # messages collects the conversation between the user and the LLM
-        # in the format required by the openai API
-        messages = [{"role": "system", "content": initial_prompt}]
+        else:
+            # outputs is dictionary that collects all intermediate outputs
+            # by all steps of the pipeline
+            outputs = {
+                "state_text": state_text,
+                "state_vector": state_vector,
+                "initial_prompt": initial_prompt,
+                **kwargs,
+            }
+            # messages collects the conversation between the user and the LLM
+            # in the format required by the openai API
+            messages = [{"role": "system", "content": initial_prompt}]
 
-        # Pre-action step (e.g., stores thoughts in the outputs)
-        self.pre_action(outputs, messages)
+            # Pre-action step (e.g., stores thoughts in the outputs)
+            self.pre_action(outputs, messages)
+
+            if pre_action_only:
+                return outputs, messages
 
         # Get action (e.g., asks the user to choose an action and parses the response)
-        action = self.get_action(outputs, messages)
+        self.get_action(outputs, messages)
 
         # Post-action step (e.g., stores explanation in the outputs)
-        if post_action:
+        if include_post_action:
             self.post_action(outputs, messages)
 
-        return action, outputs, messages
+        return outputs, messages
+
+    def parallel_pipeline(
+        self,
+        state_text: List[str],
+        state_vector: Optional[Sequence[Sequence[float]]] = None,
+        post_action: bool = True,
+        num_procs: Optional[int] = None,
+        pre_action_only: bool = False,
+        include_post_action: bool = True,
+        pre_action_outputs: Optional[List[Dict]] = None,
+        pre_action_messages: Optional[List[List[Dict]]] = None,
+    ):
+        if state_vector is None:
+            state_vector = [None] * len(state_text)
+
+        if pre_action_outputs is None:
+            pre_action_outputs = [None] * len(state_text)
+
+        if pre_action_messages is None:
+            pre_action_messages = [None] * len(state_text)
+
+        # Get the action and value in parallel
+        def call_pipeline(i):
+
+            with torch.no_grad():
+                return self.pipeline(
+                    state_text=state_text[i],
+                    state_vector=state_vector[i],
+                    post_action=post_action,
+                    pre_action_only=pre_action_only,
+                    include_post_action=include_post_action,
+                    pre_action_outputs=pre_action_outputs[i],
+                    pre_action_messages=pre_action_messages[i],
+                )
+
+        num_envs = len(state_text)
+        if num_procs is None:
+            num_procs = os.cpu_count() - 1
+        with ThreadPoolExecutor(max_workers=num_procs) as executor:
+            results = list(executor.map(call_pipeline, range(num_envs)))
+            outputs, messages = zip(*results)
+            # outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
+            messages = list(messages)
+            outputs = list(outputs)
+
+        return outputs, messages
 
     def system_prompt_with_state(self, state_text: str) -> str:
         return (
@@ -151,7 +214,9 @@ class BaseAgent:
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         # outputs["action"] = self.action_parser(outputs["action_str"])
@@ -174,8 +239,8 @@ class BaseAgent:
         )
 
         messages.append({"role": "user", "content": thought_prompt})
-        outputs["thoughts"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["thoughts"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
@@ -187,8 +252,8 @@ class BaseAgent:
         )
 
         messages.append({"role": "user", "content": explanation_prompt})
-        outputs["explanation"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["explanation"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["explanation"]})
 
@@ -196,7 +261,7 @@ class BaseAgent:
         """Generate explanation and update message list"""
         temp_system_prompt = f"{self.system_prompt_with_state(outputs['state_text'])}"
         explanation_prompt = (
-            "Explain why you chose these action."
+            f"Explain why you chose action {outputs['action']}. "
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -205,7 +270,7 @@ class BaseAgent:
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_no_thoughts"] = response
 
 
@@ -256,7 +321,7 @@ class LLMRulesAgent(BaseAgent):
             f"### Selected rule\n\n{rules}\n\n"
         )
         explanation_prompt = (
-            "Explain why you chose these action. Does the rule explain it?"
+            f"Explain why you chose action {outputs['action']}. Does the rule explain it?"
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -265,7 +330,7 @@ class LLMRulesAgent(BaseAgent):
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_rule_only"] = response
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
@@ -277,8 +342,8 @@ class LLMRulesAgent(BaseAgent):
             " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
         )
         messages.append({"role": "user", "content": thought_prompt})
-        outputs["thoughts"] = self.llm.invoke(
-            messages, temperature=0.5, max_tokens=200
+        outputs["thoughts"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=200
         ).content
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
@@ -291,7 +356,7 @@ class LLMRulesAgent(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         return outputs["action"]
@@ -302,7 +367,7 @@ class LLMRulesAgent(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. Follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
             " the task and the agent's goals."
             " Your answer should start with the character ```- "
@@ -310,7 +375,7 @@ class LLMRulesAgent(BaseAgent):
 
         # send second call using the OpenAI API
         messages.append({"role": "user", "content": rules_prompt})
-        response = self.llm.invoke(messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, messages, max_tokens=200).content
         outputs["rules"] = parse_rules(response)
         rules_str = "\n".join(outputs["rules"])
         messages.append({"role": "assistant", "content": rules_str})
@@ -331,11 +396,11 @@ class LLMRulesAgent(BaseAgent):
             "You will be given a series of questions you need to answer with a simple 'yes' or 'no'"
             " without any additional information or justification. Your response should be a single word."
         )
-        q1 = "1. Are the rules sufficient to understand what action should you (the agent) do next?"
-        q2 = "2. Are the rules applicable to the current state of the decision problem?"
+        q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem stat   e?"
+        q2 = "2. Are the rules specific to the current state of the decision problem?"
         q3 = "3. Are the rules appropriately justified, without fallacies or hallucination?"
-        q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Are the selected rules sufficient to explain the decision?"
-        q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10."
+        q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Are the selected rules alone sufficient to explain the decision gven the problem state?"
+        q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
 
         coda = "\nAnswer the following questions with a simple 'yes' or 'no'.\n\n### Your response:"
         coda2 = f"\n\n{outputs['explanation']}\n\nRespond with a single number from 1 to 10 without any additional information.\n\n### Your response:"
@@ -345,19 +410,19 @@ class LLMRulesAgent(BaseAgent):
             {"role": "system", "content": temp_system_prompt},
             {"role": "user", "content": q1 + coda},
         ]
-        r1_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r1_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r1 = float("yes" in r1_.lower())
         temp_messages.append({"role": "assistant", "content": r1_})
 
         # Answer q2
         temp_messages.append({"role": "user", "content": q2 + coda})
-        r2_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r2_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r2 = float("yes" in r2_.lower())
         temp_messages.append({"role": "assistant", "content": r2_})
 
         # Answer q3
         temp_messages.append({"role": "user", "content": q3 + coda})
-        r3_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r3_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r3 = float("yes" in r3_.lower())
         temp_messages.append({"role": "assistant", "content": r3_})
 
@@ -367,13 +432,13 @@ class LLMRulesAgent(BaseAgent):
             f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
         )
         temp_messages.append({"role": "user", "content": q4_with_action + coda})
-        r4_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r4_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r4 = float("yes" in r4_.lower())
         temp_messages.append({"role": "assistant", "content": r4_})
 
         # Answer q5
         temp_messages.append({"role": "user", "content": q5 + coda2})
-        r5_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         try:
             r5 = float(re.findall(r"\d+", r5_)[0]) / 10  # get the first number
         except:
@@ -392,7 +457,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def __init__(
         self,
-        actor_critic: layers.AttentionActorCritic,
+        actor: layers.AttentionNetwork,
         task_text: str,
         action_space_text: str,
         llm: BaseChatModel,
@@ -402,15 +467,16 @@ class RulesSelectorActorCritic(BaseAgent):
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
+        critic: Optional[layers.AttentionNetwork] = None,
     ):
         super().__init__(
             task_text=task_text,
             action_space_text=action_space_text,
             llm=llm,
         )
-        assert isinstance(actor_critic, layers.AttentionActorCritic)
 
-        self.actor_critic = actor_critic
+        self.actor = actor
+        self.critic = critic
         self.max_rule_combinations = max_rule_combinations
         self.embedder = embededder
         self.num_rules = num_rules
@@ -448,7 +514,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
         # send second call using the OpenAI API
         tmp_messages = messages + [{"role": "user", "content": rules_prompt}]
-        response = self.llm.invoke(tmp_messages, max_tokens=512).content
+        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=512).content
 
         rules = parse_rules(response)
         outputs["rules"] = rules = generate_rule_combinations(
@@ -466,10 +532,14 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["rules_emb"] = rules_emb
 
         # get the rule scores
-        query, keys = state_vector.unsqueeze(0), rules_emb
-        logits, value = self.actor_critic(query, keys)
-        logits = logits.squeeze(0)
-        value = value.squeeze()
+        if state_vector.dim() == 1:
+            state_vector = state_vector.unsqueeze(0)
+        
+        query, keys = state_vector, rules_emb
+        logits = self.actor(query, keys)
+
+        # here mean instead of squeeze in case the query came with multiple entries
+        logits = logits.mean(-2)
 
         dist = torch.distributions.Categorical(logits=logits)
         sel_idx = dist.sample()
@@ -483,7 +553,10 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["sel_idx"] = sel_idx
         outputs["sel_rule"] = sel_rule
         outputs["entropy"] = entropy
-        outputs["value"] = value
+
+        if hasattr(self, "critic") and self.critic is not None:
+            value = self.critic(query, keys)
+            outputs["value"] = value.squeeze()
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         """Generate rule scores based on the current state and the set of rules."""
@@ -501,11 +574,11 @@ class RulesSelectorActorCritic(BaseAgent):
             "You will be given a series of questions you need to answer with a simple 'yes' or 'no'"
             " without any additional information or justification. Your response should be a single word."
         )
-        q1 = "1. Is the rule sufficient to understand what action should you (the agent) do next?"
-        q2 = "2. Is the rule applicable to the current state of the decision problem?"
+        q1 = "1. Is the rule alone sufficient to predict what action should be taken next gven the problem state?"
+        q2 = "2. Is the rule specific to the current state of the decision problem?"
         q3 = "3. Is the rule appropriately justified, without fallacies or hallucination?"
-        q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Is the selected rule sufficient to explain it?"
-        q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10."
+        q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Is the selected rule alone sufficient to explain it given the problem state?"
+        q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
 
         coda = "\nAnswer the following questions with a simple 'yes' or 'no'.\n\n### Your response:"
         coda2 = f"\n\n{outputs['explanation']}\n\nRespond with a single number from 1 to 10 without any additional information.\n\n### Your response:"
@@ -515,19 +588,19 @@ class RulesSelectorActorCritic(BaseAgent):
             {"role": "system", "content": temp_system_prompt},
             {"role": "user", "content": q1 + coda},
         ]
-        r1_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r1_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r1 = float("yes" in r1_.lower())
         temp_messages.append({"role": "assistant", "content": r1_})
 
         # Answer q2
         temp_messages.append({"role": "user", "content": q2 + coda})
-        r2_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r2_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r2 = float("yes" in r2_.lower())
         temp_messages.append({"role": "assistant", "content": r2_})
 
         # Answer q3
         temp_messages.append({"role": "user", "content": q3 + coda})
-        r3_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r3_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r3 = float("yes" in r3_.lower())
         temp_messages.append({"role": "assistant", "content": r3_})
 
@@ -537,13 +610,13 @@ class RulesSelectorActorCritic(BaseAgent):
             f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
         )
         temp_messages.append({"role": "user", "content": q4_with_action + coda})
-        r4_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r4_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         r4 = float("yes" in r4_.lower())
         temp_messages.append({"role": "assistant", "content": r4_})
 
         # Answer q5
         temp_messages.append({"role": "user", "content": q5 + coda2})
-        r5_ = self.llm.invoke(temp_messages, max_tokens=2).content
+        r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
         try:
             r5 = float(re.findall(r"\d+", r5_)[0]) / 10  # get the first number
         except:
@@ -580,7 +653,7 @@ class RulesSelectorActorCritic(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = self.llm.invoke(messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]
 
@@ -591,17 +664,40 @@ class RulesSelectorActorCritic(BaseAgent):
         rules_padding_mask: Optional[torch.Tensor] = None,
         sel_idxs: Optional[torch.Tensor] = None,
     ):
-        logits, values = self.actor_critic(
+        logits = self.actor(
             state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
         )
-        logits = logits.squeeze(1)
+        # here mean instead of squeeze in case the query came with multiple entries
+        logits = logits.mean(-2)
+
         dist = torch.distributions.Categorical(logits=logits)
         if sel_idxs is None:
             sel_idxs = dist.sample()
         entropy = dist.entropy()
         log_prob = dist.log_prob(sel_idxs)
 
+        values = self.critic(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
+
         return sel_idxs, log_prob, entropy, values
+
+    def get_policy_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.distributions.Categorical:
+        if state_vector.dim() == 2:
+            state_vector = state_vector.unsqueeze(1)
+        logits = self.actor(
+            state_vector, rules_emb, key_padding_mask=rules_padding_mask
+        )
+        # here mean instead of squeeze in case the query came with multiple entries
+        logits = logits.mean(1)
+        dist = torch.distributions.Categorical(logits=logits)
+
+        return dist
 
     def gen_explanation_rule_only(self, outputs, messages):
         """Generate rule scores based on the current state and the set of rules."""
@@ -613,8 +709,7 @@ class RulesSelectorActorCritic(BaseAgent):
             f"### Selected rule\n\n{sel_rule}\n\n"
         )
         explanation_prompt = (
-            "### Question\n\n"
-            "Explain why you chose these action. Does the rule explain it?"
+            f"Explain why you chose action {outputs['action']}. Does the rule explain it?"
             "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
         )
 
@@ -623,5 +718,5 @@ class RulesSelectorActorCritic(BaseAgent):
             {"role": "user", "content": explanation_prompt},
         ]
 
-        response = self.llm.invoke(temp_messages, max_tokens=200).content
+        response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_rule_only"] = response
