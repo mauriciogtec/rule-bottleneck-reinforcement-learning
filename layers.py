@@ -1,93 +1,119 @@
 from math import gcd
-from typing import Literal, Optional
+
+# from typing import Literal, Optional
 import torch
 from torch import nn
 
 
-# class MultiHeadAttentionWeightsOnly(nn.Module):
-#     def __init__(self, q_dim, k_dim, num_heads, embed_dim, dropout=0.0):
-#         super(MultiHeadAttentionWeightsOnly, self).__init__()
+class AttentionBlock(nn.Module):
+    def __init__(
+        self,
+        q_dim,
+        k_dim,
+        hidden_dim,
+        num_heads,
+        dropout,
+    ):
+        super().__init__()
 
-#         assert (
-#             embed_dim % num_heads == 0
-#         ), "Projection dimension must be divisible by the number of heads."
+        self.num_heads = num_heads
 
-#         self.q_dim = q_dim
-#         self.k_dim = k_dim
-#         self.num_heads = num_heads
-#         self.proj_dim = embed_dim
-#         self.head_dim = embed_dim // num_heads
+        # Cross-attention layer
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=q_dim,
+            num_heads=gcd(num_heads, q_dim),
+            dropout=dropout,
+            kdim=k_dim,
+            batch_first=True,
+        )
 
-#         # Linear layers for query and key transformations
-#         self.q_proj = nn.Linear(q_dim, embed_dim, bias=False)
-#         self.k_proj = nn.Linear(k_dim, embed_dim)
+        self.ffn = nn.Linear(q_dim, hidden_dim)
 
-#         self.dropout = nn.Dropout(dropout)
+        # Self-attention layer
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=gcd(num_heads, hidden_dim),
+            dropout=dropout,
+            kdim=hidden_dim,
+            batch_first=True,
+        )
 
-#     def forward(self, querys, keys, attn_mask=None, key_padding_mask=None):
-#         # Input shapes:
-#         #   query: (batch_size, query_len, q_dim)
-#         #   key: (batch_size, key_len, k_dim)
-#         #   attn_mask: (batch_size, key_len, key_len)
-#         # Output shape:
-#         #   attn_weights: (batch_size, query_len, key_len)
+        # Normalization and activation layers
+        self.cross_norm = nn.LayerNorm(q_dim)
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.activation = torch.nn.functional.silu
+        self.self_norm = nn.LayerNorm(hidden_dim)
 
-#         # check key and query have the same batch dimension
-#         assert (
-#             keys.dim() == querys.dim()
-#         ), "Query and key must have the same batch dimension."
+    def _create_nested_attention_mask(
+        self, shapes, num_heads, max_len, num_keys, is_self_attention=False
+    ):
+        """Create attention masks for cross-attention or self-attention."""
+        attn_mask = torch.ones(
+            (len(shapes), num_heads, max_len, num_keys), dtype=torch.bool
+        )
+        device = next(self.parameters()).device
+        for i, s in enumerate(shapes):
+            for j in range(num_heads):
+                for k in range(s[0]):
+                    for l in range(num_keys if not is_self_attention else s[0]):
+                        attn_mask[i, j, k, l] = False
 
-#         # check dimensions is 2D or 3D
-#         assert keys.dim() in [2, 3], "Input key must be 2D or 3D tensor."
+        return attn_mask.view(len(shapes) * num_heads, max_len, num_keys).to(device)
 
-#         # Add batch dimension if it doesn't exist
-#         is_batched = keys.dim() == 3
-#         if not is_batched:
-#             querys = querys.unsqueeze(0)
-#             keys = keys.unsqueeze(0)
+    def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
+        # Ensure both are 2d or 3d tensors
+        assert queries.dim() == keys.dim()
 
-#         batch_size, query_len, q_dim = querys.size()
-#         _, key_len, k_dim = keys.size()
+        # Deal with Nested tensors
+        is_nested = queries.is_nested
+        if is_nested:
+            # Create attention mask
+            shapes = [t.shape for t in queries.unbind()]
+            N = len(shapes)  # batch size
+            num_heads = self.self_attention.num_heads
+            max_len = max([s[0] for s in shapes])  # max sequence length
+            num_keys = keys.shape[1]
 
-#         assert q_dim == self.q_dim, "Query dimension must match the initialized q_dim."
-#         assert k_dim == self.k_dim, "Key dimension must match the initialized k_dim."
+            attn_mask = self._create_nested_attention_mask(
+                shapes, num_heads, max_len, num_keys, is_self_attention=False
+            )
+            # Pad the queries
+            queries = torch.nested.to_padded_tensor(queries, padding=0.0)
 
-#         # Linear transformations for query and key
-#         Q = self.q_proj(querys)  # (batch_size, query_len, proj_dim)
-#         K = self.k_proj(keys)  # (batch_size, key_len, proj_dim)
+        # Cross-attention
+        cross_output, weights = self.cross_attention(
+            queries, keys, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
+        )
+        queries = self.cross_norm(self.activation(cross_output + queries))
 
-#         # Apply dropout after projections
-#         Q = self.dropout(Q)
-#         K = self.dropout(K)
+        # Feed-forward network
+        ffn_output = self.ffn(queries)
+        if queries.shape == ffn_output.shape:
+            queries = self.ffn_norm(self.activation(queries + ffn_output))
+        else:
+            queries = self.ffn_norm(self.activation(ffn_output))
 
-#         # Reshape and transpose for multi-head computation
-#         Q = Q.view(batch_size, query_len, self.num_heads, self.head_dim).transpose(1, 2)
-#         K = K.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
+        if is_nested:
+            # make mask for self-attention
+            attn_mask = self._create_nested_attention_mask(
+                shapes, num_heads, max_len, max_len, is_self_attention=True
+            )
+            attn_mask = attn_mask.view(N * num_heads, max_len, max_len).to(keys.device)
+            # replace nans with zeros before self-attention, prev attention layer padded with nans
+            queries = torch.nan_to_num(queries, nan=0.0)
 
-#         # Scaled dot-product attention weights (logits)
-#         attn_logits = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
-#         # attn_weights shape: (batch_size, num_heads, query_len, key_len)
+        # Self-attention
+        self_output, _ = self.self_attention(
+            queries, queries, queries, attn_mask=attn_mask
+        )
+        queries = self.self_norm(self.activation(queries + self_output))
 
-#         # Aggregate the attention weights across heads
-#         attn_logits = attn_logits.mean(dim=1)  # Aggregate across the head dimension
+        # Nest again if nested since self-attention supports nested tensors
+        if is_nested:
+            queries = [queries[i, : s[0]] for i, s in enumerate(shapes)]
+            queries = torch.nested.nested_tensor(queries)
 
-#         # merge key padding and attention mask
-#         mask = torch.ones(batch_size, query_len, key_len).to(attn_logits.device)
-
-#         if key_padding_mask is not None:
-#             mask *= key_padding_mask.unsqueeze(1).float()
-
-#         if attn_mask is not None:
-#             mask *= attn_mask.float()
-
-#         # Apply the mask
-#         attn_logits = attn_logits + (1.0 - mask) * -1e9
-
-#         # Remove batch dimension if it was added for non-batch inputs
-#         if not is_batched:
-#             attn_logits = attn_logits.squeeze(0)
-
-#         return attn_logits
+        return queries, weights
 
 
 class AttentionNetwork(nn.Module):
@@ -96,30 +122,20 @@ class AttentionNetwork(nn.Module):
         q_dim,
         k_dim,
         hidden_dim,
-        output_dim: Optional[int] = None,
         num_heads: int = 4,
         dropout: float = 0.0,
-        num_attention_layers=2,
+        num_attention_blocks: int = 1,
         normalize_inputs: bool = True,
-        weights_only: bool = False,
-        add_bias_kv: bool = True,
         initial_proj: bool = True,
     ):
         super().__init__()
-        assert (
-            num_attention_layers >= 1
-        ), "Number of attention layers must be at least 1."
-        assert (
-            output_dim is not None or weights_only
-        ), "Output dimension must be specified if not weights only."
-
         self.normalize_inputs = normalize_inputs
 
         if normalize_inputs:
             self.query_norm = nn.LayerNorm(q_dim)
             self.key_norm = nn.LayerNorm(k_dim)
 
-        # initial projection layers
+        # Initial projection layers
         self.proj = initial_proj
         if initial_proj:
             self.q_proj = nn.Sequential(
@@ -136,60 +152,21 @@ class AttentionNetwork(nn.Module):
             )
             k_dim = hidden_dim
 
-        self.num_attention_layers = num_attention_layers
-        embed_dim = hidden_dim
-
-        self.attn_layers = nn.ModuleList()
-        self.norm_layers = nn.ModuleList()
-        self.act_layers = nn.ModuleList()
-        for i in range(self.num_attention_layers):
-            if i == 0:
-                embed_dim = q_dim
-            else:
-                embed_dim = hidden_dim
-
-            # num heads is the greatest common divisor of the input and output dimensions
-            self.attn_layers.append(
-                nn.MultiheadAttention(
-                    embed_dim=embed_dim,
-                    num_heads=gcd(num_heads, embed_dim),
+        self.blocks = nn.ModuleList()
+        for i in range(num_attention_blocks):
+            self.blocks.append(
+                AttentionBlock(
+                    q_dim=q_dim if i == 0 else hidden_dim,
+                    k_dim=k_dim,
+                    hidden_dim=hidden_dim,
+                    num_heads=num_heads,
                     dropout=dropout,
-                    kdim=k_dim,
-                    batch_first=True,
-                    add_bias_kv=(i < num_attention_layers - 1) and add_bias_kv,
                 )
             )
-            if i < self.num_attention_layers - 1:
-                self.act_layers.append(nn.SiLU())
-                self.norm_layers.append(nn.LayerNorm(embed_dim))
-            else:
-                # identity layer
-                self.act_layers.append(nn.Identity())
-                self.norm_layers.append(nn.Identity())
 
-        self.weights_only = weights_only
-        if weights_only:
-            head = self.attn_layers[-1]
-            if hasattr(head, "v_proj_weight") and head.v_proj_weight is not None:
-                head.v_proj_weight.requires_grad = False
-            else:
-                # TODO handle this case
-                pass
-            if hasattr(head, "bias_v") and head.bias_v is not None:
-                head.bias_v.requires_grad = False
+        self.linear = nn.Linear(hidden_dim, 1)
 
     def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
-        if keys.is_nested:
-            # TMP FIX if keys is nested tensor, convert to padded tensor
-            key_padding_mask = [torch.zeros(x.shape[0]) for x in keys.unbind()]
-            key_padding_mask = torch.nested.nested_tensor(key_padding_mask)
-            key_padding_mask = torch.nested.to_padded_tensor(key_padding_mask, 1.0)
-            key_padding_mask = key_padding_mask.bool().to(keys.device)
-            keys = torch.nested.to_padded_tensor(keys, 0.0)
-
-        if queries.is_nested:
-            raise ValueError("Nested queries not supported yet.")
-
         if self.normalize_inputs:
             queries = self.query_norm(queries)
             keys = self.key_norm(keys)
@@ -200,28 +177,14 @@ class AttentionNetwork(nn.Module):
         if hasattr(self, "k_proj"):
             keys = self.k_proj(keys)
 
-        weights = None
-        for i in range(self.num_attention_layers):
-            attn_layer = self.attn_layers[i]
-            act_layer = self.act_layers[i]
-            norm_layer = self.norm_layers[i]
-
-            output, weights = attn_layer(
-                queries,
-                keys,
-                keys,
-                attn_mask=attn_mask,
-                key_padding_mask=key_padding_mask,
+        for block in self.blocks:
+            queries, _ = block(
+                queries, keys, attn_mask=attn_mask, key_padding_mask=key_padding_mask
             )
-            if output.shape[-1] == queries.shape[-1]:
-                queries = norm_layer(act_layer(queries + output))
-            else:
-                queries = norm_layer(act_layer(output))
 
-        if self.weights_only:
-            return weights
-        else:
-            return queries, weights
+        queries = self.linear(queries).squeeze(-1)
+
+        return queries  # , weights
 
 
 class AttentionActorCritic(nn.Module):
@@ -252,7 +215,7 @@ class AttentionActorCritic(nn.Module):
             hidden_dim=hidden_dim,
             num_heads=num_heads,
             dropout=dropout,
-            num_attention_layers=num_attention_layers,
+            num_attention_blocks=num_attention_layers,
             normalize_inputs=normalize_inputs,
             proj=proj,
             weights_only=True,
@@ -267,7 +230,7 @@ class AttentionActorCritic(nn.Module):
                 hidden_dim=hidden_dim,
                 num_heads=num_heads,
                 dropout=dropout,
-                num_attention_layers=num_critic_layers,
+                num_attention_blocks=num_critic_layers,
                 normalize_inputs=normalize_inputs,
                 output_dim=1,
                 proj=proj,
