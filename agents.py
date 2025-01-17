@@ -357,7 +357,9 @@ class LLMRulesAgent(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         return outputs["action"]
@@ -368,11 +370,15 @@ class LLMRulesAgent(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. Follow the following template:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:\n\n"
+            " [Motivation | Because of...], [Prioritize | do] [what] [if | when]. [Relevance to the current problem state]. [Explanation]\n\n"
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-            " the task and the agent's goals."
+            " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
             " Your answer should start with the character ```- "
         )
+
+        if self.example_rules is not None:
+            rules_prompt += f"\n\n### Example rules\n\n{self.example_rules}\n\n"
 
         # send second call using the OpenAI API
         messages.append({"role": "user", "content": rules_prompt})
@@ -397,7 +403,7 @@ class LLMRulesAgent(BaseAgent):
             "You will be given a series of questions you need to answer with a simple 'yes' or 'no'"
             " without any additional information or justification. Your response should be a single word."
         )
-        q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem stat   e?"
+        q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem state?"
         q2 = "2. Are the rules specific to the current state of the decision problem?"
         q3 = "3. Are the rules appropriately justified, without fallacies or hallucination?"
         q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Are the selected rules alone sufficient to explain the decision gven the problem state?"
@@ -506,12 +512,15 @@ class RulesSelectorActorCritic(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Your response should be a list of rules. Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. While there is no strict format, it is recommended "
-            " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:\n\n"
+            " [Motivation] [prioritize / do] [if / when]. [Relevance to the current problem state]. [Explanation]\n\n"
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-            " the task and the agent's goals."
-            " Your answer should start with the character ```-  and end with ```"
+            " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
+            " Your answer should start with the character ```- "
         )
+
+        if self.example_rules is not None:
+            rules_prompt += f"\n\n### Example rules\n\n{self.example_rules}\n\n"
 
         # send second call using the OpenAI API
         tmp_messages = messages + [{"role": "user", "content": rules_prompt}]
@@ -652,7 +661,9 @@ class RulesSelectorActorCritic(BaseAgent):
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]
 
