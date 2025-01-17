@@ -58,6 +58,8 @@ class LanguageWrapper(Wrapper, ABC):
 
         self.metadata["task_text"] = self.task_text
         self.metadata["action_space_text"] = self.action_space_text
+        if hasattr(self, "example_rules"):
+            self.metadata["example_rules"] = self.example_rules
         self.parse_action = parse_action
 
     @property
