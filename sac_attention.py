@@ -88,7 +88,7 @@ class Args:
     """target smoothing coefficient (default: 1)"""
     batch_size: int = 32
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 0
+    learning_starts: int = 64
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -130,8 +130,6 @@ class Args:
     """the hidden dimension of the networks"""
 
     # Buffer collection mode
-    buffer_collection_mode: bool = False
-    """if toggled, the agent will only collect data to the buffer and save it as pickle"""
     buffer_collection_steps: int = 64
     """the number of steps to collect data to the buffer"""
     load_buffer: bool = True
@@ -179,8 +177,8 @@ if __name__ == "__main__":
     run_id = f"sac_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
 
-    ckpt_path = f"checkpoints/sac_attention/best_{run_name}.state"
-    text_logs_path = f"text_logs/sac_attention/{run_name}.jsonl"
+    ckpt_path = f"checkpoints/best_{run_name}.state"
+    text_logs_path = f"text_logs/{run_name}.jsonl"
     json_logger_mode = "w" if not args.resume else "a"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
@@ -303,8 +301,10 @@ if __name__ == "__main__":
     if args.load_buffer and os.path.exists(buffer_file):
         with open(buffer_file, "rb") as f:
             buffer = pickle.load(f)
+        needs_save_buffer = False
     else:
         buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=device)
+        needs_save_buffer = True
 
     starting_step = 0
     start_time = time.time()
@@ -359,6 +359,7 @@ if __name__ == "__main__":
         )
     rules = [x["rules"] for x in outputs]
     rules_emb = [x["rules_emb"] for x in outputs]
+    sel_idxs = [x["sel_idx"] for x in outputs]
     autoreset = np.zeros(args.num_envs, dtype=bool)
 
     # keep logging buffers for the rewards
@@ -479,7 +480,7 @@ if __name__ == "__main__":
             )
         next_rules = [x["rules"] for x in outputs]
         next_rules_emb = [x["rules_emb"] for x in outputs]
-        sel_idxs = [x["sel_idx"] for x in outputs]
+        next_sel_idxs = [x["sel_idx"] for x in outputs]
 
         if "episode" in infos:
             for i in range(args.num_envs):
@@ -510,20 +511,18 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         autoreset = np.logical_or(terminations, truncations)
         obs_vec, obs_text = next_obs_vec, next_obs_text
+        rules = next_rules
+        rules_emb = next_rules_emb
+        sel_idxs = next_sel_idxs
 
-        # buffer collection
-        if args.buffer_collection_mode:
-            if (global_step + 1) == args.buffer_collection_steps:
+        # ALGO LOGIC: training.
+        if buffer.size() > args.learning_starts:
+            if needs_save_buffer:
                 os.makedirs(os.path.dirname(buffer_file), exist_ok=True)
                 with open(buffer_file, "wb") as f:
                     pickle.dump(buffer, f)
                 logging.info(f"Buffer saved to {buffer_file}")
-                sys.exit(0)
-            else:
-                continue  # skip the training
-
-        # ALGO LOGIC: training.
-        if buffer.size() > args.learning_starts:
+                needs_save_buffer = False
             if global_step % args.update_frequency == 0:
                 num_updates = (
                     ceil(1 / args.update_frequency)
@@ -588,9 +587,7 @@ if __name__ == "__main__":
 
                     # ACTOR training
                     # _, log_pi, action_probs = actor.get_action(data.observations)
-                    dist = lang_agent.get_policy_from_embeddings(
-                        data["obs_vec"], data["rules_emb"]
-                    )
+                    dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
                     log_probs = F.log_softmax(dist.logits, dim=-1)
 
                     with torch.no_grad():
