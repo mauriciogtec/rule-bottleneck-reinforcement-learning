@@ -4,7 +4,6 @@ import os
 import pickle
 import random
 import shutil
-import sys
 import time
 from collections import defaultdict, deque
 from copy import deepcopy
@@ -86,18 +85,20 @@ class Args:
     """the discount factor gamma"""
     tau: float = 1.0
     """target smoothing coefficient (default: 1)"""
-    batch_size: int = 32
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 0
+    learning_starts: int = 256
     """timestep to start learning"""
-    policy_lr: float = 3e-4
+    policy_lr: float = 1e-3
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 3e-4
+    q_lr: float = 4e-3
     """the learning rate of the Q network network optimizer"""
     update_frequency: float | int = 1 / 16
     """the frequency of training updates"""
     warmup_updates: int = 64
     """the number of warmup updates to the value function on the first iteration."""
+    actor_updates: int = 16
+    """the number of updates to the actor per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
@@ -130,8 +131,6 @@ class Args:
     """the hidden dimension of the networks"""
 
     # Buffer collection mode
-    buffer_collection_mode: bool = False
-    """if toggled, the agent will only collect data to the buffer and save it as pickle"""
     buffer_collection_steps: int = 64
     """the number of steps to collect data to the buffer"""
     load_buffer: bool = True
@@ -153,7 +152,7 @@ def make_env(env_id, seed, eval=False):
             env = gym.make(env_id)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = E.wrappers.SymlogRewardsWrapper(env)
+        # env = E.wrappers.SymlogRewardsWrapper(env)
         env.reset(seed=seed)
         return env
 
@@ -173,14 +172,204 @@ def load_checkpoint(checkpoint_path, device):
         return None
 
 
+def update_critic(
+    buffer,
+    batch_size,
+    gamma,
+    alpha,
+    qf1,
+    qf2,
+    qf1_target,
+    qf2_target,
+    q_optimizer,
+    device,
+    lang_agent,
+):
+    """
+    Update the critic networks (qf1 and qf2) using the sampled data from the replay buffer.
+
+    Args:
+        buffer: Replay buffer containing training samples.
+        batch_size: Size of the batch to sample.
+        gamma: Discount factor for future rewards.
+        alpha: Entropy regularization coefficient.
+        qf1, qf2: Critic networks to be updated.
+        qf1_target, qf2_target: Target critic networks.
+        q_optimizer: Optimizer for the critic networks.
+        device: Device for tensor computations.
+        lang_agent: Language agent to calculate policy from embeddings.
+
+    Returns:
+        qf_loss: Combined loss for both Q networks.
+        qf1_loss: Loss for Q-network 1.
+        qf2_loss: Loss for Q-network 2.
+    """
+    data = buffer.sample(batch_size)
+    next_obs_vec = (
+        data["next_obs_vec"].unsqueeze(1)
+        if data["next_obs_vec"].dim() == 2
+        else data["next_obs_vec"]
+    )
+    rules_emb = data["rules_emb"]
+    rewards = data["rewards"]
+    dones = data["dones"]
+
+    with torch.no_grad():
+        dist = lang_agent.get_policy_from_embeddings(next_obs_vec, rules_emb)
+        next_action_probs = F.softmax(dist.logits, dim=-1)
+        next_state_log_pi = F.log_softmax(dist.logits, dim=-1)
+
+        qf1_next_tgt = qf1_target(rules_emb, next_obs_vec)
+        qf2_next_tgt = qf2_target(rules_emb, next_obs_vec)
+
+        # Handle nested tensors
+        if qf1_next_tgt.is_nested:
+            qf1_next_tgt = torch.nested.to_padded_tensor(qf1_next_tgt, 0.0)
+            qf2_next_tgt = torch.nested.to_padded_tensor(qf2_next_tgt, 0.0)
+
+        min_qf_next_target = (
+            next_action_probs
+            * (torch.min(qf1_next_tgt, qf2_next_tgt) - alpha * next_state_log_pi)
+        ).sum(dim=1)
+        next_q_value = rewards + (1 - dones) * gamma * min_qf_next_target
+
+    obs_vec = (
+        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
+    )
+    sel_idxs = data["sel_idxs"].unsqueeze(-1).to(device)
+
+    qf1_values = qf1(rules_emb, obs_vec)
+    qf2_values = qf2(rules_emb, obs_vec)
+
+    if qf1_values.is_nested:
+        qf1_values = torch.nested.to_padded_tensor(qf1_values, 0.0)
+        qf2_values = torch.nested.to_padded_tensor(qf2_values, 0.0)
+
+    qf1_a_values = qf1_values.gather(1, sel_idxs).squeeze(-1)
+    qf2_a_values = qf2_values.gather(1, sel_idxs).squeeze(-1)
+
+    qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+    qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+    qf_loss = qf1_loss + qf2_loss
+
+    q_optimizer.zero_grad()
+    qf_loss.backward()
+    q_optimizer.step()
+
+    return qf_loss.item(), qf1_loss.item(), qf1_a_values, qf2_loss.item(), qf2_a_values
+
+
+def update_actor(
+    buffer,
+    batch_size,
+    alpha,
+    actor_optimizer,
+    qf1,
+    qf2,
+    lang_agent,
+    device,
+):
+    """
+    Update the actor network using the sampled data from the replay buffer.
+
+    Args:
+        buffer: Replay buffer containing training samples.
+        batch_size: Size of the batch to sample.
+        alpha: Entropy regularization coefficient.
+        actor_optimizer: Optimizer for the actor network.
+        qf1, qf2: Critic networks used for policy evaluation.
+        lang_agent: Language agent to calculate policy from embeddings.
+        device: Device for tensor computations.
+
+    Returns:
+        actor_loss: Loss for the actor network.
+    """
+    data = buffer.sample(batch_size)
+    obs_vec = (
+        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
+    )
+    rules_emb = data["rules_emb"]
+
+    dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
+    log_probs = F.log_softmax(dist.logits, dim=-1)
+
+    with torch.no_grad():
+        qf1_values = qf1(rules_emb, obs_vec)
+        qf2_values = qf2(rules_emb, obs_vec)
+
+        if qf1_values.is_nested:
+            qf1_values = torch.nested.to_padded_tensor(qf1_values, 0.0)
+            qf2_values = torch.nested.to_padded_tensor(qf2_values, 0.0)
+
+        min_qf_values = torch.min(qf1_values, qf2_values)
+
+    actor_loss = (dist.probs * (alpha * log_probs - min_qf_values)).mean()
+
+    actor_optimizer.zero_grad()
+    actor_loss.backward()
+    actor_optimizer.step()
+
+    return actor_loss.item(), dist.entropy()
+
+
+def update_alpha(
+    buffer,
+    batch_size,
+    target_entropy,
+    log_alpha,
+    alpha_optimizer,
+    lang_agent,
+    device,
+):
+    """
+    Update the entropy coefficient alpha using the sampled data from the replay buffer.
+
+    Args:
+        buffer: Replay buffer containing training samples.
+        batch_size: Size of the batch to sample.
+        target_entropy: Desired entropy level for the policy.
+        log_alpha: Logarithm of the alpha parameter.
+        alpha_optimizer: Optimizer for the log_alpha parameter.
+        lang_agent: Language agent to calculate policy from embeddings.
+        device: Device for tensor computations.
+
+    Returns:
+        alpha_loss: Loss for updating alpha.
+        alpha: Updated value of alpha.
+    """
+    data = buffer.sample(batch_size)
+    obs_vec = (
+        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
+    )
+    rules_emb = data["rules_emb"]
+
+    dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
+    log_probs = F.log_softmax(dist.logits, dim=-1)
+
+    # Alpha loss computation
+    alpha_loss = (
+        dist.probs.detach() * (-log_alpha.exp() * (log_probs + target_entropy).detach())
+    ).mean()
+
+    # Update log_alpha
+    alpha_optimizer.zero_grad()
+    alpha_loss.backward()
+    alpha_optimizer.step()
+
+    # Get the updated alpha value
+    alpha = log_alpha.exp().item()
+
+    return alpha_loss.item(), alpha
+
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
 
     run_id = f"sac_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
-    run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
+    run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
-    ckpt_path = f"checkpoints/sac_attention/best_{run_name}.state"
-    text_logs_path = f"text_logs/sac_attention/{run_name}.jsonl"
+    ckpt_path = f"checkpoints/best_{run_name}.state"
+    text_logs_path = f"text_logs/{run_name}.jsonl"
     json_logger_mode = "w" if not args.resume else "a"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
@@ -245,24 +434,19 @@ if __name__ == "__main__":
     num_actions = envs.single_action_space.n
 
     actor = AttentionNetwork(
-        q_dim=state_dim,
-        k_dim=rule_dim,
+        q_dim=rule_dim,
+        k_dim=state_dim,
         hidden_dim=hidden_dim,
-        weights_only=True,
     )
     qf1 = AttentionNetwork(
-        q_dim=state_dim,
-        k_dim=rule_dim,
+        q_dim=rule_dim,
+        k_dim=state_dim,
         hidden_dim=hidden_dim,
-        output_dim=1,
-        weights_only=True,
     )
     qf2 = AttentionNetwork(
-        q_dim=state_dim,
-        k_dim=rule_dim,
+        q_dim=rule_dim,
+        k_dim=state_dim,
         hidden_dim=hidden_dim,
-        output_dim=1,
-        weights_only=True,
     )
 
     logging.info("--- Actor ---")
@@ -272,6 +456,8 @@ if __name__ == "__main__":
     torchsummary.summary(qf1)
 
     # language agent
+    example_rules = envs.envs[0].metadata["example_rules"]
+    example_rules = "".join(f"- {x}\n" for x in example_rules)
     lang_agent = RulesSelectorActorCritic(
         actor=actor,
         task_text=envs.envs[0].metadata["task_text"],
@@ -280,13 +466,13 @@ if __name__ == "__main__":
         llm=chat_model,
         embededder=embed_model,
         max_rule_combinations=1,
+        example_rules=example_rules,
     )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
-    q_optimizer = optim.Adam(
-        list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4
-    )
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
+    q_params = list(qf1.parameters()) + list(qf2.parameters())
+    q_optimizer = optim.Adam(q_params, lr=args.q_lr, eps=1e-4)
+    actor_optimizer = optim.Adam(actor.parameters(), lr=args.policy_lr, eps=1e-4)
 
     # Automatic entropy tuning
     if args.autotune:
@@ -303,8 +489,10 @@ if __name__ == "__main__":
     if args.load_buffer and os.path.exists(buffer_file):
         with open(buffer_file, "rb") as f:
             buffer = pickle.load(f)
+        needs_save_buffer = False
     else:
         buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=device)
+        needs_save_buffer = True
 
     starting_step = 0
     start_time = time.time()
@@ -359,14 +547,12 @@ if __name__ == "__main__":
         )
     rules = [x["rules"] for x in outputs]
     rules_emb = [x["rules_emb"] for x in outputs]
+    sel_idxs = [x["sel_idx"] for x in outputs]
     autoreset = np.zeros(args.num_envs, dtype=bool)
 
     # keep logging buffers for the rewards
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
     _rolling_rewards = deque(maxlen=args.rolling_rewards_window)
-    # _ep_env_rewards = [[] for _ in range(args.num_envs)]
-    # _ep_sel_rewards_scores = [[] for _ in range(args.num_envs)]
-    # _ep_sel_rewards_total = [[] for _ in range(args.num_envs)]
 
     for global_step in tqdm(range(starting_step, args.total_timesteps)):
         with torch.no_grad():
@@ -392,6 +578,10 @@ if __name__ == "__main__":
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
 
+        ss = torch.LongTensor(sel_idxs).to(device)
+        if ss.dim() > 1:
+            pass
+
         # accumulate and log the rewards
         for j in range(args.num_envs):
             done_now = terminations[j] or truncations[j]
@@ -399,12 +589,13 @@ if __name__ == "__main__":
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
+                _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 _ep_buffer["entropy"][j].append(entropy[j].item())
                 _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
             else:
                 # log the rewards
                 writer.add_scalar(
-                    f"charts/episodic_env_rewards/",
+                    f"charts/episodic_env_rewards",
                     np.mean(_ep_buffer["env_rewards"][j]),
                     global_step,
                 )
@@ -423,6 +614,11 @@ if __name__ == "__main__":
                     np.mean(_ep_buffer["sel_probs"][j]),
                     global_step,
                 )
+                writer.add_scalar(
+                    "charts/episodic_total_rewards",
+                    np.mean(_ep_buffer["total_rewards"][j]),
+                    global_step,
+                )
 
                 # flush
                 _ep_buffer["env_rewards"][j].clear()
@@ -430,6 +626,7 @@ if __name__ == "__main__":
                 _ep_buffer["sel_rewards_total"][j].clear()
                 _ep_buffer["entropy"][j].clear()
                 _ep_buffer["sel_probs"][j].clear()
+                _ep_buffer["total_rewards"][j].clear()
 
         # Log
         if global_step % args.log_examples_interval == 0:
@@ -468,18 +665,21 @@ if __name__ == "__main__":
 
         # save best model
         total_reward = np.mean(_rolling_rewards)
-        if best_total_reward < total_reward:
+        if (
+            best_total_reward < total_reward
+            and len(_rolling_rewards) == args.rolling_rewards_window
+        ):
             best_total_reward = total_reward
             best_model = (actor, qf1, qf2)
 
         # Get the next rules
         with torch.no_grad():
-            outputs, _ = lang_agent.parallel_pipeline(
+            outputs, messages = lang_agent.parallel_pipeline(
                 next_obs_text, next_obs_vec, pre_action_only=True
             )
         next_rules = [x["rules"] for x in outputs]
         next_rules_emb = [x["rules_emb"] for x in outputs]
-        sel_idxs = [x["sel_idx"] for x in outputs]
+        next_sel_idxs = [x["sel_idx"] for x in outputs]
 
         if "episode" in infos:
             for i in range(args.num_envs):
@@ -495,10 +695,12 @@ if __name__ == "__main__":
                 sample = {}
                 sample["obs_vec"] = obs_vec[j]
                 sample["obs_text"] = obs_text[j]
+                sample["rules"] = rules[j]
                 sample["rules_emb"] = rules_emb[j]
                 sample["next_obs_vec"] = next_obs_vec[j]
                 sample["next_obs_text"] = next_obs_text[j]
-                sample["rules_emb_next"] = next_rules_emb[j]
+                sample["next_rules_emb"] = next_rules_emb[j]
+                sample["next_rules"] = next_rules[j]
                 sample["actions"] = actions[j]
                 sample["sel_idxs"] = sel_idxs[j]
                 sample["rewards"] = rewards[j]
@@ -510,135 +712,76 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         autoreset = np.logical_or(terminations, truncations)
         obs_vec, obs_text = next_obs_vec, next_obs_text
+        rules = next_rules
+        rules_emb = next_rules_emb
+        sel_idxs = next_sel_idxs
 
-        # buffer collection
-        if args.buffer_collection_mode:
-            if (global_step + 1) == args.buffer_collection_steps:
+        # ALGO LOGIC: training.
+        if buffer.size() > args.learning_starts:
+            if needs_save_buffer:
                 os.makedirs(os.path.dirname(buffer_file), exist_ok=True)
                 with open(buffer_file, "wb") as f:
                     pickle.dump(buffer, f)
                 logging.info(f"Buffer saved to {buffer_file}")
-                sys.exit(0)
-            else:
-                continue  # skip the training
-
-        # ALGO LOGIC: training.
-        if buffer.size() > args.learning_starts:
+                needs_save_buffer = False
             if global_step % args.update_frequency == 0:
-                num_updates = (
-                    ceil(1 / args.update_frequency)
-                    if global_step > 0
-                    else args.warmup_updates
-                )
+                if global_step > 0:
+                    num_updates = ceil(1 / args.update_frequency)
+                else:
+                    num_updates = args.warmup_updates
+
                 for _ in range(num_updates):
-                    data = buffer.sample(args.batch_size)
-                    next_obs_vec = data["next_obs_vec"]
-                    next_obs_text = data["next_obs_text"]
-                    rules_emb_next = data["rules_emb_next"]
-
-                    if next_obs_vec.dim() == 2:
-                        next_obs_vec = next_obs_vec.unsqueeze(1)
-
-                    # CRITIC training
-                    with torch.no_grad():
-                        dist = lang_agent.get_policy_from_embeddings(
-                            next_obs_vec, rules_emb_next
+                    # Update critic
+                    qf_loss, qf1_loss, qf1_a_values, qf2_loss, qf2_a_values = (
+                        update_critic(
+                            buffer=buffer,
+                            batch_size=args.batch_size,
+                            gamma=args.gamma,
+                            alpha=alpha,
+                            qf1=qf1,
+                            qf2=qf2,
+                            qf1_target=qf1_target,
+                            qf2_target=qf2_target,
+                            q_optimizer=q_optimizer,
+                            device=device,
+                            lang_agent=lang_agent,
                         )
-                        next_pr = F.softmax(dist.logits, dim=-1)
-                        entropy = dist.entropy()
-                        next_state_log_pi = F.log_softmax(dist.logits, dim=-1)
-                        # select action with current policy
-
-                        # squeeze/unsqueeze is needed because of the attention mechanism
-                        # sum is because the attention outputs as many values as hidden dimension
-                        qf1_next_tgt = qf1_target(next_obs_vec, rules_emb_next)
-                        qf2_next_tgt = qf2_target(next_obs_vec, rules_emb_next)
-                        qf1_next_tgt = qf1_next_tgt.mean(1)
-                        qf2_next_tgt = qf2_next_tgt.mean(1)
-
-                        min_qf_next_target = (
-                            next_pr * (torch.min(qf1_next_tgt, qf2_next_tgt))
-                            - alpha * next_state_log_pi
-                        )
-                        min_qf_next_target = min_qf_next_target.sum(dim=1)
-                        r = data["rewards"]
-                        d = data["dones"]
-                        next_q_value = r + (1 - d) * args.gamma * min_qf_next_target
-
-                    # use Q-values only for the taken actions
-                    obs_vec = data["obs_vec"]
-                    rules_emb = data["rules_emb"]
-                    sel_idxs = data["sel_idxs"].unsqueeze(1).long()
-
-                    if obs_vec.dim() == 2:
-                        obs_vec = obs_vec.unsqueeze(1)
-
-                    qf1_values = qf1(obs_vec, rules_emb).mean(1)
-                    qf2_values = qf2(obs_vec, rules_emb).mean(1)
-
-                    qf1_a_values = qf1_values.gather(1, sel_idxs).squeeze(-1)
-                    qf2_a_values = qf2_values.gather(1, sel_idxs).squeeze(-1)
-                    qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-                    qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
-                    qf_loss = qf1_loss + qf2_loss
-
-                    q_optimizer.zero_grad()
-                    qf_loss.backward()
-                    q_optimizer.step()
-
-                    # ACTOR training
-                    # _, log_pi, action_probs = actor.get_action(data.observations)
-                    dist = lang_agent.get_policy_from_embeddings(
-                        data["obs_vec"], data["rules_emb"]
                     )
-                    log_probs = F.log_softmax(dist.logits, dim=-1)
 
-                    with torch.no_grad():
-                        qf1_values = qf1(obs_vec, rules_emb).mean(1)
-                        qf2_values = qf2(obs_vec, rules_emb).mean(1)
-                        min_qf_values = torch.min(qf1_values, qf2_values)
+                    for _ in range(args.actor_updates):
+                        # Update actor
+                        actor_loss, entropy = update_actor(
+                            buffer=buffer,
+                            batch_size=args.batch_size,
+                            alpha=alpha,
+                            actor_optimizer=actor_optimizer,
+                            qf1=qf1,
+                            qf2=qf2,
+                            lang_agent=lang_agent,
+                            device=device,
+                        )
 
-                    # no need for reparameterization, the expectation can be calculated for discrete actions
-                    actor_loss = (
-                        dist.probs * ((alpha * log_probs) - min_qf_values)
-                    ).mean()
-
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
-
-                    if args.autotune:
-                        # re-use action probabilities for temperature loss
-                        alpha_loss = (
-                            dist.probs.detach()
-                            * (-log_alpha.exp() * (log_probs + target_entropy).detach())
-                        ).mean()
-
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
+                    if args.autotune:  # Check if alpha tuning is enabled
+                        alpha_loss, alpha = update_alpha(
+                            buffer=buffer,
+                            batch_size=args.batch_size,
+                            target_entropy=target_entropy,
+                            log_alpha=log_alpha,
+                            alpha_optimizer=a_optimizer,
+                            lang_agent=lang_agent,
+                            device=device,
+                        )
 
             if global_step % args.log_frequency == 0:
-                writer.add_scalar(
-                    "losses/qf1_values", qf1_a_values.mean().item(), global_step
-                )
-                writer.add_scalar(
-                    "losses/qf2_values", qf2_a_values.mean().item(), global_step
-                )
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
+                writer.add_scalar("losses/qf1_values", qf1_a_values.mean(), global_step)
+                writer.add_scalar("losses/qf2_values", qf2_a_values.mean(), global_step)
+                writer.add_scalar("losses/qf1_loss", qf1_loss, global_step)
+                writer.add_scalar("losses/qf2_loss", qf2_loss, global_step)
+                writer.add_scalar("losses/qf_loss", qf_loss / 2.0, global_step)
+                writer.add_scalar("losses/actor_loss", actor_loss, global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                writer.add_scalar("losses/entropy", entropy.mean().item(), global_step)
-                #
-                # logging.info(f"SPS: {int(global_step / (time.time() - start_time))}")
-                writer.add_scalar(
-                    "charts/SPS",
-                    int(global_step / (time.time() - start_time)),
-                    global_step,
-                )
+                writer.add_scalar("losses/entropy", entropy.mean(), global_step)
+
                 if args.autotune:
                     writer.add_scalar(
                         "losses/alpha_loss", alpha_loss.item(), global_step

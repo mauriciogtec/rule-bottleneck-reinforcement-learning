@@ -207,7 +207,7 @@ class BaseAgent:
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the decision problem. "
+            "Now, choose the optimal action given the current state of the problem state. "
             "Do not provide additional information or context for your answer, only the action as follows. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             # "\n\n### Your response:"
@@ -351,12 +351,15 @@ class LLMRulesAgent(BaseAgent):
         # get actions
         action_prompt = (
             "Now, choose the optimal action given the current state of the decision problem and the decision rules. "
-            "Do not provide additional information or context for your answer, only the action as follows. "
+            "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
         return outputs["action"]
@@ -367,11 +370,15 @@ class LLMRulesAgent(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. Follow the following template:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:\n\n"
+            " [Motivation | Because of...], [Prioritize | do] [what] [if | when]. [Relevance to the current problem state]. [Explanation]\n\n"
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-            " the task and the agent's goals."
+            " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
             " Your answer should start with the character ```- "
         )
+
+        if self.example_rules is not None:
+            rules_prompt += f"\n\n### Example rules\n\n{self.example_rules}\n\n"
 
         # send second call using the OpenAI API
         messages.append({"role": "user", "content": rules_prompt})
@@ -396,8 +403,8 @@ class LLMRulesAgent(BaseAgent):
             "You will be given a series of questions you need to answer with a simple 'yes' or 'no'"
             " without any additional information or justification. Your response should be a single word."
         )
-        q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem stat   e?"
-        q2 = "2. Are the rules specific to the current state of the decision problem?"
+        q1 = "1. Are the rules alone sufficient to understand what action should be taken next given the problem state?"
+        q2 = "2. Are the rules specific to the current problem state (i.e., they mention specific values or features)?"
         q3 = "3. Are the rules appropriately justified, without fallacies or hallucination?"
         q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Are the selected rules alone sufficient to explain the decision gven the problem state?"
         q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
@@ -505,22 +512,25 @@ class RulesSelectorActorCritic(BaseAgent):
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
             " Your response should be a list of rules. Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. While there is no strict format, it is recommended "
-            " that they follow the following tempalte:'Because of [short explanation], prioritize [something] [if/when]. [Explanation]."
+            " The rules should be in natural language. Follow the following template:\n\n"
+            " [Motivation] [prioritize / do] [if / when]. [Relevance to the current problem state]. [Explanation]\n\n"
             " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-            " the task and the agent's goals."
-            " Your answer should start with the character ```-  and end with ```"
+            " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
+            " Your answer should start with the character ```- "
         )
+
+        if self.example_rules is not None:
+            rules_prompt += f"\n\n### Example rules\n\n{self.example_rules}\n\n"
 
         # send second call using the OpenAI API
         tmp_messages = messages + [{"role": "user", "content": rules_prompt}]
-        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=512).content
+        response = invoke_with_retries(self.llm, tmp_messages, max_tokens=768).content
 
         rules = parse_rules(response)
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
         )
-        rules_str = "\n".join(rules)
+        # rules_str = "\n".join(rules)
 
         # dont' add all rules, confuses the LLM and increases the cost
         # messages.append({"role": "assistant", "content": rules_str})
@@ -534,12 +544,9 @@ class RulesSelectorActorCritic(BaseAgent):
         # get the rule scores
         if state_vector.dim() == 1:
             state_vector = state_vector.unsqueeze(0)
-        
-        query, keys = state_vector, rules_emb
-        logits = self.actor(query, keys)
 
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(-2)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys)
 
         dist = torch.distributions.Categorical(logits=logits)
         sel_idx = dist.sample()
@@ -555,7 +562,7 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["entropy"] = entropy
 
         if hasattr(self, "critic") and self.critic is not None:
-            value = self.critic(query, keys)
+            value = self.critic(queries, keys)
             outputs["value"] = value.squeeze()
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
@@ -575,7 +582,7 @@ class RulesSelectorActorCritic(BaseAgent):
             " without any additional information or justification. Your response should be a single word."
         )
         q1 = "1. Is the rule alone sufficient to predict what action should be taken next gven the problem state?"
-        q2 = "2. Is the rule specific to the current state of the decision problem?"
+        q2 = "2. Is the rule specific to the current problem state (i.e., it mentions specific values or features)?"
         q3 = "3. Is the rule appropriately justified, without fallacies or hallucination?"
         q4 = f"4. The agent chose action {outputs['action']} based on the problem state. Is the selected rule alone sufficient to explain it given the problem state?"
         q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
@@ -644,16 +651,16 @@ class RulesSelectorActorCritic(BaseAgent):
             f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
             "### The decision\n\n"
-            "Now, choose the optimal action given the current state of the decision problem and the chosen priorization rules."
-            " Your decision should be made considering the thoughts and selected priorization rules."
-            " Your answer should be one of the valid actions described below "
-            " without additional information or justification. Your response start withand only consist of the action.\n\n"
-            f"\n\n{self.action_space_text}\n\n"
-            "### Your response:"  # This somehow helps with the instruction following
+            "Now, choose the optimal action given the current state of the problem state and the chosen priorization rules. "
+            "Your answer must consist exclusively of one of the following actions:"
+            f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
         messages.append({"role": "user", "content": action_prompt})
 
-        outputs["action"] = invoke_with_retries(self.llm, messages, max_tokens=10).content
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=10
+        ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]
 
@@ -664,11 +671,8 @@ class RulesSelectorActorCritic(BaseAgent):
         rules_padding_mask: Optional[torch.Tensor] = None,
         sel_idxs: Optional[torch.Tensor] = None,
     ):
-        logits = self.actor(
-            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
-        )
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(-2)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
 
         dist = torch.distributions.Categorical(logits=logits)
         if sel_idxs is None:
@@ -690,11 +694,13 @@ class RulesSelectorActorCritic(BaseAgent):
     ) -> torch.distributions.Categorical:
         if state_vector.dim() == 2:
             state_vector = state_vector.unsqueeze(1)
-        logits = self.actor(
-            state_vector, rules_emb, key_padding_mask=rules_padding_mask
-        )
-        # here mean instead of squeeze in case the query came with multiple entries
-        logits = logits.mean(1)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        if logits.is_nested:
+            # pad them with a negative number
+            logits = torch.nested.to_padded_tensor(logits, -100.0)
+
         dist = torch.distributions.Categorical(logits=logits)
 
         return dist

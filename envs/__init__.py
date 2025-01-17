@@ -9,15 +9,15 @@ from envs.vital_signs import VitalSignsSimple, VitalSignsSimpleLang
 
 from . import wrappers
 
-Uganda = partial(VitalSignsSimpleLang, "models/uganda.npz")
-MimicIII = partial(VitalSignsSimpleLang, "models/mimic-iii.npz")
-MimicIV = partial(VitalSignsSimpleLang, "models/mimic-iv.npz")
+Uganda = partial(VitalSignsSimpleLang, "models/uganda.npz", time_discount=0.95)
+MimicIII = partial(VitalSignsSimpleLang, "models/mimic-iii.npz", time_discount=0.95)
+MimicIV = partial(VitalSignsSimpleLang, "models/mimic-iv.npz", time_discount=0.95)
 HeatAlerts = partial(HeatAlertsLang)
 BuySellSimple = partial(BuySellSimpleLang)
 
-UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz")
-MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz")
-MimicIVNumeric = partial(VitalSignsSimple, "models/mimic-iv.npz")
+UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz", time_discount=0.95)
+MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discount=0.95)
+MimicIVNumeric = partial(VitalSignsSimple, "models/mimic-iv.npz", time_discount=0.95)
 HeatAlertsNumeric = partial(HeatAlertEnv)
 BuySellSimpleNumeric = partial(BuySellSimple)
 

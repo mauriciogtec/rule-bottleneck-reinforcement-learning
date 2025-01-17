@@ -25,8 +25,6 @@ class HUITMistral:
         max_attempts: int = 3,
         wait_time_between_attempts: int = 15,
     ):
-        valid = ["mistral", "meta"]
-        assert any([model.startswith(v) for v in valid]), f"Invalid model: {model}"
         metadata = {}
         metadata["endpoint_url"] = "https://go.apis.huit.harvard.edu/ais-bedrock-llm/v1"
         metadata["api_key"] = os.getenv("HUIT_AI_API_KEY")
@@ -37,12 +35,7 @@ class HUITMistral:
 
     @property
     def max_tokens_key(self) -> str:
-        if self.model.startswith("mistral"):
-            return "max_tokens"
-        elif self.model.startswith("meta"):
-            return "max_gen_len"
-        else:
-            raise ValueError(f"Invalid model: {self.model}")
+        return "max_tokens"
 
     def invoke(
         self,
@@ -125,8 +118,6 @@ class HUITMeta:
         max_attempts: int = 3,
         wait_time_between_attempts: int = 15,
     ):
-        valid = ["mistral", "meta"]
-        assert any([model.startswith(v) for v in valid]), f"Invalid model: {model}"
         metadata = {}
         metadata["endpoint_url"] = "https://go.apis.huit.harvard.edu/ais-bedrock-llm/v1"
         metadata["api_key"] = os.getenv("HUIT_AI_API_KEY")
@@ -137,12 +128,7 @@ class HUITMeta:
 
     @property
     def max_tokens_key(self) -> str:
-        if self.model.startswith("mistral"):
-            return "max_tokens"
-        elif self.model.startswith("meta"):
-            return "max_gen_len"
-        else:
-            raise ValueError(f"Invalid model: {self.model}")
+        return "max_gen_len"
 
     @staticmethod
     def prompt_from_messages(
