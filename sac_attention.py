@@ -4,7 +4,6 @@ import os
 import pickle
 import random
 import shutil
-import sys
 import time
 from collections import defaultdict, deque
 from copy import deepcopy
@@ -151,7 +150,7 @@ def make_env(env_id, seed, eval=False):
             env = gym.make(env_id)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = E.wrappers.SymlogRewardsWrapper(env)
+        # env = E.wrappers.SymlogRewardsWrapper(env)
         env.reset(seed=seed)
         return env
 
@@ -400,12 +399,13 @@ if __name__ == "__main__":
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
+                _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 _ep_buffer["entropy"][j].append(entropy[j].item())
                 _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
             else:
                 # log the rewards
                 writer.add_scalar(
-                    f"charts/episodic_env_rewards/",
+                    f"charts/episodic_env_rewards",
                     np.mean(_ep_buffer["env_rewards"][j]),
                     global_step,
                 )
@@ -424,6 +424,11 @@ if __name__ == "__main__":
                     np.mean(_ep_buffer["sel_probs"][j]),
                     global_step,
                 )
+                writer.add_scalar(
+                    "charts/episodic_total_rewards",
+                    np.mean(_ep_buffer["total_rewards"][j]),
+                    global_step,
+                )
 
                 # flush
                 _ep_buffer["env_rewards"][j].clear()
@@ -431,6 +436,7 @@ if __name__ == "__main__":
                 _ep_buffer["sel_rewards_total"][j].clear()
                 _ep_buffer["entropy"][j].clear()
                 _ep_buffer["sel_probs"][j].clear()
+                _ep_buffer["total_rewards"][j].clear()
 
         # Log
         if global_step % args.log_examples_interval == 0:
@@ -469,7 +475,7 @@ if __name__ == "__main__":
 
         # save best model
         total_reward = np.mean(_rolling_rewards)
-        if best_total_reward < total_reward:
+        if best_total_reward < total_reward and len(_rolling_rewards) == args.rolling_rewards_window:
             best_total_reward = total_reward
             best_model = (actor, qf1, qf2)
 
