@@ -180,7 +180,7 @@ class LanguageWrapper(Wrapper, ABC):
             str: The text description of the action.
         """
         act_space = self.env.action_space
-        if isinstance(act_space, spaces.Discrete):
+        if isinstance(act_space, spaces.Discrete):  
             # get the first int
             numbers = re.findall(r"\d+", str(s))
             # grab the first number in the state space
