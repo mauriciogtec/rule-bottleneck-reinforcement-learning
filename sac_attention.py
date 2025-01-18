@@ -85,20 +85,22 @@ class Args:
     """the discount factor gamma"""
     tau: float = 1.0
     """target smoothing coefficient (default: 1)"""
-    batch_size: int = 64
+    batch_size: int = 16
     """the batch size of sample from the reply memory"""
     learning_starts: int = 256
     """timestep to start learning"""
     policy_lr: float = 1e-3
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 4e-3
+    q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
-    update_frequency: float | int = 1 / 16
+    update_frequency: float | int = 1
     """the frequency of training updates"""
     warmup_updates: int = 64
     """the number of warmup updates to the value function on the first iteration."""
     actor_updates: int = 16
     """the number of updates to the actor per update cycle"""
+    critic_updates: int = 4
+    """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
@@ -292,6 +294,7 @@ def update_actor(
 
     dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
     log_probs = F.log_softmax(dist.logits, dim=-1)
+    probs = dist.probs
 
     with torch.no_grad():
         qf1_values = qf1(rules_emb, obs_vec)
@@ -303,23 +306,22 @@ def update_actor(
 
         min_qf_values = torch.min(qf1_values, qf2_values)
 
-    actor_loss = (dist.probs * (alpha * log_probs - min_qf_values)).mean()
+    actor_loss = (probs * (alpha * log_probs - min_qf_values)).mean()
+    entropy = dist.entropy().mean().item()
 
     actor_optimizer.zero_grad()
     actor_loss.backward()
     actor_optimizer.step()
 
-    return actor_loss.item(), dist.entropy()
+    return actor_loss.item(), entropy, probs, log_probs
 
 
 def update_alpha(
-    buffer,
-    batch_size,
     target_entropy,
     log_alpha,
     alpha_optimizer,
-    lang_agent,
-    device,
+    probs,
+    log_probs,
 ):
     """
     Update the entropy coefficient alpha using the sampled data from the replay buffer.
@@ -337,18 +339,9 @@ def update_alpha(
         alpha_loss: Loss for updating alpha.
         alpha: Updated value of alpha.
     """
-    data = buffer.sample(batch_size)
-    obs_vec = (
-        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
-    )
-    rules_emb = data["rules_emb"]
-
-    dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
-    log_probs = F.log_softmax(dist.logits, dim=-1)
-
     # Alpha loss computation
     alpha_loss = (
-        dist.probs.detach() * (-log_alpha.exp() * (log_probs + target_entropy).detach())
+        probs.detach() * (-log_alpha.exp() * (log_probs + target_entropy).detach())
     ).mean()
 
     # Update log_alpha
@@ -479,8 +472,10 @@ if __name__ == "__main__":
         target_entropy = -args.target_entropy_scale * torch.log(
             1 / torch.tensor(envs.single_action_space.n)
         )
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
+        log_alpha = torch.scalar_tensor(
+            np.log(args.alpha), requires_grad=True, device=device
+        )
+        alpha = log_alpha.exp().item()  # ~ 0.01
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
     else:
         alpha = args.alpha
@@ -579,8 +574,6 @@ if __name__ == "__main__":
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
 
         ss = torch.LongTensor(sel_idxs).to(device)
-        if ss.dim() > 1:
-            pass
 
         # accumulate and log the rewards
         for j in range(args.num_envs):
@@ -726,11 +719,13 @@ if __name__ == "__main__":
                 needs_save_buffer = False
             if global_step % args.update_frequency == 0:
                 if global_step > 0:
-                    num_updates = ceil(1 / args.update_frequency)
+                    critic_updates = args.critic_updates
+                    actor_updates = args.actor_updates
                 else:
-                    num_updates = args.warmup_updates
+                    critic_updates = args.warmup_updates
+                    actor_updates = args.warmup_updates
 
-                for _ in range(num_updates):
+                for _ in range(critic_updates):
                     # Update critic
                     qf_loss, qf1_loss, qf1_a_values, qf2_loss, qf2_a_values = (
                         update_critic(
@@ -748,28 +743,26 @@ if __name__ == "__main__":
                         )
                     )
 
-                    for _ in range(args.actor_updates):
-                        # Update actor
-                        actor_loss, entropy = update_actor(
-                            buffer=buffer,
-                            batch_size=args.batch_size,
-                            alpha=alpha,
-                            actor_optimizer=actor_optimizer,
-                            qf1=qf1,
-                            qf2=qf2,
-                            lang_agent=lang_agent,
-                            device=device,
-                        )
+                for _ in range(actor_updates):
+                    # Update actor
+                    actor_loss, entropy, probs, log_probs = update_actor(
+                        buffer=buffer,
+                        batch_size=args.batch_size,
+                        alpha=alpha,
+                        actor_optimizer=actor_optimizer,
+                        qf1=qf1,
+                        qf2=qf2,
+                        lang_agent=lang_agent,
+                        device=device,
+                    )
 
                     if args.autotune:  # Check if alpha tuning is enabled
                         alpha_loss, alpha = update_alpha(
-                            buffer=buffer,
-                            batch_size=args.batch_size,
+                            probs=probs,
+                            log_probs=log_probs,
                             target_entropy=target_entropy,
                             log_alpha=log_alpha,
                             alpha_optimizer=a_optimizer,
-                            lang_agent=lang_agent,
-                            device=device,
                         )
 
             if global_step % args.log_frequency == 0:
@@ -780,12 +773,10 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf_loss", qf_loss / 2.0, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss, global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                writer.add_scalar("losses/entropy", entropy.mean(), global_step)
+                writer.add_scalar("losses/entropy", entropy, global_step)
 
                 if args.autotune:
-                    writer.add_scalar(
-                        "losses/alpha_loss", alpha_loss.item(), global_step
-                    )
+                    writer.add_scalar("losses/alpha_loss", alpha_loss, global_step)
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
