@@ -20,10 +20,11 @@ import torch
 import torch.optim as optim
 import torchsummary
 from langchain_together import TogetherEmbeddings
-from torch.nested import nested_tensor, to_padded_tensor
+from torch.nested import nested_tensor
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 from tqdm import tqdm
+from torch import tensor, FloatTensor
 
 from llm_apis import get_llm_api, ValidLLMs
 import envs as E  # registers the gym environments during import
@@ -82,6 +83,20 @@ def parallel_pipeline(lang_agent, state_text, state_vector, post_action=True):
         messages = list(messages)
 
     return env_actions, outputs, messages
+
+
+def collate_samples(x: List[List]):
+    """Takes as input a list of lists where the first index is the environment index
+    and the second one is the time step index"""
+    # first concatenate the lists using itertools
+    x = list(itertools.chain(*x))
+
+    # now check if all the first shapes are the same
+    same_shape = all(x[0].shape == y.shape for y in x)
+    if same_shape:
+        return torch.stack(x)
+    else:
+        return nested_tensor(x)
 
 
 @dataclass
@@ -146,7 +161,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 8
+    num_envs: int = 4
     """the number of parallel game environments"""
     num_steps: int = 16
     """the number of steps to run in each environment per policy rollout"""
@@ -258,7 +273,7 @@ def main(args: Args):
     num_rules = args.num_rules
 
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
@@ -294,7 +309,7 @@ def main(args: Args):
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    model = nn.ModuleDict({"actor": actor, "critic": critic}).to(device)
+    model = nn.ModuleDict({"actor": actor, "critic": critic}).to(dev)
 
     lang_agent = RulesSelectorActorCritic(
         actor=actor,
@@ -318,7 +333,7 @@ def main(args: Args):
     best_total_reward = -float("inf")
     best_model = None
 
-    checkpoint = load_checkpoint(ckpt_path, device)
+    checkpoint = load_checkpoint(ckpt_path, dev)
     if args.resume and checkpoint:
         logging.info(
             f"Resuming training from checkpoint at step {checkpoint['global_step']}."
@@ -337,7 +352,7 @@ def main(args: Args):
 
     obs, infos = envs.reset()
     state_vector, state_text = obs
-    state_vector = torch.tensor(state_vector, dtype=torch.float32).to(device)
+    state_vector = tensor(state_vector, dtype=torch.float32).to(dev)
 
     iter_start = (global_step // args.total_timesteps) + 1
 
@@ -348,14 +363,13 @@ def main(args: Args):
 
     for iter in range(iter_start, num_iterations + 1):
         # start on policy buffer
-        _state_vectors = [[] for _ in range(args.num_envs)]
-        _dones = [[] for _ in range(args.num_envs)]
-        _rules_embs = [[] for _ in range(args.num_envs)]
-        _sel_idxs = [[] for _ in range(args.num_envs)]
-        _values = [[] for _ in range(args.num_envs)]
-        _sel_logprobs = [[] for _ in range(args.num_envs)]
-        _entropies = [[] for _ in range(args.num_envs)]
-        _rewards = [[] for _ in range(args.num_envs)]
+        b_state_vec = [[] for _ in range(args.num_envs)]
+        b_done = [[] for _ in range(args.num_envs)]
+        b_rules_emb = [[] for _ in range(args.num_envs)]
+        b_sel_idx = [[] for _ in range(args.num_envs)]
+        b_value = [[] for _ in range(args.num_envs)]
+        b_sel_logprob = [[] for _ in range(args.num_envs)]
+        b_reward = [[] for _ in range(args.num_envs)]
 
         if args.anneal_lr:
             frac = 1.0 - (iter - 1.0) / num_iterations
@@ -382,16 +396,14 @@ def main(args: Args):
             sel_logprobs = [x["sel_logprob"].exp() for x in outputs]
 
             # Step the environment
-            next_obs, env_rewards, terminations, truncations, infos = envs.step(
-                env_actions
-            )
+            next_obs, env_rewards, dones, truncations, infos = envs.step(env_actions)
             next_state_vector, next_state_text = next_obs
-            next_state_vector = torch.tensor(next_state_vector, dtype=torch.float32)
-            next_state_vector = next_state_vector.to(device)
+            next_state_vector = tensor(next_state_vector, dtype=torch.float32)
+            next_state_vector = next_state_vector.to(dev)
 
             sel_rewards = [x["sel_reward"] for x in outputs]
             sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
-            sel_reward_scores_raw = [x["sel_reward_scores_raw"] for x in outputs]
+            # sel_reward_scores_raw = [x["sel_reward_scores_raw"] for x in outputs]
 
             # total rewards
             rewards = env_rewards + sel_rewards
@@ -399,25 +411,31 @@ def main(args: Args):
 
             # compute the values
             # mean pool over rules for state-value
-            rules_emb = [torch.FloatTensor(x["rules_emb"]) for x in outputs]
-            rules_emb = nested_tensor(rules_emb).to(device)
+            rules_emb = [FloatTensor(x["rules_emb"]) for x in outputs]
+            rules_emb = nested_tensor(rules_emb).to(dev)
             values = critic(rules_emb, state_vector)
             values = pool_attention_network(values)
 
             # add the transition to the buffer
             for j in range(args.num_envs):
                 if not autoreset[j]:
-                    _dones[j].append(terminations[j])
-                    _rules_embs[j].append(outputs[j]["rules_emb"])
-                    _sel_idxs[j].append(outputs[j]["sel_idx"])
-                    _sel_logprobs[j].append(outputs[j]["sel_logprob"])
-                    _entropies[j].append(outputs[j]["entropy"])
-                    _rewards[j].append(rewards[j])
-                    _values[j].append(values[j].item())
+                    b_done[j].append(tensor(dones[j], dtype=torch.float32).to(dev))
+                    b_state_vec[j].append(state_vector[j])
+                    b_rules_emb[j].append(
+                        tensor(outputs[j]["rules_emb"], dtype=torch.float32).to(dev)
+                    )
+                    b_sel_idx[j].append(
+                        tensor(outputs[j]["sel_idx"], dtype=torch.long).to(dev)
+                    )
+                    b_sel_logprob[j].append(
+                        tensor(outputs[j]["sel_logprob"], dtype=torch.float32).to(dev)
+                    )
+                    b_reward[j].append(tensor(rewards[j], dtype=torch.float32).to(dev))
+                    b_value[j].append(tensor(values[j], dtype=torch.float32).to(dev))
 
             # accumulate and log the rewards
             for j in range(args.num_envs):
-                done_now = terminations[j] or truncations[j]
+                done_now = dones[j] or truncations[j]
                 if not done_now:
                     _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
@@ -475,22 +493,22 @@ def main(args: Args):
                         )
 
             if step == 0 or step % args.log_examples_interval == 0:
-                rules_str = "\n".join(outputs["rules"][0])
+                rules_str = "\n".join(outputs[0]["rules"])
                 rules_scores = [
-                    f"{k}: {v}" for k, v in outputs["sel_reward_scores_raw"][0].items()
+                    f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
                 ]
                 rules_scores_str = "\n".join(rules_scores)
                 example = (
-                    f"{outputs['initial_prompt'][0]}\n"
-                    f"### Thoughts\n{outputs['thoughts'][0]}\n"
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n{outputs[0]['thoughts']}\n"
                     f"### Rules\n{rules_str}\n"
-                    f"### Selected Rule\n{outputs['sel_rule'][0]}\n"
-                    f"### Selected Rule Probability\n{outputs['sel_logprob'][0].exp():.2f}\n"
-                    f"### Selected Rule Reward\n {outputs['sel_reward'][0]}\n"
+                    f"### Selected Rule\n{outputs[0]['sel_rule']}\n"
+                    f"### Selected Rule Probabßility\n{outputs[0]['sel_logprob'].exp():.2f}\n"
+                    f"### Selected Rule Reward\n {outputs[0]['sel_reward']}\n"
                     f"### Selected Rule Explainability\n{rules_scores_str}\n"
-                    f"### Environment Action\n{env_actions[0]}\n"
-                    f"### Explanation with thoughts and all rules\n{outputs['explanation'][0]}\n"
-                    f"### Explanation with only selected rule\n{outputs['explanation_rule_only'][0]}"
+                    f"### Environment Action\n{outputs[0]['action']}\n"
+                    f"### Explanation with thoughts and all rules\n{outputs[0]['explanation']}\n"
+                    f"### Explanation with only selected rule\n{outputs[0]['explanation_rule_only']}"
                 )
 
                 conversation = "\n".join(
@@ -504,12 +522,21 @@ def main(args: Args):
                     {
                         "global_step": global_step,
                         "example": example,
+                        "conversation": messages[0],
+                    }
+                )
+
+                # log the conversation and example in jsonl
+                jsonl_logger.write(
+                    {
+                        "global_step": global_step,
+                        "example": example,
                         "conversation": conversation,
                     }
                 )
 
             # advance
-            autoreset = np.logical_or(terminations, truncations)
+            autoreset = np.logical_or(dones, truncations)
             obs = next_obs
             state_vector = next_state_vector
             state_text = next_state_text
@@ -531,28 +558,14 @@ def main(args: Args):
             }
             torch.save(ckpt, ckpt_path)
 
-        # prior to training convert all to tensors
-        def _one_to_tensor(x: List[List]):
-            x = [torch.tensor(x_i, dtype=torch.float32) for x_i in x]
-            same_shape = all(x_i.shape == x[0].shape for x_i in x)
-            if same_shape:
-                return torch.stack(x)
-            else:
-                return torch.nested.nested_tensor(x)
-
-        def _all_envs_tensor(x: List[List]):
-            out = [_one_to_tensor(x_i) for x_i in x]
-            min_len = min(len(x_i) for x_i in out)
-            return torch.cat([x_i[-min_len:] for x_i in x])
-
-        b_state_vec = _all_envs_tensor(_state_vectors)
-        b_rules_emb = _all_envs_tensor(_rules_embs)
-        b_sel_idx = _all_envs_tensor(_sel_idxs)
-        b_value = _all_envs_tensor(_values)
-        b_sel_logprob = _all_envs_tensor(_sel_logprobs)
-        b_entropy = _all_envs_tensor(_entropies)
-        b_reward = _all_envs_tensor(_rewards)
-        b_done = _all_envs_tensor(_dones)
+        # b_state_vec = permute_env_time_dims_and_tensorize(_state_vectors, device)
+        # b_rules_emb = permute_env_time_dims_and_tensorize(_rules_embs, device)
+        # b_sel_idx = permute_env_time_dims_and_tensorize(_sel_idxs, device)
+        # b_value = permute_env_time_dims_and_tensorize(_values, device)
+        # b_sel_logprob = permute_env_time_dims_and_tensorize(_sel_logprobs, device)
+        # b_reward = permute_env_time_dims_and_tensorize(_rewards, device)
+        # b_done = permute_env_time_dims_and_tensorize(_dones, device)
+        # b_entropy = _all_envs_tensor(_entropies)
 
         # need to obtain the new rules
         if args.parallel_pipeline:
@@ -560,11 +573,13 @@ def main(args: Args):
                 next_state_text, next_state_vector, pre_action_only=True
             )
         else:
-            outputs, messages = lang_agent(next_state_text, next_state_vector, pre_action_only=True)
+            outputs, messages = lang_agent(
+                next_state_text, next_state_vector, pre_action_only=True
+            )
 
-        next_rules_emb = [torch.FloatTensor(x["rules_emb"]) for x in outputs]
-        next_rules_emb = nested_tensor(next_rules_emb).to(device)
-        next_dones = torch.FloatTensor(terminations).to(device)
+        next_rules_emb = [FloatTensor(x["rules_emb"]) for x in outputs]
+        next_rules_emb = nested_tensor(next_rules_emb).to(dev)
+        next_dones = FloatTensor(dones).to(dev)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -572,40 +587,54 @@ def main(args: Args):
             next_values = pool_attention_network(next_values)
 
             # compute the advantages
-            b_advantages = torch.zeros_like(b_reward).to(device)
-            lastgaelam = 0
-            for t in reversed(range(len(b_advantages))):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_dones.float()
-                    nextvalues = next_values
-                else:
-                    nextnonterminal = 1.0 - b_done[t + 1]
-                    nextvalues = b_value[t + 1]
-                delta = (
-                    b_reward[t] + args.gamma * nextvalues * nextnonterminal - b_value[t]
-                )
-                b_advantages[t] = lastgaelam = (
-                    delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                )
-            b_returns = b_advantages + _values
+            # need to do per environment to deal with potentially different lengths
+            # as well as nested tensors for the rules
+            # (and maybe future support for different state space shapes)
+            b_advantages = []
+            b_returns = []
+
+            for j in range(args.num_envs):
+                T = len(
+                    b_reward[j]
+                )  # it is not equal to num steps due to the autoreset skip
+                b_advantages.append(torch.zeros(T, device=dev))
+                b_returns.append(torch.zeros(T, device=dev))
+
+                lastgaelam = 0
+                for t in reversed(range(T)):
+                    if t == T - 1:
+                        nextnonterminal = 1.0 - next_dones[j]
+                        nextvalues = next_values[j]
+                    else:
+                        nextnonterminal = 1.0 - b_done[j][t + 1]
+                        nextvalues = b_value[j][t + 1]
+                    delta = (
+                        b_reward[j][t]
+                        + args.gamma * nextvalues * nextnonterminal
+                        - b_value[j][t]
+                    )
+                    b_advantages[j][t] = lastgaelam = (
+                        delta
+                        + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    )
+                    b_returns[j][t] = b_advantages[j][t] + b_value[j][t]
 
         # flatten the batch
-        # b_states_vec = _state_vector.reshape(
-        #     (-1,) + envs.single_observation_space[0].shape
-        # )
-        # b_logprobs = _sel_logprobs.reshape(-1)
-        # b_sel_idxs = _sel_idxs.reshape(-1)
-        # b_advantages = _advantages.reshape(-1)
-        # b_returns = _returns.reshape(-1)
-        # b_values = _values.reshape(-1)
-        # b_rules_emb = _rules_emb.reshape((-1,) + _rules_emb.shape[2:])
+        b_state_vec = collate_samples(b_state_vec)
+        b_sel_logprob = collate_samples(b_sel_logprob)
+        b_sel_idx = collate_samples(b_sel_idx)
+        b_advantages = collate_samples(b_advantages)
+        b_returns = collate_samples(b_returns)
+        b_value = collate_samples(b_value)
+        b_rules_emb = collate_samples(b_rules_emb)
 
         # Optimizing the policy and value network
-        b_inds = np.arange(batch_size)
+        N = b_state_vec.shape[0]
+        b_inds = np.arange(N, dtype=np.int32)
         clipfracs = []
         for epoch in tqdm(range(args.update_epochs), desc=f"Iter: {iter},  Optimizing"):
             np.random.shuffle(b_inds)
-            for start in range(0, batch_size, minibatch_size):
+            for start in range(0, N, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
@@ -692,7 +721,7 @@ def main(args: Args):
         #     sel_rewards = []
         #     obs, _ = eval_envs.reset(seed=args.seed)
         #     state_vector, state_text = obs
-        #     state_vector = torch.tensor(state_vector, dtype=torch.float32).to(device)
+        #     state_vector = tensor(state_vector, dtype=torch.float32).to(device)
         #     for _ in tqdm(
         #         range(args.num_eval_steps), desc=f"Iter: {iter},  Evaluating"
         #     ):
@@ -707,9 +736,9 @@ def main(args: Args):
         #                 )
         #         obs, reward, _, _, infos = eval_envs.step(actions)
         #         state_vector, state_text = obs
-        #         state_vector = torch.FloatTensor(state_vector).to(device)
-        #         sel_rewards.append(torch.FloatTensor(outputs["sel_reward"]).to(device))
-        #         eval_rewards.append(torch.FloatTensor(reward).to(device))
+        #         state_vector = FloatTensor(state_vector).to(device)
+        #         sel_rewards.append(FloatTensor(outputs["sel_reward"]).to(device))
+        #         eval_rewards.append(FloatTensor(reward).to(device))
         #     eval_rewards = torch.stack(eval_rewards).mean().item()
         #     sel_rewards = torch.stack(sel_rewards).mean().item()
         #     total_rewards = eval_rewards + sel_rewards
