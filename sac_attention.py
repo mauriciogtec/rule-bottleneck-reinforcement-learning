@@ -27,7 +27,7 @@ import buffers
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic, ValidAgents
 from layers import AttentionNetwork
-from llm_apis import ValidModels, get_llm_api
+from llm_apis import ValidLLMs, get_llm_api
 
 # configure logging
 logging.basicConfig(
@@ -73,8 +73,6 @@ class Args:
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    agent: ValidAgents = "llm_rules_agent"
-    """the agent to use"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
 
@@ -113,19 +111,18 @@ class Args:
     """the dropout rate"""
 
     # Eval
-    num_eval_steps: int = 64
-    """the number of steps to run in each eval environment per policy rollout"""
-    eval_interval: int = 1
-    """the evaluation interval"""
-    eval_deterministic: bool = True
-    """if toggled, the evaluation will be deterministic"""
+    # num_eval_steps: int = 64
+    # eval_interval: int = 1
+    # """the evaluation interval"""
+    # eval_deterministic: bool = True
+    # """if toggled, the evaluation will be deterministic"""
     rolling_rewards_window: int = 64
     """the rolling rewards window"""
 
     # LLM
     num_rules: int = 10
     """The number of rules for rule-based LLM-only agent"""
-    llm: ValidModels = "gpt-4o-mini-huit"
+    llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
     embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
     """the language model to use for embeddings"""
@@ -151,7 +148,7 @@ class Args:
 def make_env(env_id, seed, eval=False):
     def thunk():
         if eval:
-            env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
+            env = gym.make(env_id, max_episode_steps=None)
         else:
             env = gym.make(env_id)
 
@@ -293,7 +290,7 @@ def update_actor(
     Returns:
         actor_loss: Loss for the actor network.
     """
-    actor.train()
+    lang_agent.actor.train()
     data = buffer.sample(batch_size)
     obs_vec = (
         data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
@@ -321,7 +318,7 @@ def update_actor(
     actor_loss.backward()
     actor_optimizer.step()
 
-    actor.eval()
+    lang_agent.actor.eval()
 
     return actor_loss.item(), entropy, probs, log_probs
 
@@ -583,8 +580,6 @@ def main(args: Args):
         entropy = [x["entropy"] for x in outputs]
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
-
-        ss = torch.LongTensor(sel_idxs).to(device)
 
         # accumulate and log the rewards
         for j in range(args.num_envs):
