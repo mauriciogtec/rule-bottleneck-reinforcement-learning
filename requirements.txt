@@ -1,6 +1,7 @@
 langchain
 langchain-together
 gymnasium
+tensorboard
 torch
 torchvision
 torchaudio
