@@ -1,7 +1,5 @@
 from typing import List, Optional
 
-from together import Embeddings
-
 from envs.wrappers import LanguageWrapper
 
 
