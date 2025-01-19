@@ -1,18 +1,12 @@
 import math
 import re
-import warnings  # , Optional, Tuple, SupportsFloat
+import warnings
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Any, Dict, List, Literal, Sequence
+from typing import Any, Dict, Literal
 
-# import numpy as np
-import gym
-import numpy as np
+import gymnasium as gym
 from gymnasium import Env, Wrapper, spaces
-
-# from gymnasium.core import ActType
-# from numpy import ndarray
-# from langchain_core.embeddings import Embeddings
 
 
 class LanguageWrapper(Wrapper, ABC):
@@ -180,7 +174,7 @@ class LanguageWrapper(Wrapper, ABC):
             str: The text description of the action.
         """
         act_space = self.env.action_space
-        if isinstance(act_space, spaces.Discrete):  
+        if isinstance(act_space, spaces.Discrete):
             # get the first int
             numbers = re.findall(r"\d+", str(s))
             # grab the first number in the state space
