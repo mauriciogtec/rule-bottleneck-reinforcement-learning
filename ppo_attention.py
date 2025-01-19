@@ -167,7 +167,7 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
+    gamma: float = 0.95
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
@@ -419,11 +419,9 @@ def main(args: Args):
             # add the transition to the buffer
             for j in range(args.num_envs):
                 if not autoreset[j]:
-                    b_done[j].append(tensor(dones[j], dtype=torch.float32).to(dev))
                     b_state_vec[j].append(state_vector[j])
-                    b_rules_emb[j].append(
-                        tensor(outputs[j]["rules_emb"], dtype=torch.float32).to(dev)
-                    )
+                    b_rules_emb[j].append(outputs[j]["rules_emb"])
+                    b_done[j].append(tensor(dones[j], dtype=torch.float32).to(dev))
                     b_sel_idx[j].append(
                         tensor(outputs[j]["sel_idx"], dtype=torch.long).to(dev)
                     )
