@@ -184,3 +184,10 @@ class AttentionNetwork(nn.Module):
         queries = self.linear(queries).squeeze(-1)
 
         return queries  # , weights
+
+
+def pool_attention_network(x: torch.Tensor):
+    """Mean pooling over last dimension, checks if input is nested"""
+    if x.is_nested:
+        return torch.stack([t.mean(-1) for t in x])
+    return x.mean(-1)
