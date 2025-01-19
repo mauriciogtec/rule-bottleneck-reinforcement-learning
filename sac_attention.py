@@ -27,7 +27,7 @@ import buffers
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic, ValidAgents
 from layers import AttentionNetwork
-from llm_apis import ValidModels, get_llm_api
+from llm_apis import ValidLLMs, get_llm_api
 
 # configure logging
 logging.basicConfig(
@@ -73,13 +73,11 @@ class Args:
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    agent: ValidAgents = "llm_rules_agent"
-    """the agent to use"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
 
     # Algorithm
-    total_timesteps: int = 1250
+    total_timesteps: int = 1280
     """total timesteps of the experiments"""
     gamma: float = 0.95
     """the discount factor gamma"""
@@ -91,15 +89,15 @@ class Args:
     """timestep to start learning"""
     policy_lr: float = 1e-3
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 3e-4
+    q_lr: float = 1e-3
     """the learning rate of the Q network network optimizer"""
     update_frequency: float | int = 1
     """the frequency of training updates"""
     warmup_updates: int = 64
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 16
+    actor_updates: int = 32
     """the number of updates to the actor per update cycle"""
-    critic_updates: int = 4
+    critic_updates: int = 32
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
@@ -109,21 +107,22 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+    dropout: float = 0.0
+    """the dropout rate"""
 
     # Eval
-    num_eval_steps: int = 64
-    """the number of steps to run in each eval environment per policy rollout"""
-    eval_interval: int = 1
-    """the evaluation interval"""
-    eval_deterministic: bool = True
-    """if toggled, the evaluation will be deterministic"""
+    # num_eval_steps: int = 64
+    # eval_interval: int = 1
+    # """the evaluation interval"""
+    # eval_deterministic: bool = True
+    # """if toggled, the evaluation will be deterministic"""
     rolling_rewards_window: int = 64
     """the rolling rewards window"""
 
     # LLM
     num_rules: int = 10
     """The number of rules for rule-based LLM-only agent"""
-    llm: ValidModels = "gpt-4o-mini-huit"
+    llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
     embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
     """the language model to use for embeddings"""
@@ -137,7 +136,7 @@ class Args:
     """the number of steps to collect data to the buffer"""
     load_buffer: bool = True
     """if toggled, the agent will load the buffer from the pickle file if it exists"""
-    buffer_size: int = 1024
+    buffer_size: int = 4096
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
 
     # Torch compile
@@ -149,7 +148,7 @@ class Args:
 def make_env(env_id, seed, eval=False):
     def thunk():
         if eval:
-            env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
+            env = gym.make(env_id, max_episode_steps=None)
         else:
             env = gym.make(env_id)
 
@@ -206,6 +205,8 @@ def update_critic(
         qf1_loss: Loss for Q-network 1.
         qf2_loss: Loss for Q-network 2.
     """
+    qf1_values.train()
+    qf2_values.train()
     data = buffer.sample(batch_size)
     next_obs_vec = (
         data["next_obs_vec"].unsqueeze(1)
@@ -258,6 +259,9 @@ def update_critic(
     qf_loss.backward()
     q_optimizer.step()
 
+    qf1_values.eval()
+    qf2_values.eval()
+
     return qf_loss.item(), qf1_loss.item(), qf1_a_values, qf2_loss.item(), qf2_a_values
 
 
@@ -286,6 +290,7 @@ def update_actor(
     Returns:
         actor_loss: Loss for the actor network.
     """
+    lang_agent.actor.train()
     data = buffer.sample(batch_size)
     obs_vec = (
         data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
@@ -312,6 +317,8 @@ def update_actor(
     actor_optimizer.zero_grad()
     actor_loss.backward()
     actor_optimizer.step()
+
+    lang_agent.actor.eval()
 
     return actor_loss.item(), entropy, probs, log_probs
 
@@ -355,9 +362,7 @@ def update_alpha(
     return alpha_loss.item(), alpha
 
 
-if __name__ == "__main__":
-    args = tyro.cli(Args)
-
+def main(args: Args):
     run_id = f"sac_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
@@ -430,16 +435,19 @@ if __name__ == "__main__":
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
+        dropout=args.dropout,
     )
     qf1 = AttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
+        dropout=args.dropout,
     )
     qf2 = AttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
+        dropout=args.dropout,
     )
 
     logging.info("--- Actor ---")
@@ -572,8 +580,6 @@ if __name__ == "__main__":
         entropy = [x["entropy"] for x in outputs]
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
-
-        ss = torch.LongTensor(sel_idxs).to(device)
 
         # accumulate and log the rewards
         for j in range(args.num_envs):
@@ -813,3 +819,8 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
+
+
+if __name__ == "__main__":
+    args = tyro.parse(Args)
+    main(args)

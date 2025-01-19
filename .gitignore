@@ -21,3 +21,7 @@ notebooks/
 
 # buffer chaching
 buffers*/
+
+# cluster jobs
+slurm_scripts/
+slurm_logs/

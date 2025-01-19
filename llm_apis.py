@@ -296,7 +296,7 @@ ModelAPIDict = {
     "gpt-4o-mini": ChatOpenAI,
 }
 
-ValidModels = Literal[
+ValidLLMs = Literal[
     "google/gemma-2b-it",
     "meta-llama/Llama-3.2-3B-Instruct-Turbo",
     "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
@@ -314,7 +314,7 @@ ValidModels = Literal[
 
 
 def invoke_with_retries(
-    model: ValidModels,
+    model: ValidLLMs,
     messages: List[Dict[Literal["role", "content"], str]],
     *args,
     max_attempts: int = 3,
@@ -334,7 +334,7 @@ def invoke_with_retries(
             time.sleep(wait_time_between_attempts)
 
 
-def get_llm_api(model: ValidModels) -> Any:
+def get_llm_api(model: ValidLLMs) -> Any:
     return ModelAPIDict[model](model=model)
 
 

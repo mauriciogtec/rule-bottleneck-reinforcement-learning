@@ -1,18 +1,12 @@
 import math
 import re
-import warnings  # , Optional, Tuple, SupportsFloat
+import warnings
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Any, Dict, List, Literal, Sequence
+from typing import Any, Dict, Literal
 
-# import numpy as np
-import gym
-import numpy as np
+import gymnasium as gym
 from gymnasium import Env, Wrapper, spaces
-
-# from gymnasium.core import ActType
-# from numpy import ndarray
-# from langchain_core.embeddings import Embeddings
 
 
 class LanguageWrapper(Wrapper, ABC):
