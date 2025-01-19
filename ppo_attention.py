@@ -232,7 +232,7 @@ class Args:
 
 
 def main(args: Args):
-    run_id = f"sac_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
     ckpt_path = f"checkpoints/best_{run_name}.state"
