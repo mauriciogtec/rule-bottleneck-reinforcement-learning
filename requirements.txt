@@ -5,6 +5,11 @@ torch
 torchvision
 torchaudio
 torch-summary
+transformers
+accelerator
+bitsandbytes
+peft
+tyro
 jsonlines
 wandb
 scikit-learn
