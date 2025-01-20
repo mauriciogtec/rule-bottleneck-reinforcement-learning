@@ -47,7 +47,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
+    cuda: bool = False
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -109,8 +109,6 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     dropout: float = 0.0
     """the dropout rate"""
-    device: Literal["cpu", "cuda"] = "cpu"
-    """the device to run the experiment"""
 
     # Eval
     # num_eval_steps: int = 64
@@ -409,11 +407,7 @@ def main(args: Args):
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    dev = torch.device(
-        "cuda"
-        if args.device == "cuda" and torch.cuda.is_available() and args.cuda
-        else "cpu"
-    )
+    dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
     train_env_funs = [
@@ -587,7 +581,6 @@ def main(args: Args):
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
 
-
         # Get the next rules
         outputs = deepcopy(outputs)
         messages = deepcopy(messages)
@@ -607,7 +600,6 @@ def main(args: Args):
                     writer.add_scalar("charts/episodic_length", l, global_step)
 
                     logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
-
 
         for j in range(args.num_envs):
             if not autoreset[j]:
