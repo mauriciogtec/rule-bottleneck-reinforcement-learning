@@ -12,7 +12,7 @@ import tyro
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -191,6 +191,8 @@ class Args:
     """the target KL divergence threshold"""
     dropout: float = 0.0
     """the dropout rate"""
+    device: Literal["cpu", "cuda"] = "cpu"
+    """the device to run the experiment""" 
 
     num_eval_steps: int = 64
     """the number of steps to run in each eval environment per policy rollout"""
@@ -273,7 +275,11 @@ def main(args: Args):
     num_rules = args.num_rules
 
     set_seed(args.seed)
-    dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    dev = torch.device(
+        "cuda"
+        if args.device == "cuda" and torch.cuda.is_available() and args.cuda
+        else "cpu"
+    )
 
     if args.track:
         import wandb
@@ -442,29 +448,29 @@ def main(args: Args):
                     # log the rewards
                     writer.add_scalar(
                         f"charts/episodic_env_rewards",
-                        np.mean(_ep_buffer["env_rewards"][j]),
+                        np.mean(_ep_buffer["env_rewards"][j]).item(),
                         global_step,
                     )
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(
-                            f"charts/sel_reward_scores/q{i}", x, global_step
+                            f"charts/sel_reward_scores/q{i}", x.item(), global_step
                         )
                     m = np.mean(_ep_buffer["sel_rewards_total"][j])
-                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar("charts/episodic_sel_rewards", m.item(), global_step)
                     writer.add_scalar(
                         "charts/episodic_entropy",
-                        np.mean(_ep_buffer["entropy"][j]),
+                        np.mean(_ep_buffer["entropy"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_sel_probs",
-                        np.mean(_ep_buffer["sel_probs"][j]),
+                        np.mean(_ep_buffer["sel_probs"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_total_rewards",
-                        np.mean(_ep_buffer["total_rewards"][j]),
+                        np.mean(_ep_buffer["total_rewards"][j]).item(),
                         global_step,
                     )
 
