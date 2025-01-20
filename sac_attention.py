@@ -205,8 +205,8 @@ def update_critic(
         qf1_loss: Loss for Q-network 1.
         qf2_loss: Loss for Q-network 2.
     """
-    qf1_values.train()
-    qf2_values.train()
+    qf1.train()
+    qf2.train()
     data = buffer.sample(batch_size)
     next_obs_vec = (
         data["next_obs_vec"].unsqueeze(1)
@@ -259,8 +259,8 @@ def update_critic(
     qf_loss.backward()
     q_optimizer.step()
 
-    qf1_values.eval()
-    qf2_values.eval()
+    qf1.eval()
+    qf2.eval()
 
     return qf_loss.item(), qf1_loss.item(), qf1_a_values, qf2_loss.item(), qf2_a_values
 
