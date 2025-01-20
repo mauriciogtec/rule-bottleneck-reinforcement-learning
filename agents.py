@@ -34,7 +34,7 @@ def generate_rule_combinations(
 
 def parse_rules(x: str) -> List[str]:
     # 1. Remove the following patters
-    patterns = ["```yaml", "```yml", "```"]
+    patterns = ["```yaml", "```yml", "```", "```json"]
     x = re.sub("|".join(patterns), "", x)
 
     # 2. Remove trailing white space, and collapse new lines
@@ -44,9 +44,14 @@ def parse_rules(x: str) -> List[str]:
     # 3. Break in lines
     x = x.split("\n")
 
+    # Get all the content wrapped between braces {}
+    # x = re.findall(r"\{([^}]+)\}", x)
+
     # 4. Remove empty lines
     x = [line for line in x if line.strip() != ""]
 
+    # 5. Add the braces back
+    # x = [f"{{{line}}}" for line in x]
     return x
 
 
@@ -369,12 +374,20 @@ class LLMRulesAgent(BaseAgent):
             f"Now, suggest {self.num_rules} rules that could be useful to make an optimal decision in the current state. "
             " For each rule, provide the explanation of why it is important to consider it at the given state."
             " Your response consist solely of a machine-readable YAML list."
-            " Each rule should be exactly one line and start with the character `-`."
-            " The rules should be in natural language. Follow the following template:\n\n"
-            " [Motivation | Because of...], [Prioritize | do] [what] [if | when]. [Relevance to the current problem state]. [Explanation]\n\n"
-            " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-            " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
-            " Your answer should start with the character ```- "
+            # " Each rule should be exactly one line and start with the character `-`."
+            " Each rule should be in natural language using the following schema:\n\n"
+            " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
+            # # " [Motivation | Because of...], [Prioritize | do] [what] [if | when]. [Relevance to the current problem state]. [Explanation]\n\n"
+            # " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
+            # " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
+            # " Your answer should start with the character ```- "
+            "- Answer with exactly one line for each rule. Start each line with the character '- ```' and end with '```'.\n"
+            "- The 'background' should a brief introduction to justify the rule.\n"
+            "- The priorization 'rule' should be statement of the form '[do/select/prioritize] [condition]', where X is related to the action"
+            " and Y is related to the state.\n"
+            "- The 'state relevance' should explain why the rule is applicable to the current state.\n"
+            "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
+            "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
         )
 
         if self.example_rules is not None:
