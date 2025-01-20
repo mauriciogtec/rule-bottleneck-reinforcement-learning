@@ -18,7 +18,7 @@ from tqdm import tqdm
 import agents
 from agents import ValidAgents
 import envs as E  # registers the gym environments during import
-from llm_apis import get_llm_api, ValidModels
+from llm_apis import get_llm_api, ValidLLMs
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -55,7 +55,7 @@ class Args:
     """the agent to use"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
-    llm: ValidModels = "gpt-4o-mini-huit"
+    llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
 
     # eval
