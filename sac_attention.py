@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil
-from typing import Optional
+from typing import Literal, Optional
 
 import gymnasium as gym
 import jsonlines
@@ -109,6 +109,8 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     dropout: float = 0.0
     """the dropout rate"""
+    device: Literal["cpu", "cuda"] = "cpu"
+    """the device to run the experiment"""
 
     # Eval
     # num_eval_steps: int = 64
@@ -407,7 +409,11 @@ def main(args: Args):
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    dev = torch.device(
+        "cuda"
+        if args.device == "cuda" and torch.cuda.is_available() and args.cuda
+        else "cpu"
+    )
 
     # env setup
     train_env_funs = [
@@ -481,7 +487,7 @@ def main(args: Args):
             1 / torch.tensor(envs.single_action_space.n)
         )
         log_alpha = torch.scalar_tensor(
-            np.log(args.alpha), requires_grad=True, device=device
+            np.log(args.alpha), requires_grad=True, device=dev
         )
         alpha = log_alpha.exp().item()  # ~ 0.01
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
@@ -494,7 +500,7 @@ def main(args: Args):
             buffer = pickle.load(f)
         needs_save_buffer = False
     else:
-        buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=device)
+        buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=dev)
         needs_save_buffer = True
 
     starting_step = 0
@@ -502,7 +508,7 @@ def main(args: Args):
     best_total_reward = -float("inf")
     best_model = None
 
-    checkpoint = load_checkpoint(ckpt_path, device)
+    checkpoint = load_checkpoint(ckpt_path, dev)
     if args.resume and checkpoint:
         logging.info(
             f"Resuming training from checkpoint at step {checkpoint['global_step']}."
@@ -541,7 +547,7 @@ def main(args: Args):
     obs_vec, obs_text = obs
 
     # convert to torch tensor
-    obs_vec = torch.FloatTensor(obs_vec).to(device)
+    obs_vec = torch.FloatTensor(obs_vec).to(dev)
 
     # expand state space with the rules, i.e., internal states
     with torch.no_grad():
@@ -570,11 +576,11 @@ def main(args: Args):
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
         next_obs_vec, next_obs_text = next_obs
-        dones = torch.FloatTensor(dones).to(device)
-        next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
+        dones = torch.FloatTensor(dones).to(dev)
+        next_obs_vec = torch.FloatTensor(next_obs_vec).to(dev)
 
-        env_rewards = torch.FloatTensor(env_rewards).to(device)
-        sel_rewards = torch.FloatTensor([x["sel_reward"] for x in outputs]).to(device)
+        env_rewards = torch.FloatTensor(env_rewards).to(dev)
+        sel_rewards = torch.FloatTensor([x["sel_reward"] for x in outputs]).to(dev)
         sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
         rewards = env_rewards + sel_rewards
         entropy = [x["entropy"] for x in outputs]
@@ -749,7 +755,7 @@ def main(args: Args):
                             qf1_target=qf1_target,
                             qf2_target=qf2_target,
                             q_optimizer=q_optimizer,
-                            device=device,
+                            device=dev,
                             lang_agent=lang_agent,
                         )
                     )
@@ -764,7 +770,7 @@ def main(args: Args):
                         qf1=qf1,
                         qf2=qf2,
                         lang_agent=lang_agent,
-                        device=device,
+                        device=dev,
                     )
 
                     if args.autotune:  # Check if alpha tuning is enabled
