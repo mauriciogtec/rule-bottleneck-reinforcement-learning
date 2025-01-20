@@ -120,7 +120,7 @@ class Args:
     """the rolling rewards window"""
 
     # LLM
-    num_rules: int = 10
+    num_rules: int = 5
     """The number of rules for rule-based LLM-only agent"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
@@ -366,7 +366,7 @@ def main(args: Args):
     run_id = f"sac_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
-    ckpt_path = f"checkpoints/best_{run_name}.state"
+    ckpt_path = f"checkpoints/{run_name}.state"
     text_logs_path = f"text_logs/{run_name}.jsonl"
     json_logger_mode = "w" if not args.resume else "a"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
@@ -568,11 +568,11 @@ def main(args: Args):
         actions = [x["action"] for x in outputs]
 
         # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, env_rewards, terminations, truncations, infos = envs.step(actions)
+        next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
         next_obs_vec, next_obs_text = next_obs
-
+        dones = torch.FloatTensor(dones).to(device)
         next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
-        terminations = torch.FloatTensor(terminations).to(device)
+
         env_rewards = torch.FloatTensor(env_rewards).to(device)
         sel_rewards = torch.FloatTensor([x["sel_reward"] for x in outputs]).to(device)
         sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
@@ -581,10 +581,51 @@ def main(args: Args):
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
         _rolling_rewards.extend(list(rewards.cpu().numpy()))
 
+
+        # Get the next rules
+        outputs = deepcopy(outputs)
+        messages = deepcopy(messages)
+        with torch.no_grad():
+            next_outputs, next_messages = lang_agent.parallel_pipeline(
+                next_obs_text, next_obs_vec, pre_action_only=True
+            )
+        next_rules = [x["rules"] for x in next_outputs]
+        next_rules_emb = [x["rules_emb"] for x in next_outputs]
+        next_sel_idxs = [x["sel_idx"] for x in next_outputs]
+
+        if "episode" in infos:
+            for i in range(args.num_envs):
+                if infos["_episode"][i]:
+                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                    writer.add_scalar("charts/episodic_return", r, global_step)
+                    writer.add_scalar("charts/episodic_length", l, global_step)
+
+                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
+
+
+        for j in range(args.num_envs):
+            if not autoreset[j]:
+                sample = {}
+                sample["obs_vec"] = obs_vec[j]
+                sample["obs_text"] = obs_text[j]
+                sample["rules"] = rules[j]
+                sample["rules_emb"] = rules_emb[j]
+                sample["dones"] = dones[j]
+                sample["sel_idxs"] = sel_idxs[j]
+                sample["actions"] = actions[j]
+                sample["next_obs_vec"] = next_obs_vec[j]
+                sample["next_obs_text"] = next_obs_text[j]
+                sample["next_rules_emb"] = next_rules_emb[j]
+                sample["next_rules"] = next_rules[j]
+                sample["rewards"] = rewards[j]
+                sample["sel_rewards"] = sel_rewards[j]
+                sample["env_rewards"] = env_rewards[j]
+                buffer.add(sample)
+
         # accumulate and log the rewards
         for j in range(args.num_envs):
-            done_now = terminations[j] or truncations[j]
-            if not done_now:
+            needs_reset = dones[j] or trunc[j]
+            if not needs_reset:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
@@ -671,49 +712,13 @@ def main(args: Args):
             best_total_reward = total_reward
             best_model = (actor, qf1, qf2)
 
-        # Get the next rules
-        with torch.no_grad():
-            outputs, messages = lang_agent.parallel_pipeline(
-                next_obs_text, next_obs_vec, pre_action_only=True
-            )
-        next_rules = [x["rules"] for x in outputs]
-        next_rules_emb = [x["rules_emb"] for x in outputs]
-        next_sel_idxs = [x["sel_idx"] for x in outputs]
-
-        if "episode" in infos:
-            for i in range(args.num_envs):
-                if infos["_episode"][i]:
-                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
-                    writer.add_scalar("charts/episodic_return", r, global_step)
-                    writer.add_scalar("charts/episodic_length", l, global_step)
-
-                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
-
-        for j in range(args.num_envs):
-            if not autoreset[j]:
-                sample = {}
-                sample["obs_vec"] = obs_vec[j]
-                sample["obs_text"] = obs_text[j]
-                sample["rules"] = rules[j]
-                sample["rules_emb"] = rules_emb[j]
-                sample["next_obs_vec"] = next_obs_vec[j]
-                sample["next_obs_text"] = next_obs_text[j]
-                sample["next_rules_emb"] = next_rules_emb[j]
-                sample["next_rules"] = next_rules[j]
-                sample["actions"] = actions[j]
-                sample["sel_idxs"] = sel_idxs[j]
-                sample["rewards"] = rewards[j]
-                sample["sel_rewards"] = sel_rewards[j]
-                sample["env_rewards"] = env_rewards[j]
-                sample["dones"] = terminations[j]
-                buffer.add(sample)
-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        autoreset = np.logical_or(terminations, truncations)
+        autoreset = np.logical_or(autoreset, dones)
         obs_vec, obs_text = next_obs_vec, next_obs_text
         rules = next_rules
         rules_emb = next_rules_emb
         sel_idxs = next_sel_idxs
+        outputs, messages = next_outputs, next_messages
 
         # ALGO LOGIC: training.
         if buffer.size() > args.learning_starts:
