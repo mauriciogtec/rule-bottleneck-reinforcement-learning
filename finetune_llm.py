@@ -1,30 +1,189 @@
+# this file is an adaption of the clean rl's PPO implementation for rule-based agents
+# rule-based language agents use different internal actions than the environment actions
+# in addition, one must keep track of the rules selected by the agent.
+
 from dataclasses import dataclass
-from typing import Literal
+import itertools
+import logging
+import shutil
+import os
+import random
+import tyro
+import time
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Literal, Optional
 
 import gymnasium as gym
+import numpy as np
 import torch
-import transformers
-import tyro
+from torch.utils.data import DataLoader
+from datasets import Dataset
+import torchsummary
+from torch.nested import nested_tensor
+from torch.utils.tensorboard import SummaryWriter
+import torch.nn as nn
+from tqdm import tqdm
+from torch import Tensor, tensor, FloatTensor
+from llm_apis import llama_prompt_from_messages
+
+from accelerate import Accelerator
 from peft import LoraConfig, TaskType, get_peft_model
+from bitsandbytes.optim import PagedAdamW8bit
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    get_scheduler,
+    DataCollatorForSeq2Seq,
+    AutoModelForCausalLM,
 )
+from trl.models import AutoModelForCausalLMWithValueHead
 
-import envs as E
+import envs as E  # registers the gym environments during import
 
-ValidLLMs = Literal["meta-llama/Llama-3.2-3B-Instruct"]
+# from agents import RulesSelectorActorCritic
+from agents import LLMFineTuningAgent
+import jsonlines
+
+# configure logging
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+
+
+# class ActorCritic(nn.Module, AutoModelForCausalLM):
+#   """Agent class modeled after transformers.AutoModelForCausalLMWithValueHead"""
+#   transformers_parent_class = AutoModelForCausalLM
+
+#   def __init__(self, model, tokenizer):
+#     nn.Module().__init__()
+#     self.model = model
+#     self.tokenizer = tokenizer
+
+#     # value function related stuff
+#     self.hidden_size = self.model.config.hidden_size
+
+#     # define and initialize critic head
+#     self.v_head = nn.Linear(
+#       self.hidden_size, 1, dtype=self.model.dtype
+#     ).to(self.model.device)
+
+#   def forward(self, input_ids, attention_mask):
+#     outputs = self.model(
+#       input_ids=input_ids,
+#       attention_mask=attention_mask,
+#       output_hidden_states=True,
+#     )
+
+#     # here's a small modification from PPO for RLHF since we want the
+#     # last_token_hidden_state not the last_hidden_state for all tokens
+#     last_token_hidden_state = outputs.hidden_states[-1]
+#     lm_logits = outputs.logits
+#     loss = outputs.loss
+#     value = self.v_head(last_token_hidden_state).squeeze(-1)
+
+#     return (lm_logits, loss, value)
+
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+
+def save_checkpoint(state, checkpoint_path):
+    torch.save(state, checkpoint_path)
+
+
+def load_checkpoint(checkpoint_path, device):
+    if os.path.exists(checkpoint_path):
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
+    else:
+        logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
+        return None
+
+
+def parallel_pipeline(lang_agent, state_text, state_vector, post_action=True):
+    # Get the action and value in parallel
+    def call_pipeline(i):
+        with torch.no_grad():
+            return lang_agent(
+                state_text=state_text[i],
+                state_vector=state_vector[i],
+                post_action=post_action,
+            )
+
+    num_envs = len(state_text)
+    num_procs = min(os.cpu_count() - 1, num_envs)
+    with ThreadPoolExecutor(max_workers=num_procs) as executor:
+        results = list(executor.map(call_pipeline, range(num_envs)))
+        env_actions, outputs, messages = zip(*results)
+        env_actions = list(env_actions)
+        outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
+        messages = list(messages)
+
+    return env_actions, outputs, messages
+
+
+def collate_samples(x: List[List]):
+    """Takes as input a list of lists where the first index is the environment index
+    and the second one is the time step index"""
+    # first concatenate the lists using itertools
+    x = list(itertools.chain(*x))
+
+    # now check if all the first shapes are the same
+    same_shape = all(x[0].shape == y.shape for y in x)
+    if same_shape:
+        return torch.stack(x)
+    else:
+        return nested_tensor(x)
+
+
+def to_token_data_loader(
+    messages: List[List[dict]],
+    tokenizer: AutoTokenizer,
+    accelerator: Accelerator,
+    minibatch_size: int,
+) -> DataLoader:
+    # tokenize each message
+    prompts = [llama_prompt_from_messages(m) for m in messages]
+    tokens = [tokenizer(x) for x in prompts]
+    # add tokkenizer lengths
+    for t in tokens:
+        t["length"] = len(t["input_ids"])
+    collator = DataCollatorForSeq2Seq(tokenizer)
+    loader = DataLoader(
+        Dataset.from_list(tokens),
+        batch_size=minibatch_size,
+        shuffle=False,
+        collate_fn=collator,
+        num_workers=min(len(prompts), os.cpu_count() - 1),
+    )
+
+    return accelerator.prepare(loader)
+
+
+def print_trainable_parameters(model):
+    """
+    Prints the number of trainable parameters in the model.
+    """
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    print(
+        f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
+    )
 
 
 @dataclass
 class Args:
-    # LLM
-    model_name: ValidLLMs = "meta-llama/Llama-3.2-3B-Instruct"
-    """The model to finetune"""
-    train_dtype: Literal["float16", "bfloat16"] = "float16"
-    """The dtype to use for training"""
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
     seed: int = 1
@@ -35,23 +194,59 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "rulebots"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    log_examples_interval: int = 20
+    """the interval to log examples"""
+    save_interval: int = 1
+    """the interval to save the model"""
+    resume: bool = False
+    """if toggled, the model will be resumed from the last checkpoint"""
+    max_rule_combinations: int = 1
+    """the maximum number of rule combinations to use"""
+    exp_name: str = ""
+    """the name of this experiment"""
+    seed: int = 1
+    """seed of the experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    ckpt_interval: int = 1
+    """the saving interval of the model"""
+    overwrite_ckpt: bool = False
+    """if toggled and resuming is on, it will start fresh in resume mode, otherwise ignored"""
 
-    # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
+    # Logging and tracking arguments
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "rulebots"
+    """the wandb's project name"""
+    wandb_entity: Optional[str] = None
+    """the entity (team) of wandb's project"""
+    wandb_save_code: bool = True
+    """if toggled, the code will be saved to wandb"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
+    log_examples_interval: int = 20
+    """the interval to log examples"""
+    save_interval: int = 1
+    """the interval to save the model"""
+
+    # PPO specific arguments
+    env_id: str = "Uganda"
     """the id of the environment"""
     total_timesteps: int = 10000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 8
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 16
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -59,9 +254,9 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
-    """the number of mini-batches"""
-    update_epochs: int = 4
+    # num_minibatches: int = 16
+    # """the number of mini-batches"""
+    update_epochs: int = 32
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -75,50 +270,122 @@ class Args:
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: Optional[float] = None
     """the target KL divergence threshold"""
+    dropout: float = 0.0
+    """the dropout rate"""
 
-    # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
-    minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
-    num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
+    num_eval_steps: int = 64
+    """the number of steps to run in each eval environment per policy rollout"""
+    eval_interval: int = 4
+    """the evaluation interval"""
+    eval_deterministic: bool = True
+    """if toggled, the evaluation will be deterministic"""
+    rolling_rewards_window: int = 64
+    """the rolling rewards window"""
+
+    # LLM
+    num_rules: int = 10
+    """The number of rules for rule-based LLM-only agent"""
+    """the language model to use"""
+    hidden_dim: int = 16
+    """the hidden dimension of the networks"""
+    parallel_pipeline: bool = True
+    """if toggled, the pipeline will be parallelized"""
+    llm: str = "meta-llama/Llama-3.2-3B-Instruct"
+    """The model to finetune"""
+    train_dtype: Literal["float16", "bfloat16"] = "bfloat16"
+    """The dtype to use for training"""
+    gradient_accumulation_steps: int = 8
+    """The number of gradient accumulation steps"""
+    minibatch_size: int = 2
+    """The minibatch size"""
 
 
-def make_env(env_id, seed, eval=False):
-    def thunk():
-        if eval:
-            env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
-        else:
-            env = gym.make(env_id)
+# def make_env(env_id, seed, eval=False):
+#     def thunk():
+#         if eval:
+#             env = gym.make(env_id, max_episode_steps=None)
+#         else:
+#             env = gym.make(env_id)
 
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.reset(seed=seed)
-        return env
+#         env = gym.wrappers.RecordEpisodeStatistics(env)
+#         # env = E.wrappers.SymlogRewardsWrapper(env)
+#         env.reset(seed=seed)
+#         return env
 
-    return thunk
+#     return thunk
 
 
 def main(args: Args):
+    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
+    ckpt_path = f"checkpoints/best_{run_name}.state"
+    text_logs_path = f"text_logs/{run_name}.jsonl"
+    json_logger_mode = "w" if not args.resume else "a"
+    os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
+    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+    jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
+
+    if args.overwrite_ckpt:
+        # delete checkpoint path
+        if os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
+
+        # delete tensorboard logs
+        dirname = f"runs/{run_name}"
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+
+    # train_env_funs = [
+    #     make_env(args.env_id, args.seed + i) for i in range(args.num_envs)
+    # ]x
+    # eval_env_funs = [
+    #     make_env(args.env_id, 1000 * args.seed + i, eval=True)
+    #     for i in range(args.num_envs)
+    # ]
+
+    wrappers = [gym.wrappers.RecordEpisodeStatistics]
+    envs = gym.make_vec(args.env_id, args.num_envs, wrappers=wrappers)
+    # eval_envs = gym.make_vec(args.env_id, args.num_envs, wrappers=wrappers)
+
+    state_dim = envs.single_observation_space[0].shape[-1]
+    hidden_dim = args.hidden_dim
+    # num_rules = args.num_rules
+
+    set_seed(args.seed)
+    dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+
+    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.seed}"
+    run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
+
+    if args.track:
+        import wandb
+
+        wandb.init(
+            project=args.wandb_project_name,
+            entity=args.wandb_entity,
+            sync_tensorboard=True,
+            config=vars(args),
+            name=run_name,
+            monitor_gym=True,
+            save_code=True,
+        )
+    writer = SummaryWriter(f"runs/{run_name}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
+
+    # Load HF model
     dtype = getattr(torch, args.train_dtype)
 
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=dtype,
     )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        quantization_config=quantization_config,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        use_cache=True,
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -128,14 +395,523 @@ def main(args: Args):
         lora_dropout=0.0,
         bias="none",
     )
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     args.llm,
+    #     quantization_config=quantization_config,
+    #     torch_dtype=dtype,
+    #     low_cpu_mem_usage=True,
+    #     use_cache=True,
+    # )
+    # model = get_peft_model(model, peft_config)
 
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        args.llm,
+        quantization_config=quantization_config,
+        peft_config=peft_config,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
+        use_cache=True,
+    )
 
-    train_env_funs = [
-        make_env(args.env_id, args.seed + i) for i in range(args.num_envs)
-    ]
-    envs = gym.vector.SyncVectorEnv(train_env_funs)
+    print_trainable_parameters(model)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.llm)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    lang_agent = LLMFineTuningAgent(
+        task_text=envs.metadata["task_text"],
+        action_space_text=envs.metadata["action_space_text"],
+        llm=model,
+        tokenizer=tokenizer,
+    )
+
+    # Optimizer (8 bit variant)
+    optimizer = PagedAdamW8bit(
+        model.parameters(),
+        lr=args.learning_rate,
+    )
+
+    # Accelerator to handle parallelism
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps
+    )
+    model, optimizer = accelerator.prepare(model, optimizer)
+
+    global_step = 0
+    start_time = time.time()
+    best_total_reward = -float("inf")
+    best_model = None
+
+    checkpoint = load_checkpoint(ckpt_path, dev)
+    if args.resume and checkpoint:
+        logging.info(
+            f"Resuming training from checkpoint at step {checkpoint['global_step']}."
+        )
+        model.load_state_dict(checkpoint["state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        global_step = checkpoint["global_step"]
+        start_time = time.time() - checkpoint["elapsed_time"]
+        best_total_reward = checkpoint["best_total_reward"]
+        best_model = checkpoint["best_model"]
+        logging.info(f"Resumed training from checkpoint at step {global_step}.")
+
+    batch_size = int(args.num_envs * args.num_steps)
+    minibatch_size = args.minibatch_size
+    num_iterations = args.total_timesteps // batch_size
+
+    obs, infos = envs.reset()
+    _, state_text = obs
+
+    iter_start = (global_step // args.total_timesteps) + 1
+
+    # keep logging buffers for the rewards
+    autoreset = np.zeros(args.num_envs, dtype=bool)
+    _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
+    _rolling_rewards = deque(maxlen=args.rolling_rewards_window)
+
+    for iter in range(iter_start, num_iterations + 1):
+        # start on policy buffer
+        # b_state_vec = [[] for _ in range(args.num_envs)]
+        b_conversations = [[]]
+        b_done = [[] for _ in range(args.num_envs)]
+        b_rules_emb = [[] for _ in range(args.num_envs)]
+        b_sel_idx = [[] for _ in range(args.num_envs)]
+        b_value = [[] for _ in range(args.num_envs)]
+        b_sel_logprob = [[] for _ in range(args.num_envs)]
+        b_reward = [[] for _ in range(args.num_envs)]
+
+        if args.anneal_lr:
+            frac = 1.0 - (iter - 1.0) / num_iterations
+            lrnow = frac * args.learning_rate
+            optimizer.param_groups[0]["lr"] = lrnow
+
+        for step in tqdm(
+            range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
+        ):
+            global_step += args.num_envs
+
+            # Get the initial prompts
+            init_prompts = [lang_agent.system_prompt_with_state(s) for s in state_text]
+            outputs = [
+                {"initial_prompt": p, "state_text": s}
+                for (p, s) in zip(init_prompts, state_text)
+            ]
+            messages = [[{"role": "system", "content": p}] for p in outputs]
+
+            # if args.parallel_pipeline:
+            #     outputs, messages = lang_agent.parallel_pipeline(state_text)
+            # else:
+
+            # Add the rule generation prompt
+            thought_prompt = (
+                "First, reason about what elements should be considered when choosing the optimal action"
+                " in the given task of the decision making agent."
+                " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+                " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
+                " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+            )
+            for m in messages:
+                m.append({"role": "user", "content": thought_prompt})
+
+            # Tokenize each input state and concert torch dataset
+            loader = to_token_data_loader(
+                messages, tokenizer, accelerator, minibatch_size
+            )
+            with torch.no_grad():
+                # with accelerator.autocast():
+                for batch in loader:
+                    # make sure to return past key values
+                    # lm_logits, loss, value
+                    out_model = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        return_dict=True,
+                        output_hidden_states=True,
+                    )
+                    gen_outputs = model.generate(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        return_dict_in_generate=True,
+                        # output_logits=True,
+                        max_new_tokens=512,
+                        output_hidden_states=True,
+                    )
+                    # logits = gen_outputs["logits"]
+                    gen_tokens = gen_outputs["sequences"]
+                    gen_tokens = [x[l:] for (x, l) in zip(gen_tokens, batch["length"])]
+                    text = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+
+                    # lm_logits, loss, value
+                    out_model = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        past_key_values=gen_outputs["past_key_values"],
+                    )
+
+                    # convert logits to logprobs and add for each token
+                    logprobs = torch.zeros_like(gen_tokens, dtype=torch.float32)
+                    for j, L in enumerate(logits):
+                        ix = (torch.arange(L.shape[0]), gen_tokens[:, j])
+                        logprobs[:, j] = torch.nn.functional.log_softmax(L, dim=-1)[ix]
+
+            accelerator.wait_for_everyone()
+
+            # Add states and dones
+            env_actions = [x["action"] for x in outputs]
+            entropies = [x["entropy"] for x in outputs]
+            sel_logprobs = [x["sel_logprob"].exp() for x in outputs]
+
+            # Step the environment
+            next_obs, env_rewards, dones, truncations, infos = envs.step(env_actions)
+            next_state_vector, next_state_text = next_obs
+            next_state_vector = tensor(next_state_vector, dtype=torch.float32)
+            next_state_vector = next_state_vector.to(dev)
+
+            sel_rewards = [x["sel_reward"] for x in outputs]
+            sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
+            # sel_reward_scores_raw = [x["sel_reward_scores_raw"] for x in outputs]
+
+            # total rewards
+            rewards = env_rewards + sel_rewards
+            _rolling_rewards.extend(list(rewards))
+
+            # compute the values
+            # mean pool over rules for state-value
+            rules_emb = [FloatTensor(x["rules_emb"]) for x in outputs]
+            rules_emb = nested_tensor(rules_emb).to(dev)
+            values = critic(rules_emb, state_vector)
+            values = pool_attention_network(values)
+
+            # add the transition to the buffer
+            for j in range(args.num_envs):
+                if not autoreset[j]:
+                    b_state_vec[j].append(state_vector[j])
+                    b_rules_emb[j].append(outputs[j]["rules_emb"])
+                    b_done[j].append(tensor(dones[j], dtype=torch.float32).to(dev))
+                    b_sel_idx[j].append(
+                        tensor(outputs[j]["sel_idx"], dtype=torch.long).to(dev)
+                    )
+                    b_sel_logprob[j].append(
+                        tensor(outputs[j]["sel_logprob"], dtype=torch.float32).to(dev)
+                    )
+                    b_reward[j].append(tensor(rewards[j], dtype=torch.float32).to(dev))
+                    b_value[j].append(tensor(values[j], dtype=torch.float32).to(dev))
+
+            # accumulate and log the rewards
+            for j in range(args.num_envs):
+                done_now = dones[j] or truncations[j]
+                if not done_now:
+                    _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
+                    _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
+                    _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
+                    _ep_buffer["total_rewards"][j].append(rewards[j].item())
+                    _ep_buffer["entropy"][j].append(entropies[j].item())
+                    _ep_buffer["sel_probs"][j].append(sel_logprobs[j].exp().item())
+                else:
+                    # log the rewards
+                    writer.add_scalar(
+                        f"charts/episodic_env_rewards",
+                        np.mean(_ep_buffer["env_rewards"][j]),
+                        global_step,
+                    )
+                    m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
+                    for i, x in enumerate(m):
+                        writer.add_scalar(
+                            f"charts/sel_reward_scores/q{i}", x, global_step
+                        )
+                    m = np.mean(_ep_buffer["sel_rewards_total"][j])
+                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar(
+                        "charts/episodic_entropy",
+                        np.mean(_ep_buffer["entropy"][j]),
+                        global_step,
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_sel_probs",
+                        np.mean(_ep_buffer["sel_probs"][j]),
+                        global_step,
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_total_rewards",
+                        np.mean(_ep_buffer["total_rewards"][j]),
+                        global_step,
+                    )
+
+                    # flush
+                    _ep_buffer["env_rewards"][j].clear()
+                    _ep_buffer["sel_rewards_scores"][j].clear()
+                    _ep_buffer["sel_rewards_total"][j].clear()
+                    _ep_buffer["entropy"][j].clear()
+                    _ep_buffer["sel_probs"][j].clear()
+                    _ep_buffer["total_rewards"][j].clear()
+
+            if "episode" in infos:
+                for i in range(args.num_envs):
+                    if infos["_episode"][i]:
+                        r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                        writer.add_scalar("charts/episodic_return", r, global_step)
+                        writer.add_scalar("charts/episodic_length", l, global_step)
+
+                        logging.info(
+                            f"global_step={global_step}, episodic_return={r:.4f}"
+                        )
+
+            if step == 0 or step % args.log_examples_interval == 0:
+                rules_str = "\n".join(outputs[0]["rules"])
+                rules_scores = [
+                    f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                ]
+                rules_scores_str = "\n".join(rules_scores)
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n{outputs[0]['thoughts']}\n"
+                    f"### Rules\n{rules_str}\n"
+                    f"### Selected Rule\n{outputs[0]['sel_rule']}\n"
+                    f"### Selected Rule Probability\n{outputs[0]['sel_logprob'].exp():.2f}\n"
+                    f"### Selected Rule Reward\n {outputs[0]['sel_reward']}\n"
+                    f"### Selected Rule Explainability\n{rules_scores_str}\n"
+                    f"### Environment Action\n{outputs[0]['action']}\n"
+                    f"### Explanation with thoughts and all rules\n{outputs[0]['explanation']}\n"
+                    f"### Explanation with only selected rule\n{outputs[0]['explanation_rule_only']}"
+                )
+
+                conversation = "\n".join(
+                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+                )
+                writer.add_text("text/examples", example, global_step)
+                writer.add_text("llm_prompts/conversation", conversation, global_step)
+
+                # log the conversation and example in jsonl
+                jsonl_logger.write(
+                    {
+                        "global_step": global_step,
+                        "example": example,
+                        "conversation": messages[0],
+                    }
+                )
+
+                # log the conversation and example in jsonl
+                jsonl_logger.write(
+                    {
+                        "global_step": global_step,
+                        "example": example,
+                        "conversation": conversation,
+                    }
+                )
+
+            # advance
+            autoreset = np.logical_or(dones, truncations)
+            obs = next_obs
+            state_vector = next_state_vector
+            state_text = next_state_text
+
+        # save best model
+        total_reward = env_rewards.mean().item()
+        if best_total_reward < total_reward:
+            best_total_reward = total_reward
+            best_model = model.state_dict()
+
+        if iter % args.save_interval == 0 or iter == num_iterations:
+            ckpt = {
+                "state_dict": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "global_step": global_step,
+                "elapsed_time": time.time() - start_time,
+                "best_total_reward": best_total_reward,
+                "best_model": best_model,
+            }
+            torch.save(ckpt, ckpt_path)
+
+        # b_state_vec = permute_env_time_dims_and_tensorize(_state_vectors, device)
+        # b_rules_emb = permute_env_time_dims_and_tensorize(_rules_embs, device)
+        # b_sel_idx = permute_env_time_dims_and_tensorize(_sel_idxs, device)
+        # b_value = permute_env_time_dims_and_tensorize(_values, device)
+        # b_sel_logprob = permute_env_time_dims_and_tensorize(_sel_logprobs, device)
+        # b_reward = permute_env_time_dims_and_tensorize(_rewards, device)
+        # b_done = permute_env_time_dims_and_tensorize(_dones, device)
+        # b_entropy = _all_envs_tensor(_entropies)
+
+        # need to obtain the new rules
+        if args.parallel_pipeline:
+            outputs, messages = lang_agent.parallel_pipeline(
+                next_state_text, next_state_vector, pre_action_only=True
+            )
+        else:
+            outputs, messages = lang_agent(
+                next_state_text, next_state_vector, pre_action_only=True
+            )
+
+        next_rules_emb = [FloatTensor(x["rules_emb"]) for x in outputs]
+        next_rules_emb = nested_tensor(next_rules_emb).to(dev)
+        next_dones = FloatTensor(dones).to(dev)
+
+        # bootstrap value if not done
+        with torch.no_grad():
+            next_values = critic(next_rules_emb, next_state_vector)
+            next_values = pool_attention_network(next_values)
+
+            # compute the advantages
+            # need to do per environment to deal with potentially different lengths
+            # as well as nested tensors for the rules
+            # (and maybe future support for different state space shapes)
+            b_advantages = []
+            b_returns = []
+
+            for j in range(args.num_envs):
+                T = len(
+                    b_reward[j]
+                )  # it is not equal to num steps due to the autoreset skip
+                b_advantages.append(torch.zeros(T, device=dev))
+                b_returns.append(torch.zeros(T, device=dev))
+
+                lastgaelam = 0
+                for t in reversed(range(T)):
+                    if t == T - 1:
+                        nextnonterminal = 1.0 - next_dones[j]
+                        nextvalues = next_values[j]
+                    else:
+                        nextnonterminal = 1.0 - b_done[j][t + 1]
+                        nextvalues = b_value[j][t + 1]
+                    delta = (
+                        b_reward[j][t]
+                        + args.gamma * nextvalues * nextnonterminal
+                        - b_value[j][t]
+                    )
+                    b_advantages[j][t] = lastgaelam = (
+                        delta
+                        + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    )
+                    b_returns[j][t] = b_advantages[j][t] + b_value[j][t]
+
+        # flatten the batch
+        b_state_vec = collate_samples(b_state_vec)
+        b_sel_logprob = collate_samples(b_sel_logprob)
+        b_sel_idx = collate_samples(b_sel_idx)
+        b_advantages = collate_samples(b_advantages)
+        b_returns = collate_samples(b_returns)
+        b_value = collate_samples(b_value)
+        b_rules_emb = collate_samples(b_rules_emb)
+
+        # Optimizing the policy and value network
+        N = b_state_vec.shape[0]
+        b_inds = np.arange(N, dtype=np.int32)
+        clipfracs = []
+        for epoch in tqdm(range(args.update_epochs), desc=f"Iter: {iter},  Optimizing"):
+            np.random.shuffle(b_inds)
+            for start in range(0, N, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+
+                # get the new policy
+                dist = lang_agent.get_policy_from_embeddings(
+                    b_state_vec[mb_inds],
+                    b_rules_emb[mb_inds],
+                )
+                new_sel_logprob = dist.log_prob(b_sel_idx[mb_inds])
+                new_entropy = dist.entropy().mean()
+
+                # get the new value
+                new_value = critic(b_rules_emb[mb_inds], b_state_vec[mb_inds])
+                new_value = pool_attention_network(new_value)
+
+                logratio = new_sel_logprob - b_sel_logprob[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [
+                        ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
+                    ]
+
+                mb_advantages = b_advantages[mb_inds]
+                if args.norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
+                        mb_advantages.std() + 1e-8
+                    )
+
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(
+                    ratio, 1 - args.clip_coef, 1 + args.clip_coef
+                )
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                # Value loss
+                if args.clip_vloss:
+                    v_loss_unclipped = (new_value - b_returns[mb_inds]) ** 2
+                    v_clipped = b_value[mb_inds] + torch.clamp(
+                        new_value - b_value[mb_inds],
+                        -args.clip_coef,
+                        args.clip_coef,
+                    )
+                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    v_loss = 0.5 * v_loss_max.mean()
+                else:
+                    v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
+
+                entropy_loss = new_entropy.mean()
+                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                optimizer.step()
+
+            if args.target_kl is not None and approx_kl > args.target_kl:
+                break
+
+        y_pred, y_true = b_value.cpu().numpy(), b_returns.cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+
+        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        writer.add_scalar(
+            "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
+        )
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
+        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+
+        # # Run eval episodes
+        # if iter % args.eval_interval == 0 or iter == num_iterations:
+        #     eval_rewards = []
+        #     sel_rewards = []
+        #     obs, _ = eval_envs.reset(seed=args.seed)
+        #     state_vector, state_text = obs
+        #     state_vector = tensor(state_vector, dtype=torch.float32).to(device)
+        #     for _ in tqdm(
+        #         range(args.num_eval_steps), desc=f"Iter: {iter},  Evaluating"
+        #     ):
+        #         with torch.no_grad():
+        #             if args.parallel_pipeline:
+        #                 actions, outputs, _ = parallel_pipeline(
+        #                     lang_agent, state_text, state_vector, post_action=True
+        #                 )
+        #             else:
+        #                 actions, outputs, _ = lang_agent(
+        #                     state_text, state_vector, post_action=True
+        #                 )
+        #         obs, reward, _, _, infos = eval_envs.step(actions)
+        #         state_vector, state_text = obs
+        #         state_vector = FloatTensor(state_vector).to(device)
+        #         sel_rewards.append(FloatTensor(outputs["sel_reward"]).to(device))
+        #         eval_rewards.append(FloatTensor(reward).to(device))
+        #     eval_rewards = torch.stack(eval_rewards).mean().item()
+        #     sel_rewards = torch.stack(sel_rewards).mean().item()
+        #     total_rewards = eval_rewards + sel_rewards
+        #     writer.add_scalar("charts/eval_episodic_return", eval_rewards, global_step)
+        #     writer.add_scalar("charts/eval_sel_rule_return", sel_rewards, global_step)
+        #     writer.add_scalar("charts/eval_total_return", total_rewards, global_step)
+
+    envs.close()
+    writer.close()
 
 
 if __name__ == "__main__":
