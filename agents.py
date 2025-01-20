@@ -1,6 +1,6 @@
-from concurrent.futures import ThreadPoolExecutor
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
@@ -11,7 +11,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 import layers
-from llm_apis import invoke_with_retries
+from llm_apis import HFMetaWrapper, invoke_with_retries
 
 ValidAgents = Literal["base_agent", "llm_rules_agent", "no_thoughts_agent"]
 
@@ -726,3 +726,32 @@ class RulesSelectorActorCritic(BaseAgent):
 
         response = invoke_with_retries(self.llm, temp_messages, max_tokens=200).content
         outputs["explanation_rule_only"] = response
+
+
+class LLMFineTuningAgent(BaseAgent):
+    """This agents uses a similar pipeline than the base agent. A main difference is that
+    the action generation uses the LLM as a tranformer object that can be fined-tuned using
+    HuggingFace tools.
+
+    For speed, the thoughts and explanation are still generated using the base agent pipeline.
+    """
+
+    import transformers
+
+    def __init__(
+        self,
+        task_text: str,
+        action_space_text: str,
+        llm: transformers.PreTrainedModel,
+        tokenizer: transformers.PreTrainedTokenizer,
+    ):
+        wrapped_llm = HFMetaWrapper(llm, tokenizer)
+        super().__init__(
+            task_text=task_text,
+            action_space_text=action_space_text,
+            llm=wrapped_llm,
+        )
+        self.tokenizer = tokenizer
+
+        # store input llm as 'network'
+        self.network = llm
