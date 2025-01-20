@@ -87,23 +87,23 @@ class Args:
     """the batch size of sample from the reply memory"""
     learning_starts: int = 256
     """timestep to start learning"""
-    policy_lr: float = 1e-3
+    policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 1e-3
+    q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
     update_frequency: float | int = 1
     """the frequency of training updates"""
     warmup_updates: int = 64
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 32
+    actor_updates: int = 16
     """the number of updates to the actor per update cycle"""
-    critic_updates: int = 32
+    critic_updates: int = 16
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
     """Entropy regularization coefficient."""
-    autotune: bool = False
+    autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
@@ -205,8 +205,8 @@ def update_critic(
         qf1_loss: Loss for Q-network 1.
         qf2_loss: Loss for Q-network 2.
     """
-    qf1_values.train()
-    qf2_values.train()
+    qf1.train()
+    qf2.train()
     data = buffer.sample(batch_size)
     next_obs_vec = (
         data["next_obs_vec"].unsqueeze(1)
@@ -259,8 +259,8 @@ def update_critic(
     qf_loss.backward()
     q_optimizer.step()
 
-    qf1_values.eval()
-    qf2_values.eval()
+    qf1.eval()
+    qf2.eval()
 
     return qf_loss.item(), qf1_loss.item(), qf1_a_values, qf2_loss.item(), qf2_a_values
 
