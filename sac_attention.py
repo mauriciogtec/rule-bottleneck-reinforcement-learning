@@ -101,7 +101,7 @@ class Args:
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.01
+    alpha: float = 0.1
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
