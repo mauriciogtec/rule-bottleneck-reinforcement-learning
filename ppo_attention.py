@@ -12,7 +12,7 @@ import tyro
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -131,7 +131,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
+    cuda: bool = False
     """if toggled, cuda will be enabled by default"""
     ckpt_interval: int = 1
     """the saving interval of the model"""
@@ -181,7 +181,7 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
+    ent_coef: float = 0.1
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -442,29 +442,31 @@ def main(args: Args):
                     # log the rewards
                     writer.add_scalar(
                         f"charts/episodic_env_rewards",
-                        np.mean(_ep_buffer["env_rewards"][j]),
+                        np.mean(_ep_buffer["env_rewards"][j]).item(),
                         global_step,
                     )
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(
-                            f"charts/sel_reward_scores/q{i}", x, global_step
+                            f"charts/sel_reward_scores/q{i}", x.item(), global_step
                         )
                     m = np.mean(_ep_buffer["sel_rewards_total"][j])
-                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar(
+                        "charts/episodic_sel_rewards", m.item(), global_step
+                    )
                     writer.add_scalar(
                         "charts/episodic_entropy",
-                        np.mean(_ep_buffer["entropy"][j]),
+                        np.mean(_ep_buffer["entropy"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_sel_probs",
-                        np.mean(_ep_buffer["sel_probs"][j]),
+                        np.mean(_ep_buffer["sel_probs"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_total_rewards",
-                        np.mean(_ep_buffer["total_rewards"][j]),
+                        np.mean(_ep_buffer["total_rewards"][j]).item(),
                         global_step,
                     )
 
@@ -616,7 +618,7 @@ def main(args: Args):
 
         # Optimizing the policy and value network
         N = b_state_vec.shape[0]
-        b_inds = np.arange(N, dtype=np.int32)
+        b_inds = torch.arange(N, dtype=torch.long).to(dev)
         clipfracs = []
         for epoch in tqdm(range(args.update_epochs), desc=f"Iter: {iter},  Optimizing"):
             np.random.shuffle(b_inds)
