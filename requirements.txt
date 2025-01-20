@@ -11,6 +11,7 @@ accelerator
 bitsandbytes
 peft
 tyro
+trl
 jsonlines
 wandb
 scikit-learn
