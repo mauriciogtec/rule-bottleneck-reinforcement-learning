@@ -1,4 +1,4 @@
-## Rule-based Reinforcement Learning for More Interpretable and Efficient Language Agents in Resource-Constrained Allocation Tasks
+## Rule-Bottleneck Reinforcement Learning: Joint Explanation and Decision Optimization for Resource Allocation with Language Agents
 
 Run the code with the following command:
 ```bash
