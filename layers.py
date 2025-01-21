@@ -1,4 +1,5 @@
 from math import gcd
+from typing import Literal
 
 import torch
 from torch import nn
@@ -23,6 +24,7 @@ class AttentionBlock(nn.Module):
             num_heads=gcd(num_heads, q_dim),
             dropout=dropout,
             kdim=k_dim,
+            vdim=k_dim,
             batch_first=True,
         )
 
@@ -33,7 +35,6 @@ class AttentionBlock(nn.Module):
             embed_dim=hidden_dim,
             num_heads=gcd(num_heads, hidden_dim),
             dropout=dropout,
-            kdim=hidden_dim,
             batch_first=True,
         )
 
@@ -126,6 +127,7 @@ class AttentionNetwork(nn.Module):
         num_attention_blocks: int = 1,
         normalize_inputs: bool = True,
         initial_proj: bool = True,
+        proj_type: Literal["linear", "random"] = "random",
     ):
         super().__init__()
         self.normalize_inputs = normalize_inputs
@@ -137,19 +139,31 @@ class AttentionNetwork(nn.Module):
         # Initial projection layers
         self.proj = initial_proj
         if initial_proj:
-            self.q_proj = nn.Sequential(
-                nn.Linear(q_dim, hidden_dim),
-                nn.SiLU(),
-                nn.LayerNorm(hidden_dim),
-            )
-            q_dim = hidden_dim
+            if proj_type == "linear":
+                self.q_proj = nn.Sequential(
+                    nn.Linear(q_dim, hidden_dim),
+                    nn.SiLU(),
+                    nn.LayerNorm(hidden_dim),
+                )
 
-            self.k_proj = nn.Sequential(
-                nn.Linear(k_dim, hidden_dim),
-                nn.SiLU(),
-                nn.LayerNorm(hidden_dim),
-            )
-            k_dim = hidden_dim
+                self.k_proj = nn.Sequential(
+                    nn.Linear(k_dim, hidden_dim),
+                    nn.SiLU(),
+                    nn.LayerNorm(hidden_dim),
+                )
+                q_dim = hidden_dim
+                k_dim = hidden_dim
+            else:
+                # Normalize the random projection matrix
+                rand_proj_matrix = torch.randn(q_dim, hidden_dim)
+                rand_proj_matrix -= rand_proj_matrix.mean(dim=0)
+                rand_proj_matrix /= rand_proj_matrix.norm(dim=0)
+                self.q_proj = nn.Linear(q_dim, hidden_dim, bias=False)
+                self.q_proj.weight.data = rand_proj_matrix.T
+                self.q_proj.weight.requires_grad = False
+                self.k_proj = nn.Identity()
+
+                q_dim = hidden_dim
 
         self.blocks = nn.ModuleList()
         for i in range(num_attention_blocks):
