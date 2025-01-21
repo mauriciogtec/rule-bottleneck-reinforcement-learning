@@ -44,7 +44,7 @@ def blood_penalty(blood_pressure):
         return -math.exp(abs(blood_pressure - 127) / 5)  # Exponential penalty
 
 
-def reward_function(sign_dict, min_max, clip_value=20, scaler=0.1):
+def reward_function(sign_dict, min_max, clip_value=1, scaler=0.1):
     reward = 0
     sign_dict = {
         sign: c * (min_max[sign][1] - min_max[sign][0]) + min_max[sign][0]
@@ -60,10 +60,11 @@ def reward_function(sign_dict, min_max, clip_value=20, scaler=0.1):
         elif signs == "SPO2":
             reward += spo2_penalty(sign_dict[signs])
 
-    # Clip the reward to avoid large values
-    reward = np.clip(reward, reward - clip_value, reward + clip_value)
+    # Scale and clip the reward to avoid large values
+    reward = reward * scaler
+    reward = np.maximum(-clip_value, reward)
 
-    return scaler * reward
+    return reward
 
 
 class VitalSignsSimple(Env):
@@ -252,7 +253,7 @@ class VitalSignsSimple(Env):
                 reward += r * (gamma**t)
 
         # Assign the device to the new patient
-        self.device_states[action]["time_worn"] = 1
+        self.device_states[action]["time_worn"] = 0
         self.device_states[action]["vitals"] = current_vital
         self.device_states[action]["variability"] = variability
         self.device_states[action]["signs_history"] = signs_history
@@ -261,7 +262,7 @@ class VitalSignsSimple(Env):
         # == 2. Update the remaining device/agents ==
         for i in range(self.budget):
             is_free = self.device_states[i]["time_worn"] == 0
-            if not is_free and i != action:
+            if not is_free or i == action:  # also compute for the new patient
                 self.device_states[i]["time_worn"] += 1
 
                 # advance the vital signs
@@ -274,7 +275,7 @@ class VitalSignsSimple(Env):
 
                 reward += r
 
-                # remove them from the system if system duration reached
+                # remove them from the system if system reached
                 if self.device_states[i]["time_worn"] >= self.system_duration:
                     self.device_states[i]["time_worn"] = 0
                     self.device_states[i]["vitals"] = np.zeros(self.nv)
@@ -526,24 +527,20 @@ class VitalSignsSimple(Env):
             for signs in sign_dict:
                 if signs == "COVERED_SKIN_TEMPERATURE":
                     if temperature_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            1.5, 0.5
-                        )
+                        delta = self.np_random.normal(1.5, 0.5)
+                        sign_dict[signs] -= delta
                 elif signs == "PULSE_RATE":
                     if pulse_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            15, 5
-                        )
+                        delta = self.np_random.normal(15, 5)
+                        sign_dict[signs] -= delta
                 elif signs == "RESPIRATORY_RATE":
                     if respiratory_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            10, 10 / 3
-                        )
+                        delta = self.np_random.normal(10, 10 / 3)
+                        sign_dict[signs] -= delta
                 elif signs == "SPO2":
                     if spo2_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] + self.np_random.normal(
-                            3, 1
-                        )
+                        delta = self.np_random.normal(5, 5 / 3)
+                        sign_dict[signs] += delta
 
         if min_max:
             # renormalize
