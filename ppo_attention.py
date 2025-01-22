@@ -63,28 +63,6 @@ def load_checkpoint(checkpoint_path, device):
         return None
 
 
-def parallel_pipeline(lang_agent, state_text, state_vector, post_action=True):
-    # Get the action and value in parallel
-    def call_pipeline(i):
-        with torch.no_grad():
-            return lang_agent(
-                state_text=state_text[i],
-                state_vector=state_vector[i],
-                post_action=post_action,
-            )
-
-    num_envs = len(state_text)
-    num_procs = min(os.cpu_count() - 1, num_envs)
-    with ThreadPoolExecutor(max_workers=num_procs) as executor:
-        results = list(executor.map(call_pipeline, range(num_envs)))
-        env_actions, outputs, messages = zip(*results)
-        env_actions = list(env_actions)
-        outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
-        messages = list(messages)
-
-    return env_actions, outputs, messages
-
-
 def collate_samples(x: List[List]):
     """Takes as input a list of lists where the first index is the environment index
     and the second one is the time step index"""
@@ -173,7 +151,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 16
     """the number of mini-batches"""
-    update_epochs: int = 16
+    update_epochs: int = 32
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -181,7 +159,7 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.1
+    ent_coef: float = 0.01
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -198,7 +176,7 @@ class Args:
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    rolling_rewards_window: int = 64
+    rolling_returns_window: int = 64
     """the rolling rewards window"""
 
     # LLM
@@ -214,21 +192,6 @@ class Args:
     """the hidden dimension of the networks"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
-
-
-# def make_env(env_id, seed, eval=False):
-#     def thunk():
-#         if eval:
-#             env = gym.make(env_id, max_episode_steps=None)
-#         else:
-#             env = gym.make(env_id)
-
-#         env = gym.wrappers.RecordEpisodeStatistics(env)
-#         # env = E.wrappers.SymlogRewardsWrapper(env)
-#         env.reset(seed=seed)
-#         return env
-
-#     return thunk
 
 
 def main(args: Args):
@@ -360,7 +323,7 @@ def main(args: Args):
     # keep logging buffers for the rewards
     autoreset = np.zeros(args.num_envs, dtype=bool)
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
-    _rolling_rewards = deque(maxlen=args.rolling_rewards_window)
+    _rolling_returns = deque(maxlen=args.rolling_returns_window)
 
     for iter in range(iter_start, num_iterations + 1):
         # start on policy buffer
@@ -380,7 +343,7 @@ def main(args: Args):
         for step in tqdm(
             range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
         ):
-            global_step += args.num_envs
+            global_step += 1  # args.num_envs # changed to 1 to align with sac
 
             # Get the action and value in parallel
             if args.parallel_pipeline:
@@ -408,7 +371,7 @@ def main(args: Args):
 
             # total rewards
             rewards = env_rewards + sel_rewards
-            _rolling_rewards.extend(list(rewards))
+            _rolling_returns.extend(list(rewards))
 
             # compute the values
             # mean pool over rules for state-value
@@ -523,26 +486,20 @@ def main(args: Args):
                     }
                 )
 
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
-                )
-
             # advance
             autoreset = np.logical_or(autoreset, dones)
             obs = next_obs
             state_vector = next_state_vector
             state_text = next_state_text
 
-        # save best model
-        total_reward = env_rewards.mean().item()
-        if best_total_reward < total_reward:
-            best_total_reward = total_reward
-            best_model = model.state_dict()
+            # save best model
+            total_reward = np.mean(_rolling_returns)
+            if (
+                best_total_reward < total_reward
+                and len(_rolling_returns) == args.rolling_returns_window
+            ):
+                best_total_reward = total_reward
+                best_model = model.state_dict()
 
         if iter % args.save_interval == 0 or iter == num_iterations:
             ckpt = {
@@ -578,15 +535,14 @@ def main(args: Args):
             # need to do per environment to deal with potentially different lengths
             # as well as nested tensors for the rules
             # (and maybe future support for different state space shapes)
-            b_advantages = []
-            b_returns = []
+            b_advantage = []
+            b_return = []
 
             for j in range(args.num_envs):
-                T = len(
-                    b_reward[j]
-                )  # it is not equal to num steps due to the autoreset skip
-                b_advantages.append(torch.zeros(T, device=dev))
-                b_returns.append(torch.zeros(T, device=dev))
+                # it is not equal to num steps due to the autoreset skip
+                T = len(b_reward[j])
+                b_advantage.append(torch.zeros(T, device=dev))
+                b_return.append(torch.zeros(T, device=dev))
 
                 lastgaelam = 0
                 for t in reversed(range(T)):
@@ -601,18 +557,18 @@ def main(args: Args):
                         + args.gamma * nextvalues * nextnonterminal
                         - b_value[j][t]
                     )
-                    b_advantages[j][t] = lastgaelam = (
+                    b_advantage[j][t] = lastgaelam = (
                         delta
                         + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     )
-                    b_returns[j][t] = b_advantages[j][t] + b_value[j][t]
+                    b_return[j][t] = b_advantage[j][t] + b_value[j][t]
 
         # flatten the batch
         b_state_vec = collate_samples(b_state_vec)
         b_sel_logprob = collate_samples(b_sel_logprob)
         b_sel_idx = collate_samples(b_sel_idx)
-        b_advantages = collate_samples(b_advantages)
-        b_returns = collate_samples(b_returns)
+        b_advantage = collate_samples(b_advantage)
+        b_return = collate_samples(b_return)
         b_value = collate_samples(b_value)
         b_rules_emb = collate_samples(b_rules_emb)
 
@@ -621,21 +577,24 @@ def main(args: Args):
         b_inds = torch.arange(N, dtype=torch.long).to(dev)
         clipfracs = []
         for epoch in tqdm(range(args.update_epochs), desc=f"Iter: {iter},  Optimizing"):
-            np.random.shuffle(b_inds)
+            b_inds = torch.randperm(N).to(dev)
             for start in range(0, N, minibatch_size):
-                end = start + minibatch_size
+                end = min(start + minibatch_size, N)
                 mb_inds = b_inds[start:end]
 
                 # get the new policy
+                mb_rules_emb = nested_tensor([b_rules_emb[ix] for ix in mb_inds]).to(
+                    dev
+                )
                 dist = lang_agent.get_policy_from_embeddings(
                     b_state_vec[mb_inds],
-                    b_rules_emb[mb_inds],
+                    mb_rules_emb,
                 )
                 new_sel_logprob = dist.log_prob(b_sel_idx[mb_inds])
                 new_entropy = dist.entropy().mean()
 
                 # get the new value
-                new_value = critic(b_rules_emb[mb_inds], b_state_vec[mb_inds])
+                new_value = critic(mb_rules_emb, b_state_vec[mb_inds])
                 new_value = pool_attention_network(new_value)
 
                 logratio = new_sel_logprob - b_sel_logprob[mb_inds]
@@ -649,7 +608,7 @@ def main(args: Args):
                         ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
                     ]
 
-                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = b_advantage[mb_inds]
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
                         mb_advantages.std() + 1e-8
@@ -664,17 +623,17 @@ def main(args: Args):
 
                 # Value loss
                 if args.clip_vloss:
-                    v_loss_unclipped = (new_value - b_returns[mb_inds]) ** 2
+                    v_loss_unclipped = (new_value - b_return[mb_inds]) ** 2
                     v_clipped = b_value[mb_inds] + torch.clamp(
                         new_value - b_value[mb_inds],
                         -args.clip_coef,
                         args.clip_coef,
                     )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_clipped = (v_clipped - b_return[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
                 else:
-                    v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = 0.5 * ((new_value - b_return[mb_inds]) ** 2).mean()
 
                 entropy_loss = new_entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -687,7 +646,7 @@ def main(args: Args):
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = b_value.cpu().numpy(), b_returns.cpu().numpy()
+        y_pred, y_true = b_value.cpu().numpy(), b_return.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
