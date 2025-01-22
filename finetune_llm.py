@@ -853,7 +853,7 @@ def main(args: Args):
                 {
                     "input_ids": input_ids,
                     "output_ids": labels,
-                    "attention_mask": prompt_mask,
+                    "prompt_mask": prompt_mask,
                     "value": value,
                     "logprob": logprob,
                     "done": done,
@@ -923,7 +923,7 @@ def main(args: Args):
                     ratio, 1 - args.clip_coef, 1 + args.clip_coef
                 )
                 pg_loss = torch.max(pg_loss1, pg_loss2)
-                pg_loss = torch.mean(batch.input_mask * pg_loss)
+                pg_loss = torch.mean(batch.prompt_mask * pg_loss)
 
                 # Value loss
                 if args.clip_vloss:
@@ -935,13 +935,13 @@ def main(args: Args):
                     )
                     v_loss_clipped = (v_clipped - batch.value) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * torch.mean(batch.input_mask * v_loss_max)
+                    v_loss = 0.5 * torch.mean(batch.prompt_mask * v_loss_max)
                 else:
                     v_loss = 0.5 * torch.mean(
-                        batch.input_mask * (new_value - batch.returns) ** 2
+                        batch.prompt_mask * (new_value - batch.returns) ** 2
                     )
 
-                entropy_loss = torch.mean(batch.input_mask * new_entropy)
+                entropy_loss = torch.mean(batch.prompt_mask * new_entropy)
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
