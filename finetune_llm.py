@@ -399,7 +399,7 @@ class Args:
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "bfloat16"
     """The dtype to use for training"""
-    gradient_accumulation_steps: int = 
+    gradient_accumulation_steps: int = 1
     """The number of gradient accumulation steps"""
     minibatch_size: int = 2
     """The minibatch size"""
