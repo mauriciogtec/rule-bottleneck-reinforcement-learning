@@ -22,7 +22,7 @@ HeatAlertsNumeric = partial(HeatAlertEnv)
 BuySellSimpleNumeric = partial(BuySellSimple)
 
 
-kwargs = {"disable_env_checker": True, "max_episode_steps": 16}
+kwargs = {"disable_env_checker": True}
 register(id="Uganda", entry_point="envs:Uganda", **kwargs)
 register(id="MimicIII", entry_point="envs:MimicIII", **kwargs)
 register(id="MimicIV", entry_point="envs:MimicIV", **kwargs)
