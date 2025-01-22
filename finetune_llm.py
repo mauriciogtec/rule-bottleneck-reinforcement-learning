@@ -9,11 +9,10 @@ import re
 import shutil
 import os
 import random
-import warnings
 import tyro
 import time
-from collections import defaultdict, deque
-from typing import List, Literal, Optional
+from collections import defaultdict, deque, namedtuple
+from typing import Dict, List, Literal, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -29,12 +28,11 @@ from tqdm import tqdm
 from llm_apis import llama_prompt_from_messages
 
 from accelerate import Accelerator
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType
 from bitsandbytes.optim import PagedAdamW8bit
 from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
-    DataCollatorForSeq2Seq,
 )
 from trl.models import AutoModelForCausalLMWithValueHead
 
@@ -126,7 +124,7 @@ def to_token_data_loader(
     tokenizer: AutoTokenizer,
     accelerator: Accelerator,
     minibatch_size: int,
-    collator: DataCollatorForSeq2Seq,
+    collator: callable,
 ) -> DataLoader:
     # tokenize each message
     prompts = [llama_prompt_from_messages(m) for m in messages]
@@ -146,6 +144,63 @@ def to_token_data_loader(
     )
 
     return accelerator.prepare(loader)
+
+
+def custom_collator(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """
+    Custom collator to pad tensors in each key with zeros of the tensor's dtype.
+
+    Args:
+        batch (List[Dict[str, torch.Tensor]]): A batch of dictionaries, where
+            each dictionary contains tensors with the same keys and varying lengths.
+
+    Returns:
+        Dict[str, torch.Tensor]: A dictionary with padded tensors for each key.
+    """
+    # Collect all keys from the batch
+    keys = batch[0].keys()
+
+    # Initialize the output dictionary
+    collated_batch = {}
+
+    for key in keys:
+        # Extract all tensors for the current key
+        tensors = [sample[key] for sample in batch]
+        
+        if isinstance(tensors[0], (int, float, bool)):
+            collated_batch[key] = tensors
+            continue
+        elif isinstance(tensors[0][0], int):
+            # convert to logn tensors
+            tensors = [torch.tensor(x) for x in tensors]
+        elif isinstance(tensors[0][0], float):
+            # convert to float32
+            tensors = [torch.tensor(x, dtype=torch.float32) for x in tensors]
+
+        # Find the max length for this key
+        max_length = max(tensor.size(0) for tensor in tensors)
+
+        # Pad all tensors to the max length with zeros
+        padded_tensors = [
+            torch.nn.functional.pad(
+                tensor,
+                pad=(
+                    0,
+                    max_length - tensor.size(0),
+                ),  # Only pad along the first dimension
+                mode="constant",
+                value=0,  # Use 0 for padding
+            )
+            for tensor in tensors
+        ]
+
+        # Stack the padded tensors along a new batch dimension
+        collated_batch[key] = torch.stack(padded_tensors)
+
+    # make collated batch as named tuple
+    NamedTuple = namedtuple("NamedTuple", keys)
+
+    return collated_batch
 
 
 def generate_with_model(model, loader, tokenizer, accelerator, max_new_tokens=256):
@@ -175,8 +230,8 @@ def generate_with_model(model, loader, tokenizer, accelerator, max_new_tokens=25
     with torch.no_grad():
         for batch in loader:
             genout = model.generate(
-                input_ids=batch.input_ids,
-                attention_mask=batch.attention_mask,
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
                 return_dict_in_generate=True,
                 output_logits=True,
                 output_hidden_states=True,
@@ -194,7 +249,7 @@ def generate_with_model(model, loader, tokenizer, accelerator, max_new_tokens=25
         logits = torch.stack(genout.logits, dim=1)
         bsize = logits.shape[0]
         num_new_tokens = logits.shape[1]
-        input_tokens = b.input_ids
+        input_tokens = b["input_ids"]
         new_tokens = genout.sequences[:, -num_new_tokens:]
         logprobs = F.log_softmax(logits, dim=-1)
         sel_logprobs = logprobs.gather(-1, new_tokens.unsqueeze(-1)).squeeze(-1)
@@ -209,7 +264,7 @@ def generate_with_model(model, loader, tokenizer, accelerator, max_new_tokens=25
 
         for j in range(bsize):
             # Store results in the appropriate index
-            env = b.env_num[j]
+            env = b["env_num"][j]
             new_text = tokenizer.decode(new_tokens[j], skip_special_tokens=True)
             result["input_tokens"][env] = input_tokens[j]
             result["output_tokens"][env] = new_tokens[j]
@@ -416,7 +471,7 @@ def main(args: Args):
     if args.track:
         import wandb
 
-        wandb.init(
+        wandb["init"](
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
@@ -460,8 +515,9 @@ def main(args: Args):
 
     print_trainable_parameters(model)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.llm)
-    collator = DataCollatorForSeq2Seq(tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.llm, padding=True, truncation=True)
+    # collator = DataCollatorWithPadding(tokenizer, padding=True)
+    collator = custom_collator
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
@@ -604,7 +660,9 @@ def main(args: Args):
                     b_logprob[j].append(results["logprobs"][j])
                     b_reward[j].append(torch.zeros_like(results["values"][j]))
                     training_done = torch.zeros_like(results["values"][j])
-                    d = torch.tensor(dones[j], dtype=torch.float).to(training_done.device)
+                    d = torch.tensor(dones[j], dtype=torch.float).to(
+                        training_done.device
+                    )
                     training_done[0] = d
                     b_done[j].append(training_done)
                     messages[j].append(
@@ -619,16 +677,26 @@ def main(args: Args):
             act_space_text = envs.metadata["action_space_text"]
             for m in messages:
                 m.append({"role": "user", "content": ACTION_PROMPT + act_space_text})
+                m.append({"role": "assistant", "content": "{"})
 
             loader = to_token_data_loader(
                 messages, tokenizer, accelerator, minibatch_size, collator
             )
             with torch.no_grad():
                 results = generate_with_model(
-                    model, loader, tokenizer, accelerator, max_new_tokens=256
+                    model, loader, tokenizer, accelerator, max_new_tokens=10
                 )
 
-            env_actions = [re.findall(r"\d+", x)[0] for x in results["generated_text"]]
+            # parse actions
+            env_actions = []
+            for j in range(args.num_envs):
+                # fird firs tinteger, if missing sample random action
+                a = re.findall(r"\d+", results["generated_text"][j])
+                if a:
+                    env_actions.append(a[0])
+                else:
+                    a = envs.single_action_space.sample()
+                    env_actions.append(str(a))
 
             # Step the environment
             next_obs, env_rewards, dones, truncations, infos = envs.step(env_actions)
@@ -757,7 +825,7 @@ def main(args: Args):
         with torch.no_grad():
             for batch in loader:
                 _, _, _values = model(
-                    batch.input_ids, attention_mask=batch.attention_mask
+                    batch["input_ids"], attention_mask=batch["attention_mask"]
                 )
                 all_values = accelerator.gather(_values)
                 next_values.extend(all_values)
@@ -841,7 +909,7 @@ def main(args: Args):
             labels = torch.cat([b_input_tokens[j], b_output_tokens[j]])[1:]
             prompt_mask = torch.ones_like(input_ids)
             # the -1 below is to collapse all the prompt tokens to one state
-            prompt_mask[: (len(b_input_tokens[j]) - 1)] = 0 
+            prompt_mask[: (len(b_input_tokens[j]) - 1)] = 0
             logprob = _fill_zeros(b_logprob[j], prompt_mask)
             done = _fill_zeros(b_done[j], prompt_mask)
             reward = _fill_zeros(b_reward[j], prompt_mask)
@@ -852,7 +920,8 @@ def main(args: Args):
             dset.append(
                 {
                     "input_ids": input_ids,
-                    "output_ids": labels,
+                    "labels": labels,
+                    "attention_mask": torch.ones_like(input_ids),
                     "prompt_mask": prompt_mask,
                     "value": value,
                     "logprob": logprob,
@@ -862,12 +931,13 @@ def main(args: Args):
                     "returns": returns,
                 }
             )
+
         dset = Dataset.from_list(dset)
         loader = DataLoader(
             dset,
             batch_size=minibatch_size,
             shuffle=True,
-            collate_fn=collator,
+            collate_fn=custom_collator,
         )
         loader = accelerator.prepare(loader)
 
@@ -890,17 +960,17 @@ def main(args: Args):
                 # get the new policy
                 # cat input/output tokens and evaluate
                 new_logits, loss, new_value = model(
-                    batch.input_ids,
-                    attention_mask=batch.attention_mask,
+                    batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
                 )
 
-                gather_ixs = batch.output_ids.unsqueeze(-1)
+                gather_ixs = batch["labels"].unsqueeze(-1)
                 dist = torch.distributions.Categorical(logits=new_logits)
                 new_entropy = dist.entropy()
                 new_logprob = F.log_softmax(new_logits, dim=-1)
-                new_logprob = new_logprob.gather(-1, gather_ixs).squeeze(-1)
+                new_logprob = new_logprob["gather"](-1, gather_ixs).squeeze(-1)
 
-                logratio = new_logprob - batch.logprob
+                logratio = new_logprob - batch["logprob"]
                 ratio = logratio.exp()
 
                 with torch.no_grad():
@@ -911,7 +981,7 @@ def main(args: Args):
                         ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
                     ]
 
-                mb_advantages = batch.advantage
+                mb_advantages = batch["advantage"]
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
                         mb_advantages.std() + 1e-8
@@ -923,25 +993,25 @@ def main(args: Args):
                     ratio, 1 - args.clip_coef, 1 + args.clip_coef
                 )
                 pg_loss = torch.max(pg_loss1, pg_loss2)
-                pg_loss = torch.mean(batch.prompt_mask * pg_loss)
+                pg_loss = torch.mean(batch["prompt_mask"] * pg_loss)
 
                 # Value loss
                 if args.clip_vloss:
-                    v_loss_unclipped = (new_value - batch.returns) ** 2
-                    v_clipped = batch.value + torch.clamp(
-                        new_value - batch.value,
+                    v_loss_unclipped = (new_value - batch["returns"]) ** 2
+                    v_clipped = batch["value"] + torch.clamp(
+                        new_value - batch["value"],
                         -args.clip_coef,
                         args.clip_coef,
                     )
-                    v_loss_clipped = (v_clipped - batch.value) ** 2
+                    v_loss_clipped = (v_clipped - batch["value"]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * torch.mean(batch.prompt_mask * v_loss_max)
+                    v_loss = 0.5 * torch.mean(batch["prompt_mask"] * v_loss_max)
                 else:
                     v_loss = 0.5 * torch.mean(
-                        batch.prompt_mask * (new_value - batch.returns) ** 2
+                        batch["prompt_mask"] * (new_value - batch["returns"]) ** 2
                     )
 
-                entropy_loss = torch.mean(batch.prompt_mask * new_entropy)
+                entropy_loss = torch.mean(batch["prompt_mask"] * new_entropy)
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
