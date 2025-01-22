@@ -229,7 +229,7 @@ def generate_with_model(model, loader, tokenizer, accelerator, max_new_tokens=25
     _outputs = []
     with torch.no_grad():
         for batch in loader:
-            genout = model.generate(
+            genout = accelerator.unwrap_model(model).generate(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 return_dict_in_generate=True,
@@ -403,7 +403,7 @@ class Args:
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "bfloat16"
     """The dtype to use for training"""
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 8
     """The number of gradient accumulation steps"""
     minibatch_size: int = 2
     """The minibatch size"""
