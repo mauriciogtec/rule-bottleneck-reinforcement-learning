@@ -207,8 +207,8 @@ class BaseAgent:
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the problem state. "
-            "Do not provide additional information or context for your answer, only the action as follows. "
+            "Now, choose the optimal action given the current problem state. "
+            "Do not provide additional information or context for your answer, only the action. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             # "\n\n### Your response:"
         )
