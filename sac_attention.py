@@ -95,28 +95,29 @@ class Args:
     """the frequency of training updates"""
     warmup_updates: int = 64
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 16
+    actor_updates: int = 4
     """the number of updates to the actor per update cycle"""
-    critic_updates: int = 16
+    critic_updates: int = 1
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.1
+    alpha: float = 0.01
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    dropout: float = 0.0
+    dropout: float = 0.05
     """the dropout rate"""
 
     # Eval
-    # num_eval_steps: int = 64
-    # eval_interval: int = 1
-    # """the evaluation interval"""
-    # eval_deterministic: bool = True
-    # """if toggled, the evaluation will be deterministic"""
-    rolling_rewards_window: int = 64
+    num_eval_episodes: int = 16
+    """the number of episodes to evaluate the agent"""
+    eval_interval: int = 64
+    """the evaluation interval"""
+    eval_deterministic: bool = True
+    """if toggled, the evaluation will be deterministic"""
+    rolling_returns_window: int = 64
     """the rolling rewards window"""
 
     # LLM
@@ -429,7 +430,7 @@ def main(args: Args):
     rule_dim = args.embed_dim
     hidden_dim = args.hidden_dim
     num_rules = args.num_rules
-    num_actions = envs.single_action_space.n
+    # num_actions = envs.single_action_space.n
 
     actor = AttentionNetwork(
         q_dim=rule_dim,
@@ -449,6 +450,9 @@ def main(args: Args):
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
+    actor.eval()
+    qf1.eval()
+    qf2.eval()
 
     logging.info("--- Actor ---")
     torchsummary.summary(actor)
@@ -483,7 +487,7 @@ def main(args: Args):
         log_alpha = torch.scalar_tensor(
             np.log(args.alpha), requires_grad=True, device=dev
         )
-        alpha = log_alpha.exp().item()  # ~ 0.01
+        alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
     else:
         alpha = args.alpha
@@ -501,6 +505,7 @@ def main(args: Args):
     start_time = time.time()
     best_total_reward = -float("inf")
     best_model = None
+    best_model_epoch = -1
 
     checkpoint = load_checkpoint(ckpt_path, dev)
     if args.resume and checkpoint:
@@ -520,6 +525,7 @@ def main(args: Args):
         start_time = time.time() - checkpoint["elapsed_time"]
         best_total_reward = checkpoint["best_total_reward"]
         best_model = checkpoint["best_model"]
+        best_model_epoch = checkpoint["best_model_epoch"]
         buffer = checkpoint["buffer"]
         logging.info(f"Resumed training from checkpoint at step {starting_step}.")
 
@@ -555,7 +561,7 @@ def main(args: Args):
 
     # keep logging buffers for the rewards
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
-    _rolling_rewards = deque(maxlen=args.rolling_rewards_window)
+    _rolling_returns = deque(maxlen=args.rolling_returns_window)
 
     for global_step in tqdm(range(starting_step, args.total_timesteps)):
         with torch.no_grad():
@@ -579,7 +585,7 @@ def main(args: Args):
         rewards = env_rewards + sel_rewards
         entropy = [x["entropy"] for x in outputs]
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
-        _rolling_rewards.extend(list(rewards.cpu().numpy()))
+        _rolling_returns.extend(list(rewards.cpu().numpy()))
 
         # Get the next rules
         outputs = deepcopy(outputs)
@@ -701,14 +707,15 @@ def main(args: Args):
                 }
             )
 
-        # save best model
-        total_reward = np.mean(_rolling_rewards)
-        if (
-            best_total_reward < total_reward
-            and len(_rolling_rewards) == args.rolling_rewards_window
-        ):
-            best_total_reward = total_reward
-            best_model = (actor, qf1, qf2)
+            # save best model
+            total_reward = np.mean(_rolling_returns)
+            if (
+                best_total_reward < total_reward
+                and len(_rolling_returns) == args.rolling_returns_window
+            ):
+                best_total_reward = total_reward
+                best_model = (actor, qf1, qf2)
+                best_model_epoch = global_step
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         autoreset = np.logical_or(autoreset, dones)
@@ -820,7 +827,40 @@ def main(args: Args):
                 save_state["a_optimizer_state"] = a_optimizer.state_dict()
             save_checkpoint(save_state, ckpt_path)
 
+        # Evaluation loop
+        lang_agent.deterministic = True
+
+        if global_step % args.eval_interval == 0:
+            eval_returns = []
+            eval_obs, _ = eval_envs.reset()
+            eval_obs_vec, eval_obs_text = eval_obs
+            eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
+            eval_episodes = 0
+            while eval_episodes < eval_envs.num_envs:
+                with torch.no_grad():
+                    eval_outputs, _ = lang_agent.parallel_pipeline(
+                        eval_obs_text,
+                        eval_obs_vec,
+                    )
+                eval_actions = [x["action"] for x in eval_outputs]
+                eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
+                eval_obs_vec, eval_next_obs_vec = eval_obs_vec
+                eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
+                if "episode" in eval_infos:
+                    for i in range(args.num_envs):
+                        if eval_infos["_episode"][i]:
+                            eval_returns.append(eval_infos["episode"]["r"][i])
+                            eval_episodes += 1
+
+            # log
+            writer.add_scalar(
+                "charts/eval_return", np.mean(eval_returns).item(), global_step
+            )
+
+        lang_agent.deterministic = False
+
     envs.close()
+    eval_envs.close()
     writer.close()
 
 

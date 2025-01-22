@@ -488,6 +488,7 @@ class RulesSelectorActorCritic(BaseAgent):
         max_parse_attempts: int = 3,
         verbose: bool = False,
         critic: Optional[layers.AttentionNetwork] = None,
+        deterministic: bool = False,
     ):
         super().__init__(
             task_text=task_text,
@@ -503,6 +504,7 @@ class RulesSelectorActorCritic(BaseAgent):
         self.example_rules = example_rules
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
+        self.deterministic = deterministic
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         self.gen_thoughts(outputs, messages)
@@ -562,7 +564,11 @@ class RulesSelectorActorCritic(BaseAgent):
         logits = self.actor(queries, keys)
 
         dist = torch.distributions.Categorical(logits=logits)
-        sel_idx = dist.sample()
+        if not self.deterministic:
+            sel_idx = dist.sample()
+        else:
+            sel_idx = torch.argmax(logits)
+
         entropy = dist.entropy()
 
         # get the selected rule
