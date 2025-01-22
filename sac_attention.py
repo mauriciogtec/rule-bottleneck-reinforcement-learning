@@ -75,6 +75,8 @@ class Args:
     """the number of parallel game environments"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
+    max_episode_steps: Optional[int] = 64
+    """the maximum number of steps per episode"""
 
     # Algorithm
     total_timesteps: int = 1280
@@ -148,13 +150,9 @@ class Args:
 
 def make_env(env_id, seed, eval=False):
     def thunk():
-        if eval:
-            env = gym.make(env_id, max_episode_steps=None)
-        else:
-            env = gym.make(env_id)
-
+        env = gym.make(env_id)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        # env = E.wrappers.SymlogRewardsWrapper(env)
         env.reset(seed=seed)
         return env
 
