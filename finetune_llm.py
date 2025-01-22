@@ -392,18 +392,14 @@ class Args:
     """the rolling rewards window"""
 
     # LLM
-    num_rules: int = 10
-    """The number of rules for rule-based LLM-only agent"""
     """the language model to use"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    parallel_pipeline: bool = True
-    """if toggled, the pipeline will be parallelized"""
     llm: str = "meta-llama/Llama-3.2-3B-Instruct"
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "bfloat16"
     """The dtype to use for training"""
-    gradient_accumulation_steps: int = 8
+    gradient_accumulation_steps: int = 
     """The number of gradient accumulation steps"""
     minibatch_size: int = 2
     """The minibatch size"""
@@ -830,7 +826,7 @@ def main(args: Args):
                 all_values = accelerator.gather(_values)
                 next_values.extend(all_values)
 
-        next_values = torch.stack(next_values)[:, -1]  # keep only the last value token
+        next_values = torch.stack([x[-1] for x in next_values])  # keep only the last value token
         next_dones = torch.tensor(dones, dtype=dtype).to(dev)
 
         # We now need to perform a batch expansion step .
@@ -968,7 +964,7 @@ def main(args: Args):
                 dist = torch.distributions.Categorical(logits=new_logits)
                 new_entropy = dist.entropy()
                 new_logprob = F.log_softmax(new_logits, dim=-1)
-                new_logprob = new_logprob["gather"](-1, gather_ixs).squeeze(-1)
+                new_logprob = new_logprob.gather(-1, gather_ixs).squeeze(-1)
 
                 logratio = new_logprob - batch["logprob"]
                 ratio = logratio.exp()
