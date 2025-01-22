@@ -349,7 +349,7 @@ class Args:
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "bfloat16"
     """The dtype to use for training"""
-    gradient_accumulation_steps: int = 8
+    gradient_accumulation_steps: int = 1
     """The number of gradient accumulation steps"""
     minibatch_size: int = 2
     """The minibatch size"""
@@ -953,7 +953,8 @@ def main(args: Args):
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = b_value.cpu().numpy(), b_returns.cpu().numpy()
+        y_pred = torch.cat(b_value).cpu().numpy()
+        y_true = torch.cat(b_returns).cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
