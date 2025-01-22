@@ -267,8 +267,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
+
     ckpt_interval: int = 1
     """the saving interval of the model"""
     overwrite_ckpt: bool = False
@@ -385,7 +384,7 @@ ACTION_PROMPT = (
 
 
 def main(args: Args):
-    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_id = f"finetuning_llm_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
     ckpt_path = f"checkpoints/best_{run_name}.state"
@@ -605,7 +604,8 @@ def main(args: Args):
                     b_logprob[j].append(results["logprobs"][j])
                     b_reward[j].append(torch.zeros_like(results["values"][j]))
                     training_done = torch.zeros_like(results["values"][j])
-                    training_done[0] = dones[j]
+                    d = torch.tensor(dones[j], dtype=torch.float).to(training_done.device)
+                    training_done[0] = d
                     b_done[j].append(training_done)
                     messages[j].append(
                         {"role": "assistant", "content": results["generated_text"][j]}
@@ -658,8 +658,8 @@ def main(args: Args):
                 #     b_done[j].append(torch.tensor(dones[j], dtype=dtype))
                 #     b_reward[j].append(torch.tensor(env_rewards[j], dtype=dtype))
 
-                done_now = dones[j] or truncations[j]
-                if not done_now:
+                ep_finished = dones[j] or truncations[j]
+                if not ep_finished:
                     _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                     prob = results["logprobs"][j].exp().mean().item()
                     _ep_buffer["sel_probs"][j].append(prob)
