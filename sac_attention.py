@@ -63,7 +63,7 @@ class Args:
     """the logging frequency of the examples"""
     resume: bool = False
     """if toggled, tries to resume training from the latest checkpoint"""
-    ckpt_interval: int = 1
+    ckpt_interval: int = 200
     """the saving interval of the model"""
     overwrite_ckpt: bool = False
     """if toggled and resuming is on, it will start fresh in resume mode, otherwise ignored"""
@@ -113,13 +113,13 @@ class Args:
     """the dropout rate"""
 
     # Eval
-    num_eval_episodes: int = 16
+    num_eval_episodes: int = 4
     """the number of episodes to evaluate the agent"""
     eval_interval: int = 64
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    rolling_returns_window: int = 64
+    rolling_returns_window: int = 16
     """the rolling rewards window"""
 
     # LLM
@@ -806,24 +806,26 @@ def main(args: Args):
                     target_param.data.copy_(
                         args.tau * param.data + (1 - args.tau) * target_param.data
                     )
+        save_state = {
+            "actor_state": actor.state_dict(),
+            "qf1_state": qf1.state_dict(),
+            "qf2_state": qf2.state_dict(),
+            "q_optimizer_state": q_optimizer.state_dict(),
+            "actor_optimizer_state": actor_optimizer.state_dict(),
+            "global_step": global_step + 1,
+            "elapsed_time": time.time() - start_time,
+            "best_total_reward": best_total_reward,
+            "best_model": best_model,
+            "best_model_epoch": best_model_epoch,
+            "buffer": buffer,
+        }
+        if args.autotune:
+            save_state["log_alpha"] = log_alpha
+            save_state["a_optimizer_state"] = a_optimizer.state_dict()
+        save_checkpoint(save_state, ckpt_path)
 
         if global_step % args.ckpt_interval == 0:
-            save_state = {
-                "actor_state": actor.state_dict(),
-                "qf1_state": qf1.state_dict(),
-                "qf2_state": qf2.state_dict(),
-                "q_optimizer_state": q_optimizer.state_dict(),
-                "actor_optimizer_state": actor_optimizer.state_dict(),
-                "global_step": global_step + 1,
-                "elapsed_time": time.time() - start_time,
-                "best_total_reward": best_total_reward,
-                "best_model": best_model,
-                "buffer": buffer,
-            }
-            if args.autotune:
-                save_state["log_alpha"] = log_alpha
-                save_state["a_optimizer_state"] = a_optimizer.state_dict()
-            save_checkpoint(save_state, ckpt_path)
+            save_checkpoint(save_state, ckpt_path.replace(".state", f"__{global_step}.state"))
 
         # Evaluation loop
         lang_agent.deterministic = True

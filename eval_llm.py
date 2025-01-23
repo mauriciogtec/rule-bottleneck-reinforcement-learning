@@ -59,10 +59,10 @@ class Args:
     """the language model to use"""
 
     # eval
-    num_episodes: int = 64
+    num_episodes: int = 30
     """the number of eval iterations"""
-    num_eval_steps: int = 16
-    """the number of steps per eval iteration"""
+    max_episode_steps: Optional[int] = 64
+    """the maximum number of steps per episode"""
 
     # Algorithm
     num_rules: int = 1
@@ -75,22 +75,22 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
+def make_env(env_id, seed, eval=False):
+    def thunk():
+        env = gym.make(env_id)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.reset(seed=seed)
+        return env
+
+    return thunk
 
 def main(args: Args):
-    def make_env(env_id, eval=False):
-        def thunk():
-            if eval:
-                env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
-            else:
-                env = gym.make(env_id)
-
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            return env
-
-        return thunk
-
-    eval_env_funs = [make_env(args.env_id, eval=True) for i in range(args.num_envs)]
-    envs = gym.vector.SyncVectorEnv(eval_env_funs)
+    env_funs = [
+        make_env(args.env_id, 1000 * args.seed + i)
+        for i in range(args.num_envs)
+    ]
+    envs = gym.vector.SyncVectorEnv(env_funs)
     chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
