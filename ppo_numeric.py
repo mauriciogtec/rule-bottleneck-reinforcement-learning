@@ -99,12 +99,13 @@ class Args:
     """the agent to evaluate"""  # used for logging
 
 
-def make_env(env_id, seed):
+def make_env(env_id, seed, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        # env.reset(seed=seed)
+        env = gym.wrappers.FlattenObservation(env)
+        env.reset(seed=seed)
         return env
 
     return thunk
@@ -116,9 +117,7 @@ if __name__ == "__main__":
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
 
-    run_name = (
-        f"numeric_ppo_eval__{args.env_id}__{args.seed}__{int(time.time())}"
-    )
+    run_name = f"numeric_ppo_eval__{args.env_id}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
 
@@ -148,10 +147,12 @@ if __name__ == "__main__":
 
     # env setup
     train_env_funs = [
-        make_env(args.env_id, args.seed + i) for i in range(args.num_envs)
+        make_env(args.env_id, args.seed + i, args.max_episode_steps)
+        for i in range(args.num_envs)
     ]
     eval_env_funs = [
-        make_env(args.env_id, 1000 * args.seed + i) for i in range(args.num_envs)
+        make_env(args.env_id, 1000 * args.seed + i, args.max_episode_steps)
+        for i in range(args.num_envs)
     ]
     envs = gym.vector.SyncVectorEnv(train_env_funs)
     eval_envs = gym.vector.SyncVectorEnv(eval_env_funs)
