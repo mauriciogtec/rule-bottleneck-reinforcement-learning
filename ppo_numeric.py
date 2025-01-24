@@ -41,7 +41,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "UgandaNumeric"
     """the id of the environment"""
-    total_timesteps: int = 200000
+    total_timesteps: int = 50000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
@@ -57,7 +57,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 64
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -176,20 +176,20 @@ if __name__ == "__main__":
     actor_network = nn.Sequential(
         layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
-        nn.LayerNorm(args.hidden_dim),
+        # nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
         nn.SiLU(),
-        nn.LayerNorm(args.hidden_dim),
+        # nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), std=1.0),
     )
 
     value_network = nn.Sequential(
         layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
-        nn.LayerNorm(args.hidden_dim),
+        # nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
         nn.SiLU(),
-        nn.LayerNorm(args.hidden_dim),
+        # nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, 1), 0.01),
     )
     agent = nn.ModuleDict({"actor": actor_network, "critic": value_network})
@@ -289,7 +289,7 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = value_network(next_obs).reshape(1, -1)
+            next_value = value_network(next_obs).reshape(-1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
@@ -329,7 +329,7 @@ if __name__ == "__main__":
                 newlogprob_all = newlogits.log_softmax(-1)
                 newlogprob = newlogprob_all.gather(
                     1, b_actions[mb_inds].long().view(-1, 1)
-                )
+                ).view(-1)
                 entropy = newdist.entropy().mean()
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
