@@ -89,11 +89,13 @@ if __name__ == "__main__":
         done = False
 
         all_rewards = []
+        r = 0
         while not done:
             action = env.action_space.sample()
             obs, reward, terminations, truncations, info = env.step(action)
+            r += reward
             done = terminations or truncations
-            all_rewards.append(reward)
+        all_rewards.append(r)
 
         # Log results to TensorBoard and WandB
         episodic_env_rewards = np.array(all_rewards).mean()
@@ -101,13 +103,13 @@ if __name__ == "__main__":
         writer.add_scalar("charts/episodic_env_rewards", episodic_env_rewards, episode)
 
     # Log summary statistics
-    mean_reward = np.mean(all_mean_rewards)
-    std_reward = np.std(all_mean_rewards)
-    writer.add_scalar("mean_reward", mean_reward, 0)
-    writer.add_scalar("std_reward", std_reward, 0)
+    mean_return = np.mean(all_mean_rewards)
+    std_return = np.std(all_mean_rewards)
+    writer.add_scalar("mean_return", mean_return, 0)
+    writer.add_scalar("std_return", std_return, 0)
 
     logging.info(
-        f"Evaluation completed: Mean Reward = {mean_reward}, Std Reward = {std_reward}"
+        f"Evaluation completed: Mean Reward = {mean_return}, Std Reward = {std_return}"
     )
 
     env.close()

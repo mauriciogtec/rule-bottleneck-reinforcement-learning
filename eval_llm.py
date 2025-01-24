@@ -59,9 +59,9 @@ class Args:
     """if toggled, the thoughts will be used with rules"""
 
     # eval
-    num_episodes: int = 64
+    num_episodes: int = 16
     """the number of eval iterations"""
-    num_eval_steps: int = 16
+    max_episode_steps: int = 64
     """the number of steps per eval iteration"""
 
     # Algorithm
@@ -76,20 +76,22 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
 
 
+def make_env(env_id, seed, max_episode_steps=None):
+    def thunk():
+        env = gym.make(env_id)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.reset(seed=seed)
+        return env
+
+    return thunk
+
+
 def main(args: Args):
-    def make_env(env_id, eval=False):
-        def thunk():
-            if eval:
-                env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
-            else:
-                env = gym.make(env_id)
-
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            return env
-
-        return thunk
-
-    eval_env_funs = [make_env(args.env_id, eval=True) for i in range(args.num_envs)]
+    eval_env_funs = [
+        make_env(args.env_id, args.seed + i, max_episode_steps=args.max_episode_steps)
+        for i in range(args.num_envs)
+    ]
     envs = gym.vector.SyncVectorEnv(eval_env_funs)
     chat_model = get_llm_api(args.llm)
 
@@ -297,11 +299,11 @@ def main(args: Args):
         autoreset = np.array(terminations) | np.array(truncations)
 
     # Log summary statistics
-    mean_reward = np.mean(all_mean_rewards)
-    std_reward = np.std(all_mean_rewards)
-    writer.add_scalar("mean_reward", mean_reward, 0)
-    writer.add_scalar("std_reward", std_reward, 0)
-    print(f"mean_reward: {mean_reward}, std_reward: {std_reward}")
+    mean_return = np.mean(all_returns)
+    std_return = np.std(all_returns)
+    writer.add_scalar("mean_return", mean_reward, 0)
+    writer.add_scalar("std_return", std_return, 0)
+    print(f"mean_reward: {mean_return}, std_reward: {std_return}")
 
     envs.close()
     writer.close()

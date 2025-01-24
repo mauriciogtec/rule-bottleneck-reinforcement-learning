@@ -148,10 +148,10 @@ class Args:
     )
 
 
-def make_env(env_id, seed, eval=False):
+def make_env(env_id, seed, eval=False, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
