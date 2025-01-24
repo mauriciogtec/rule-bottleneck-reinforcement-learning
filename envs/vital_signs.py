@@ -625,7 +625,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
         # )
         return (
             "Choose the id of the device that will be reallocated to the new incoming patient."
-            "Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices) such that:\n\n"
+            f"Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices) such that:\n\n"
             "- Always choose a free device if available\n"
             "- If no free device is available, then choose device i whose current patient is at least risk or"
             " would benefit less from wearing the device."
