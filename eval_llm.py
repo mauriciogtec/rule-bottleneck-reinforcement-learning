@@ -2,7 +2,6 @@ import logging
 import os
 import random
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from time import time
 from typing import Optional
@@ -13,7 +12,6 @@ import torch
 import torch.optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 import agents
 from agents import ValidAgents
@@ -59,10 +57,10 @@ class Args:
     """the language model to use"""
 
     # eval
-    num_episodes: int = 30
+    num_episodes: int = 64
     """the number of eval iterations"""
-    max_episode_steps: Optional[int] = 64
-    """the maximum number of steps per episode"""
+    num_eval_steps: int = 16
+    """the number of steps per eval iteration"""
 
     # Algorithm
     num_rules: int = 1
@@ -75,22 +73,22 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
-def make_env(env_id, seed, eval=False):
-    def thunk():
-        env = gym.make(env_id)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.reset(seed=seed)
-        return env
-
-    return thunk
 
 def main(args: Args):
-    env_funs = [
-        make_env(args.env_id, 1000 * args.seed + i)
-        for i in range(args.num_envs)
-    ]
-    envs = gym.vector.SyncVectorEnv(env_funs)
+    def make_env(env_id, eval=False):
+        def thunk():
+            if eval:
+                env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
+            else:
+                env = gym.make(env_id)
+
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            return env
+
+        return thunk
+
+    eval_env_funs = [make_env(args.env_id, eval=True) for i in range(args.num_envs)]
+    envs = gym.vector.SyncVectorEnv(eval_env_funs)
     chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
@@ -157,9 +155,12 @@ def main(args: Args):
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
 
     all_mean_rewards = []
+    all_returns = []
 
     total_episodes = 0
     step = 0
+    autoreset = np.zeros(args.num_envs, dtype=bool)
+
     while total_episodes < args.num_episodes:
         global_step += 1
 
@@ -168,9 +169,9 @@ def main(args: Args):
             outputs, messages = lang_agent.parallel_pipeline(next_state_text)
         else:
             outputs, messages = lang_agent(next_state_text)
+        env_actions = [x["action"] for x in outputs]
 
         # Step the environment
-        env_actions = [x["action"] for x in outputs]
         obs, env_rewards, terminations, truncations, infos = envs.step(env_actions)
         _, next_state_text = obs
 
@@ -181,7 +182,7 @@ def main(args: Args):
         # accumulate and log the rewards
         for j in range(args.num_envs):
             done_now = terminations[j] or truncations[j]
-            if not done_now:
+            if not done_now and not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j])
                 if args.agent == "llm_rules_agent":
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
@@ -189,7 +190,7 @@ def main(args: Args):
                     _ep_buffer["total_rewards"][j].append(
                         env_rewards[j] + sel_rewards[j]
                     )
-            else:
+            elif not autoreset[j]:
                 mean_reward = np.mean(_ep_buffer["env_rewards"][j])
                 all_mean_rewards.append(mean_reward)
                 # log the rewards
@@ -225,6 +226,8 @@ def main(args: Args):
                     r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
                     writer.add_scalar("charts/episodic_return", r, global_step)
                     writer.add_scalar("charts/episodic_length", l, global_step)
+
+                    all_returns.append(r)
 
                     logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
 
@@ -279,12 +282,14 @@ def main(args: Args):
                 f"global_step={global_step}, total_episodes={total_episodes}/{args.num_episodes}"
             )
         step += 1
+        autoreset = np.array(terminations) | np.array(truncations)
 
     # Log summary statistics
     mean_reward = np.mean(all_mean_rewards)
     std_reward = np.std(all_mean_rewards)
     writer.add_scalar("mean_reward", mean_reward, 0)
     writer.add_scalar("std_reward", std_reward, 0)
+    print(f"mean_reward: {mean_reward}, std_reward: {std_reward}")
 
     envs.close()
     writer.close()
