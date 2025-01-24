@@ -305,27 +305,37 @@ def _gen_explanation(outputs, messages, llm):
     messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
-def _gen_rules(outputs, messages, llm, num_rules=5, example_rules=None):
+def _gen_rules(
+    outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True
+):
     rules_prompt = (
         f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
         " For each rule, provide the explanation of why it is important to consider it at the given state."
-        " Each rule should be in natural language using the following JSON schema:\n\n"
+        " Each rule should be in machine-readable JSON Lines format. Each line should be JSON dictionary using the following schema:\n\n"
         " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        "- Answer with exactly one line for each rule. Start each line with the character '- ```' and end with '```'.\n"
         "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
-        "- The 'rule' should be statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
+        "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
         "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
         "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
+        "- Start and finish your answer with the characters '```'.\n"
     )
 
     if example_rules is not None:
         rules_prompt += f"\n\n### Example rules\n\n{example_rules}\n\n"
 
+    tmp_messages = messages.copy()
+    tmp_messages.append({"role": "user", "content": rules_prompt})
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
+    rules = parse_rules(response)
+
     # send second call using the OpenAI API
-    messages.append({"role": "user", "content": rules_prompt})
-    response = invoke_with_retries(llm, messages, max_tokens=512).content
-    return parse_rules(response)
+    if save_prompts:
+        messages.append({"role": "user", "content": rules_prompt})
+        rules_str = "\n".join(outputs["rules"])
+        messages.append({"role": "assistant", "content": rules_str})
+
+    return rules
 
 
 class LLMRulesAgent(BaseAgent):
@@ -382,12 +392,7 @@ class LLMRulesAgent(BaseAgent):
         return outputs["action"]
 
     def gen_rules(self, outputs: Dict, messages: List[Dict]):
-        rules = _gen_rules(
-            outputs, messages, self.llm, self.num_rules, self.example_rules
-        )
-        outputs["rules"] = rules
-        rules_str = "\n".join(outputs["rules"])
-        messages.append({"role": "assistant", "content": rules_str})
+        _gen_rules(outputs, messages, self.llm, self.num_rules, self.example_rules)
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
@@ -443,7 +448,12 @@ class RulesSelectorActorCritic(BaseAgent):
         First, generates combinations of rules, next it filters using an RL selector
         """
         rules = _gen_rules(
-            outputs, messages, self.llm, self.num_rules, self.example_rules
+            outputs,
+            messages,
+            self.llm,
+            self.num_rules,
+            self.example_rules,
+            save_prompts=False,
         )
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
@@ -487,9 +497,6 @@ class RulesSelectorActorCritic(BaseAgent):
             value = self.critic(queries, keys)
             outputs["value"] = value.squeeze()
 
-        # Now add the selected rule to the messages
-        messages.append({"role": "assistant", "content": sel_rule})
-
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
         sel_rule = outputs["sel_rule"]
@@ -502,10 +509,10 @@ class RulesSelectorActorCritic(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            f"Below are the rules that could be useful to make an optimal decision in the current state:\n\n"
+            f"Below is/are the priorization rule/rules that could be useful to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
             "\n\n"
-            "Now, choose the optimal action given the current problem state and the chosen priorization rules. "
+            "Now, choose the optimal action given the current problem state and the priorization rules. "
             "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
