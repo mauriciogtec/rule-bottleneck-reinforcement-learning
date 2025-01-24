@@ -209,7 +209,7 @@ class BaseAgent:
 NoThoughtsAgent = partial(BaseAgent, use_thoughts=False)
 
 
-def _gen_rule_scores(outputs, messages, llm, system_prompt):
+def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     """Generate rule scores based on the current state and the set of rules."""
     # Get only the task prompt with state and prompt the LLM to check whether the
     # selected rule is enough to understand
@@ -217,51 +217,44 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     # 2) Is the rule relevant to the current state?
     # 3) Is the justification of the rule clear and relates to the task?
 
-    rules = "\n".join(["- " + x for x in outputs["rules"]])
-    temp_system_prompt = (
-        f"{system_prompt}\n\n"
-        "To make a decision in the current state, the following rule/rules was selected:\n\n"
+    rules = "\n".join(rules)
+    rule_scores_prompt = (
+        "To make a decision in the current state, the following rule/rules was/were selected:\n\n"
         f"\n\n{rules}\n\n"
         "You will now be given a question you need to answer with a simple 'yes' or 'no'.\n\n"
     )
     q1 = "Is/are the rule(s) alone sufficient to understand what is the action that should be taken next given the problem state?"
     q2 = "Is it clear how the rule/rules apply/applies to the current problem state?"
-    q3 = "Is/are the selected rule/rules sufficient to explain this action?"
-    # q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
+    q3 = "Is/are the selected rule/rules sufficient to explain the selected action?"
 
     coda = (
         "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
         " information or justification. Your response should be a single word.\n\n"
     )
-    # coda2 = f"\n\n{outputs['explanation']}\n\nRespond with a single number from 1 to 10 without any additional information.\n\n### Your response:"
 
     # Answer q1
-    temp_messages = [
-        {"role": "system", "content": temp_system_prompt},
-        {"role": "user", "content": "### Question\n\n" + q1 + coda},
-    ]
+    temp_messages = messages.copy()
+    msg = rule_scores_prompt + "### Question\n\n" + q1 + coda
+    temp_messages.append({"role": "user", "content": msg})
     r1_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
     r1 = float("yes" in r1_.lower())
     temp_messages.append({"role": "assistant", "content": r1_})
 
     # Answer q2
-    temp_messages.append({"role": "user", "content": "### Question\n\n" + q2 + coda})
+    temp_messages = messages.copy()
+    msg = rule_scores_prompt + "### Question\n\n" + q2 + coda
+    temp_messages.append({"role": "user", "content": msg})
     r2_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
     r2 = float("yes" in r2_.lower())
     temp_messages.append({"role": "assistant", "content": r2_})
 
     # Answer q3
-    temp_messages.append({"role": "user", "content": "### Question\n\n" + q3 + coda})
-    r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r3 = float("yes" in r3_.lower())
-    temp_messages.append({"role": "assistant", "content": r3_})
-
-    # Answer q4
-    q3_with_action = f"The decision taken was: {outputs['action']}. " + q3
-    # q4_with_action += f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
-    temp_messages.append(
-        {"role": "user", "content": "### Question\n\n" + q3_with_action + coda}
+    temp_messages = messages.copy()
+    msg = (
+        f"The decision taken in the current problem state was: {outputs['action']}.\n\n"
+        f"### Question\n\n{q3 + coda}"
     )
+    temp_messages.append({"role": "user", "content": msg})
     r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
     r3 = float("yes" in r3_.lower())
     temp_messages.append({"role": "assistant", "content": r3_})
@@ -276,7 +269,7 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     #     r5 = np.random.rand()
     # temp_messages.append({"role": "assistant", "content": r5_})
 
-    # Calculate the reward
+    # Calculate the reward"]
     outputs["sel_reward"] = float(np.mean([r1, r2, r3]))
     outputs["sel_reward_scores"] = [r1, r2, r3]
     outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_}
@@ -300,7 +293,7 @@ def _gen_thoughts_for_rule_agents(outputs, messages, llm):
 def _gen_explanation(outputs, messages, llm):
     """Generate explanation and update message list"""
     explanation_prompt = (
-        "You chose action {outputs['action']} in the current problem state. "
+        f"You chose action {outputs['action']} in the current problem state. "
         "Explain why you chose the optimal action based on the conversation. "
         "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
     )
@@ -316,17 +309,11 @@ def _gen_rules(outputs, messages, llm, num_rules=5, example_rules=None):
     rules_prompt = (
         f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
         " For each rule, provide the explanation of why it is important to consider it at the given state."
-        " Your response consist solely of a machine-readable YAML list."
-        # " Each rule should be exactly one line and start with the character `-`."
         " Each rule should be in natural language using the following JSON schema:\n\n"
         " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        # # " [Motivation | Because of...], [Prioritize | do] [what] [if | when]. [Relevance to the current problem state]. [Explanation]\n\n"
-        # " The 'Explanation' should elaborate on the expected outcome of following the rule and its connection with "
-        # " the task and the agent's goals. The rule should be enough to deduce the action that should be taken next."
-        # " Your answer should start with the character ```- "
         "- Answer with exactly one line for each rule. Start each line with the character '- ```' and end with '```'.\n"
         "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
-        "- The priorization 'rule' should be statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
+        "- The 'rule' should be statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
         "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
         "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
@@ -404,7 +391,8 @@ class LLMRulesAgent(BaseAgent):
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
-        return _gen_rule_scores(outputs, messages, self.llm, system_prompt)
+        rules = outputs["rules"]
+        return _gen_rule_scores(outputs, messages, self.llm, rules, system_prompt)
 
 
 LLMRulesAgentNoThoughts = partial(LLMRulesAgent, use_thoughts=False)
@@ -504,7 +492,8 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
-        return _gen_rule_scores(outputs, messages, self.llm, system_prompt)
+        sel_rule = outputs["sel_rule"]
+        return _gen_rule_scores(outputs, messages, self.llm, [sel_rule], system_prompt)
 
     def post_action(self, outputs, messages):
         super().post_action(outputs, messages)

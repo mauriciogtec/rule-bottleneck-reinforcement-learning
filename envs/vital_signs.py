@@ -625,11 +625,11 @@ class VitalSignsSimpleLang(LanguageWrapper):
         # )
         return (
             "Choose the id of the device that will be reallocated to the new incoming patient."
-            "Your answer should be a single integer i from 0 to 4 (the number of devices) such that:\n\n"
+            "Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices) such that:\n\n"
             "- Always choose a free device if available\n"
             "- If no free device is available, then choose device i whose current patient is at least risk or"
             " would benefit less from wearing the device."
-            "Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}"
+            " Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}"
         )
 
     def state_descriptor(self, *_, **__) -> str:

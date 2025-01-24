@@ -189,7 +189,7 @@ def main(args: Args):
         obs, env_rewards, terminations, truncations, infos = envs.step(env_actions)
         _, next_state_text = obs
 
-        if args.agent == "llm_rules_agent":
+        if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
             sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
             sel_rewards = [x["sel_reward"] for x in outputs]
 
@@ -209,7 +209,7 @@ def main(args: Args):
             done_now = terminations[j] or truncations[j]
             if not done_now and not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j])
-                if args.agent == "llm_rules_agent":
+                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                     _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j])
                     _ep_buffer["total_rewards"][j].append(
@@ -226,7 +226,7 @@ def main(args: Args):
                 )
                 _ep_buffer["env_rewards"][j].clear()
 
-                if args.agent == "llm_rules_agent":
+                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(
@@ -266,7 +266,7 @@ def main(args: Args):
             elif args.agent == "no_thoughts_agent":
                 example = (
                     f"{outputs[0]['initial_prompt']}\n"
-                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Environment Action {env_actions[0]}\n"
                     f"### Explanation\n {outputs[0]['explanation']}"
                 )
             elif args.agent == "base_agent":
