@@ -180,7 +180,7 @@ class BaseAgent:
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the problem state. "
+            "Now, choose the optimal action given the current problem state. "
             "Do not provide additional information or context for your answer, only the action as follows. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             # "\n\n### Your response:"
@@ -226,8 +226,7 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     )
     q1 = "Is/are the rule(s) alone sufficient to understand what is the action that should be taken next given the problem state?"
     q2 = "Is it clear how the rule/rules apply/applies to the current problem state?"
-    q3 = "Is it clear how the rule/rules apply/applies to the current problem state?"
-    q4 = "Is/are the selected rule/rules sufficient to explain this action?"
+    q3 = "Is/are the selected rule/rules sufficient to explain this action?"
     # q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
 
     coda = (
@@ -258,14 +257,14 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     temp_messages.append({"role": "assistant", "content": r3_})
 
     # Answer q4
-    q4_with_action = f"The decision taken was: {outputs['action']}. " + q4
+    q3_with_action = f"The decision taken was: {outputs['action']}. " + q3
     # q4_with_action += f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
     temp_messages.append(
-        {"role": "user", "content": "### Question\n\n" + q4_with_action + coda}
+        {"role": "user", "content": "### Question\n\n" + q3_with_action + coda}
     )
-    r4_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r4 = float("yes" in r4_.lower())
-    temp_messages.append({"role": "assistant", "content": r4_})
+    r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    r3 = float("yes" in r3_.lower())
+    temp_messages.append({"role": "assistant", "content": r3_})
 
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
@@ -278,9 +277,9 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     # temp_messages.append({"role": "assistant", "content": r5_})
 
     # Calculate the reward
-    outputs["sel_reward"] = float(np.mean([r1, r2, r3, r4]))
-    outputs["sel_reward_scores"] = [r1, r2, r3, r4]
-    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
+    outputs["sel_reward"] = float(np.mean([r1, r2, r3]))
+    outputs["sel_reward_scores"] = [r1, r2, r3]
+    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_}
 
 
 def _gen_thoughts_for_rule_agents(outputs, messages, llm):
@@ -338,7 +337,7 @@ def _gen_rules(outputs, messages, llm, num_rules=5, example_rules=None):
 
     # send second call using the OpenAI API
     messages.append({"role": "user", "content": rules_prompt})
-    response = invoke_with_retries(llm, messages, max_tokens=200).content
+    response = invoke_with_retries(llm, messages, max_tokens=512).content
     return parse_rules(response)
 
 
@@ -381,7 +380,7 @@ class LLMRulesAgent(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            "Now, choose the optimal action given the current state of the decision problem and the decision rules. "
+            "Now, choose the optimal action given the current problem state and the chosen priorization rules. "
             "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
@@ -389,7 +388,7 @@ class LLMRulesAgent(BaseAgent):
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=20
+            self.llm, messages, max_tokens=30
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -472,6 +471,7 @@ class RulesSelectorActorCritic(BaseAgent):
         outputs["rules_emb"] = rules_emb
 
         # get the rule scores
+        state_vector = outputs["state_vector"]
         if state_vector.dim() == 1:
             state_vector = state_vector.unsqueeze(0)
 
@@ -513,10 +513,10 @@ class RulesSelectorActorCritic(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            f"### Selected priorization rules\n\nBelow are the rules that could be useful to make an optimal decision in the current state:\n\n"
+            f"Below are the rules that could be useful to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
-            "### The decision\n\n"
-            "Now, choose the optimal action given the current state of the problem state and the chosen priorization rules. "
+            "\n\n"
+            "Now, choose the optimal action given the current problem state and the chosen priorization rules. "
             "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
@@ -524,7 +524,7 @@ class RulesSelectorActorCritic(BaseAgent):
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=10
+            self.llm, messages, max_tokens=30
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]

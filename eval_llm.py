@@ -245,51 +245,52 @@ def main(args: Args):
 
                 total_episodes += 1
 
-            if step == 0 or step % args.log_examples_interval == 0:
-                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
-                    rules_str = "\n".join(outputs[0]["rules"])
-                    rules_scores = [
-                        f"{k}: {v}"
-                        for k, v in outputs[0]["sel_reward_scores_raw"].items()
-                    ]
-                    rules_scores_str = "\n".join(rules_scores)
-                    thoughts = outputs[0].get("thoughts", None)
-                    example = (
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Thoughts\n {thoughts}\n" if thoughts else ""
-                        f"### Rules\n {rules_str}\n"
-                        f"### Selected Rules Explainability\n{rules_scores_str}\n"
-                        f"### Environment Action {outputs[0]['action']}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}\n"
-                    )
-                elif args.agent == "no_thoughts_agent":
-                    example = (
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Environment Action\[0]n {env_actions}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}"
-                    )
-                elif args.agent == "base_agent":
-                    example = (
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                        f"### Environment Action\[0]n {env_actions}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}"
-                    )
-
-                conversation = "\n".join(
-                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+        if step == 0 or step % args.log_examples_interval == 0:
+            if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
+                rules_str = "\n".join(outputs[0]["rules"])
+                rules_scores = [
+                    f"{k}: {v}"
+                    for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                ]
+                rules_scores_str = "\n".join(rules_scores)
+                thoughts = outputs[0].get("thoughts", None)
+                example = [
+                    f"{outputs[0]['initial_prompt']}\n",
+                    f"### Thoughts\n {thoughts}\n" if thoughts else "",
+                    f"### Rules\n {rules_str}\n",
+                    f"### Selected Rules Explainability\n{rules_scores_str}\n",
+                    f"### Environment Action {outputs[0]['action']}\n",
+                    f"### Explanation\n {outputs[0]['explanation']}\n",
+                ]
+                example = "".join(example)
+            elif args.agent == "no_thoughts_agent":
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
                 )
-                writer.add_text("text/examples", example, global_step)
-                writer.add_text("llm_prompts/conversation", conversation, global_step)
-
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
+            elif args.agent == "base_agent":
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                    f"### Environment Action\[0]n {env_actions}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
                 )
+
+            conversation = "\n".join(
+                [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+            )
+            writer.add_text("text/examples", example, global_step)
+            writer.add_text("llm_prompts/conversation", conversation, global_step)
+
+            # log the conversation and example in jsonl
+            jsonl_logger.write(
+                {
+                    "global_step": global_step,
+                    "example": example,
+                    "conversation": conversation,
+                }
+            )
 
         if step % 16 == 0:
             logging.info(
@@ -301,7 +302,7 @@ def main(args: Args):
     # Log summary statistics
     mean_return = np.mean(all_returns)
     std_return = np.std(all_returns)
-    writer.add_scalar("mean_return", mean_reward, 0)
+    writer.add_scalar("mean_return", mean_return, 0)
     writer.add_scalar("std_return", std_return, 0)
     print(f"mean_reward: {mean_return}, std_reward: {std_return}")
 

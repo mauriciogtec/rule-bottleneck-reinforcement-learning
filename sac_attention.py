@@ -142,13 +142,16 @@ class Args:
     buffer_size: int = 4096
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
 
+    agent: Optional[str] = None   # to be set by the agent
+    """the agent to use"""
+    thoughts: bool = True
+    """if toggled, the agent will use thoughts"""
+
     # Torch compile
-    compile_torch: bool = (
-        False  # TODO: need to fix the ordering of the save/load/compile to avoid errors
-    )
+    compile_torch: bool = False  # needs fix
 
 
-def make_env(env_id, seed, eval=False, max_episode_steps=None):
+def make_env(env_id, seed, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -371,6 +374,8 @@ def main(args: Args):
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
 
+    args.agent = 'rbrl' if args.thoughts else 'rbrl-no-thoughts'
+
     if args.overwrite_ckpt:
         # delete checkpoint pat
         if os.path.exists(ckpt_path):
@@ -410,10 +415,11 @@ def main(args: Args):
 
     # env setup
     train_env_funs = [
-        make_env(args.env_id, args.seed + i) for i in range(args.num_envs)
+        make_env(args.env_id, args.seed + i, args.max_episode_steps)
+        for i in range(args.num_envs)
     ]
     eval_env_funs = [
-        make_env(args.env_id, 1000 * args.seed + i, eval=True)
+        make_env(args.env_id, 1000 * args.seed + i, args.max_episode_steps)
         for i in range(args.num_envs)
     ]
     envs = gym.vector.SyncVectorEnv(train_env_funs)
@@ -470,6 +476,7 @@ def main(args: Args):
         embededder=embed_model,
         max_rule_combinations=1,
         example_rules=example_rules,
+        use_thoughts=args.agent == "rbrl",
     )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
@@ -674,21 +681,22 @@ def main(args: Args):
         if global_step % args.log_examples_interval == 0:
             rules_str = "\n".join(outputs[0]["rules"])
             rules_scores = [
-                f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                f"{d}. {k}: {v}" for d, (k, v) in enumerate(outputs[0]["sel_reward_scores_raw"].items())
             ]
             rules_scores_str = "\n".join(rules_scores)
-            example = (
-                f"{outputs[0]['initial_prompt']}\n"
-                f"### Thoughts\n{outputs[0]['thoughts']}\n"
-                f"### Rules\n{rules_str}\n"
-                f"### Selected Rule\n{outputs[0]['sel_rule']}\n"
-                f"### Selected Rule Probabßility\n{outputs[0]['sel_logprob'].exp():.2f}\n"
-                f"### Selected Rule Reward\n {outputs[0]['sel_reward']}\n"
-                f"### Selected Rule Explainability\n{rules_scores_str}\n"
-                f"### Environment Action\n{outputs[0]['action']}\n"
-                f"### Explanation with thoughts and all rules\n{outputs[0]['explanation']}\n"
-                f"### Explanation with only selected rule\n{outputs[0]['explanation_rule_only']}"
-            )
+            thoughts = outputs[0].get("thoughts", None)
+            example = [
+                f"{outputs[0]['initial_prompt']}\n",
+                f"### Thoughts\n{thoughts}\n" if thoughts else "",
+                f"### Rules\n{rules_str}\n",
+                f"### Selected Rule\n{outputs[0]['sel_rule']}\n",
+                f"### Selected Rule Probability\n{outputs[0]['sel_logprob'].exp():.2f}\n",
+                f"### Selected Rule Reward\n {outputs[0]['sel_reward']}\n",
+                f"### Selected Rule Explainability\n{rules_scores_str}\n",
+                f"### Environment Action\n{outputs[0]['action']}\n",
+                f"### Explanation \n{outputs[0]['explanation']}\n",
+            ]
+            example = ''.join(example)
 
             conversation = "\n".join(
                 [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]

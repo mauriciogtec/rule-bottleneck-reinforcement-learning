@@ -98,9 +98,9 @@ if __name__ == "__main__":
         all_rewards.append(r)
 
         # Log results to TensorBoard and WandB
-        episodic_env_rewards = np.array(all_rewards).mean()
-        all_mean_rewards.append(episodic_env_rewards)
-        writer.add_scalar("charts/episodic_env_rewards", episodic_env_rewards, episode)
+        episodic_return = np.array(all_rewards).mean()
+        all_mean_rewards.append(episodic_return)
+        writer.add_scalar("charts/episodic_return", episodic_return, episode)
 
     # Log summary statistics
     mean_return = np.mean(all_mean_rewards)
