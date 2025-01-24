@@ -14,7 +14,7 @@ import tyro
 from torch.utils.tensorboard import SummaryWriter
 
 import agents
-from agents import ValidAgents
+from agents import PureLanguageAgents
 import envs as E  # registers the gym environments during import
 from llm_apis import get_llm_api, ValidLLMs
 
@@ -49,12 +49,14 @@ class Args:
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    agent: ValidAgents = "llm_rules_agent"
+    agent: PureLanguageAgents = "llm_rules_no_thoughts"
     """the agent to use"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
+    use_thoughts_with_rules: bool = False
+    """if toggled, the thoughts will be used with rules"""
 
     # eval
     num_episodes: int = 64
@@ -132,6 +134,16 @@ def main(args: Args):
             num_rules=args.num_rules,
             llm=chat_model,
             example_rules=example_rules,
+        )
+    elif args.agent == "llm_rules_no_thoughts":
+        example_rules = envs.envs[0].metadata["example_rules"]
+        example_rules = "".join(f"- {x}\n" for x in example_rules)
+        lang_agent = agents.LLMRulesAgentNoThoughts(
+            task_text=envs.metadata["task_text"],
+            action_space_text=envs.metadata["action_space_text"],
+            num_rules=args.num_rules,
+            llm=chat_model,
+            example_rules=example_rules
         )
     elif args.agent == "no_thoughts_agent":
         lang_agent = agents.NoThoughtsAgent(
