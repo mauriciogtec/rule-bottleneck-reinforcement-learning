@@ -223,9 +223,9 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
         f"\n\n{rules}\n\n"
         "You will now be given a question you need to answer with a simple 'yes' or 'no'.\n\n"
     )
-    q1 = "Is/are the rule(s) alone sufficient to understand what is the action that should be taken next given the problem state?"
-    q2 = "Is it clear how the rule/rules apply/applies to the current problem state?"
-    q3 = "Is/are the selected rule/rules sufficient to explain the selected action?"
+    q1 = "Is/are the rule/rules alone sufficient to understand the optimal action that should be taken next given the problem state?"
+    q2 = "Is the condition in the rule/rules directly applicable in the current problem state?"
+    q3 = "Is/are the selected rule/rules sufficient to explain the selected action without contradiction?"
 
     coda = (
         "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
