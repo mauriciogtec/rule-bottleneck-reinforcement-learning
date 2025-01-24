@@ -143,7 +143,7 @@ def main(args: Args):
             action_space_text=envs.metadata["action_space_text"],
             num_rules=args.num_rules,
             llm=chat_model,
-            example_rules=example_rules
+            example_rules=example_rules,
         )
     elif args.agent == "no_thoughts_agent":
         lang_agent = agents.NoThoughtsAgent(
@@ -191,6 +191,17 @@ def main(args: Args):
             sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
             sel_rewards = [x["sel_reward"] for x in outputs]
 
+        if "episode" in infos:
+            for i in range(args.num_envs):
+                if infos["_episode"][i]:
+                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                    writer.add_scalar("charts/episodic_return", r, global_step)
+                    writer.add_scalar("charts/episodic_length", l, global_step)
+
+                    all_returns.append(r)
+
+                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
+
         # accumulate and log the rewards
         for j in range(args.num_envs):
             done_now = terminations[j] or truncations[j]
@@ -232,62 +243,51 @@ def main(args: Args):
 
                 total_episodes += 1
 
-        if "episode" in infos:
-            for i in range(args.num_envs):
-                if infos["_episode"][i]:
-                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
-                    writer.add_scalar("charts/episodic_return", r, global_step)
-                    writer.add_scalar("charts/episodic_length", l, global_step)
+            if step == 0 or step % args.log_examples_interval == 0:
+                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
+                    rules_str = "\n".join(outputs[0]["rules"])
+                    rules_scores = [
+                        f"{k}: {v}"
+                        for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                    ]
+                    rules_scores_str = "\n".join(rules_scores)
+                    thoughts = outputs[0].get("thoughts", None)
+                    example = (
+                        f"{outputs[0]['initial_prompt']}\n"
+                        f"### Thoughts\n {thoughts}\n" if thoughts else ""
+                        f"### Rules\n {rules_str}\n"
+                        f"### Selected Rules Explainability\n{rules_scores_str}\n"
+                        f"### Environment Action {outputs[0]['action']}\n"
+                        f"### Explanation\n {outputs[0]['explanation']}\n"
+                    )
+                elif args.agent == "no_thoughts_agent":
+                    example = (
+                        f"{outputs[0]['initial_prompt']}\n"
+                        f"### Environment Action\[0]n {env_actions}\n"
+                        f"### Explanation\n {outputs[0]['explanation']}"
+                    )
+                elif args.agent == "base_agent":
+                    example = (
+                        f"{outputs[0]['initial_prompt']}\n"
+                        f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                        f"### Environment Action\[0]n {env_actions}\n"
+                        f"### Explanation\n {outputs[0]['explanation']}"
+                    )
 
-                    all_returns.append(r)
-
-                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
-
-        if step == 0 or step % args.log_examples_interval == 0:
-            if args.agent == "llm_rules_agent":
-                rules_str = "\n".join(outputs[0]["rules"])
-                rules_scores = [
-                    f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
-                ]
-                rules_scores_str = "\n".join(rules_scores)
-                example = (
-                    f"{outputs[0]['initial_prompt']}\n"
-                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                    f"### Rules\n {rules_str}\n"
-                    f"### Selected Rules Explainability\n{rules_scores_str}\n"
-                    f"### Environment Action {outputs[0]['action']}\n"
-                    f"### Explanation\n {outputs[0]['explanation']}\n"
-                    f"### Explanation rules only\n {outputs[0]['explanation_rule_only']}"
+                conversation = "\n".join(
+                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
                 )
-            elif args.agent == "no_thoughts_agent":
-                example = (
-                    f"{outputs[0]['initial_prompt']}\n"
-                    f"### Environment Action\[0]n {env_actions}\n"
-                    f"### Explanation\n {outputs[0]['explanation']}"
-                )
-            elif args.agent == "base_agent":
-                example = (
-                    f"{outputs[0]['initial_prompt']}\n"
-                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                    f"### Environment Action\[0]n {env_actions}\n"
-                    f"### Explanation\n {outputs[0]['explanation']}"
-                    f"### Explanation no thoughts\n {outputs[0]['explanation_no_thoughts']}"
-                )
+                writer.add_text("text/examples", example, global_step)
+                writer.add_text("llm_prompts/conversation", conversation, global_step)
 
-            conversation = "\n".join(
-                [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
-            )
-            writer.add_text("text/examples", example, global_step)
-            writer.add_text("llm_prompts/conversation", conversation, global_step)
-
-            # log the conversation and example in jsonl
-            jsonl_logger.write(
-                {
-                    "global_step": global_step,
-                    "example": example,
-                    "conversation": conversation,
-                }
-            )
+                # log the conversation and example in jsonl
+                jsonl_logger.write(
+                    {
+                        "global_step": global_step,
+                        "example": example,
+                        "conversation": conversation,
+                    }
+                )
 
         if step % 16 == 0:
             logging.info(

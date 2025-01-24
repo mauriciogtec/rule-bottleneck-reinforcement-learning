@@ -227,7 +227,7 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     q1 = "Is/are the rule(s) alone sufficient to understand what is the action that should be taken next given the problem state?"
     q2 = "Is it clear how the rule/rules apply/applies to the current problem state?"
     q3 = "Is it clear how the rule/rules apply/applies to the current problem state?"
-    q4 = f"The agent chose action {outputs['action']} in the current problem state. Is/are the selected rule/rules alone sufficient to explain this decision?"
+    q4 = "Is/are the selected rule/rules sufficient to explain this action?"
     # q5 = "5. Below is the explanation by the agent for the selected action. Rate it in a scale from 1 to 10. Rate it lower if there are fallacies or hallucinations."
 
     coda = (
@@ -258,8 +258,8 @@ def _gen_rule_scores(outputs, messages, llm, system_prompt):
     temp_messages.append({"role": "assistant", "content": r3_})
 
     # Answer q4
-    q4_with_action = q4 + f"Selected action: {outputs['action']}\n\n"
-    q4_with_action += f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
+    q4_with_action = f"The decision taken was: {outputs['action']}. " + q4
+    # q4_with_action += f"Post-hoc explanation: {outputs['explanation_rule_only']}\n\n"
     temp_messages.append(
         {"role": "user", "content": "### Question\n\n" + q4_with_action + coda}
     )
