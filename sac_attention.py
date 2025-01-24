@@ -25,8 +25,8 @@ from tqdm.auto import tqdm
 
 import buffers
 import envs as E  # registers the gym environments during import
-from agents import RulesSelectorActorCritic, ValidAgents
-from layers import AttentionNetwork
+from agents import RulesSelectorActorCritic, PureLanguageAgents
+from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
 
 # configure logging
@@ -148,10 +148,10 @@ class Args:
     )
 
 
-def make_env(env_id, seed, eval=False):
+def make_env(env_id, seed, eval=False, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=args.max_episode_steps)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
@@ -430,19 +430,19 @@ def main(args: Args):
     num_rules = args.num_rules
     # num_actions = envs.single_action_space.n
 
-    actor = AttentionNetwork(
+    actor = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    qf1 = AttentionNetwork(
+    qf1 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    qf2 = AttentionNetwork(
+    qf2 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
@@ -825,7 +825,9 @@ def main(args: Args):
         save_checkpoint(save_state, ckpt_path)
 
         if global_step % args.ckpt_interval == 0:
-            save_checkpoint(save_state, ckpt_path.replace(".state", f"__{global_step}.state"))
+            save_checkpoint(
+                save_state, ckpt_path.replace(".state", f"__{global_step}.state")
+            )
 
         # Evaluation loop
         lang_agent.deterministic = True
