@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 
 import buffers
 import envs as E  # registers the gym environments during import
-from agents import RulesSelectorActorCritic, ValidAgents
+from agents import RulesSelectorActorCritic, PureLanguageAgents
 from layers import AttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
 
