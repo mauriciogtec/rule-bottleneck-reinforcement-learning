@@ -477,7 +477,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def __init__(
         self,
-        actor: layers.AttentionNetwork,
+        actor: layers.CrossAttentionNetwork,
         task_text: str,
         action_space_text: str,
         llm: BaseChatModel,
@@ -487,7 +487,7 @@ class RulesSelectorActorCritic(BaseAgent):
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
-        critic: Optional[layers.AttentionNetwork] = None,
+        critic: Optional[layers.CrossAttentionNetwork] = None,
         deterministic: bool = False,
     ):
         super().__init__(
