@@ -29,7 +29,7 @@ from torch import tensor, FloatTensor
 from llm_apis import get_llm_api, ValidLLMs
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic
-from layers import AttentionNetwork, pool_attention_network
+from layers import CrossAttentionNetwork, pool_attention_network
 
 # configure logging
 logging.basicConfig(
@@ -257,13 +257,13 @@ def main(args: Args):
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    actor = AttentionNetwork(
+    actor = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    critic = AttentionNetwork(
+    critic = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,

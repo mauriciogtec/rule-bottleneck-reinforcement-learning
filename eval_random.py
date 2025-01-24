@@ -17,9 +17,9 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     env_id: str = "Uganda"
     """The environment ID to evaluate."""
-    seed: int = 1
+    seed: int = 42
     """Random seed for reproducibility."""
-    num_episodes: int = 1000
+    num_episodes: int = 100
     """Number of episodes to evaluate the random policy."""
     track: bool = False
     """If toggled, this evaluation will be tracked with Weights and Biases."""
@@ -27,7 +27,7 @@ class Args:
     """The WandB project name."""
     wandb_entity: Optional[str] = None
     """The WandB entity/team name."""
-    max_episode_steps: int = 16
+    max_episode_steps: int = 64
     """The maximum number of steps per episode."""
     wandb_project_name: str = "rulebots"
     """the wandb's project name"""
@@ -35,6 +35,8 @@ class Args:
     """the entity (team) of wandb's project"""
     gamma: float = 0.95
     """discount factor"""
+    agent: str = "random"
+    """the agent to evaluate"""  # used for logging
 
 
 if __name__ == "__main__":

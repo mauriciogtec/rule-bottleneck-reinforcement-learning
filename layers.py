@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 
-class AttentionBlock(nn.Module):
+class CrossAttentionBlock(nn.Module):
     def __init__(
         self,
         q_dim,
@@ -116,7 +116,53 @@ class AttentionBlock(nn.Module):
         return queries, weights
 
 
-class AttentionNetwork(nn.Module):
+class SelfAttentionBlock(nn.Module):
+    def __init__(
+        self,
+        q_dim,
+        hidden_dim,
+        num_heads,
+        dropout,
+    ):
+        super().__init__()
+
+        self.num_heads = num_heads
+
+        # Self-attention layer
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim=q_dim,
+            num_heads=gcd(num_heads, q_dim),
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        self.ffn = nn.Linear(q_dim, hidden_dim)
+
+        # Normalization and activation layers
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.activation = torch.nn.functional.silu
+        self.self_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, q: torch.Tensor):
+        # For this one don't worry about nested
+        # Self-attention
+        self_output, _ = self.self_attention(q, q, q)
+        if q.shape == self_output.shape:
+            q = self.self_norm(self.activation(q + self_output))
+        else:
+            q = self.self_norm(self.activation(self_output))
+
+        # Feed-forward network
+        ffn_output = self.ffn(q)
+        if q.shape == ffn_output.shape:
+            q = self.ffn_norm(self.activation(q + ffn_output))
+        else:
+            q = self.ffn_norm(self.activation(ffn_output))
+
+        return q
+
+
+class CrossAttentionNetwork(nn.Module):
     def __init__(
         self,
         q_dim,
@@ -168,7 +214,7 @@ class AttentionNetwork(nn.Module):
         self.blocks = nn.ModuleList()
         for i in range(num_attention_blocks):
             self.blocks.append(
-                AttentionBlock(
+                CrossAttentionBlock(
                     q_dim=q_dim if i == 0 else hidden_dim,
                     k_dim=k_dim,
                     hidden_dim=hidden_dim,
@@ -205,3 +251,56 @@ def pool_attention_network(x: torch.Tensor):
     if x.is_nested:
         return torch.stack([t.mean(-1) for t in x])
     return x.mean(-1)
+
+
+class SelfAttentionNetwork(nn.Module):
+    def __init__(
+        self,
+        q_dim,
+        hidden_dim,
+        output_dim,
+        num_heads: int = 4,
+        dropout: float = 0.0,
+        num_attention_blocks: int = 2,
+        normalize_inputs: bool = True,
+    ):
+        super().__init__()
+        self.normalize_inputs = normalize_inputs
+
+        if normalize_inputs:
+            self.query_norm = nn.LayerNorm(q_dim)
+
+        self.init_proj = nn.Sequential(
+            nn.Linear(q_dim, hidden_dim),
+            nn.SiLU(),
+            nn.LayerNorm(hidden_dim),
+        )
+
+        self.blocks = nn.ModuleList()
+        for i in range(num_attention_blocks):
+            self.blocks.append(
+                SelfAttentionBlock(
+                    q_dim=hidden_dim,
+                    hidden_dim=hidden_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+            )
+
+        self.linear = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, queries):
+        if queries.dim() == 2:
+            queries = queries.unsqueeze(1)
+
+        if self.normalize_inputs:
+            queries = self.query_norm(queries)
+
+        queries = self.init_proj(queries)
+
+        for block in self.blocks:
+            queries = block(queries)
+
+        queries = self.linear(queries)
+
+        return queries

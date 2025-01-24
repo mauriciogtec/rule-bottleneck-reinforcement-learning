@@ -26,7 +26,7 @@ from tqdm.auto import tqdm
 import buffers
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic, ValidAgents
-from layers import AttentionNetwork
+from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
 
 # configure logging
@@ -430,19 +430,19 @@ def main(args: Args):
     num_rules = args.num_rules
     # num_actions = envs.single_action_space.n
 
-    actor = AttentionNetwork(
+    actor = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    qf1 = AttentionNetwork(
+    qf1 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    qf2 = AttentionNetwork(
+    qf2 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
