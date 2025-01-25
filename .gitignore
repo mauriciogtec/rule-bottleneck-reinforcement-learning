@@ -25,3 +25,6 @@ buffers*/
 # cluster jobs
 slurm_scripts/
 slurm_logs/
+
+# envs
+weather2alert

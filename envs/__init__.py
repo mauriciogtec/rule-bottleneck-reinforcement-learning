@@ -18,7 +18,7 @@ BuySellSimple = partial(BuySellSimpleLang)
 UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz", time_discount=0.95)
 MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discount=0.95)
 MimicIVNumeric = partial(VitalSignsSimple, "models/mimic-iv.npz", time_discount=0.95)
-HeatAlertsNumeric = partial(HeatAlertEnv)
+HeatAlertsNumeric = partial(HeatAlertEnv, budget=10, sample_budget=True, random_starts=True)
 BuySellSimpleNumeric = partial(BuySellSimple)
 
 
