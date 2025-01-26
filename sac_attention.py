@@ -419,7 +419,7 @@ def main(args: Args):
             name=run_name,
             monitor_gym=True,
             save_code=True,
-            resume=args.resume,
+            resume='auto'
         )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
