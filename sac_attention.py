@@ -391,7 +391,11 @@ def main(args: Args):
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
 
-    args.agent = "rbrl" if args.thoughts else "rbrl-no-thoughts"
+    args.agent = "rbrl"
+    if not args.thoughts:
+        args.agent += "__no-thoughts"
+    if not args.in_context_learning:
+        args.agent += "__no-in-context"
 
     if args.overwrite_ckpt:
         # delete checkpoint pat
@@ -503,7 +507,7 @@ def main(args: Args):
         embededder=embed_model,
         max_rule_combinations=1,
         example_rules=example_rules,
-        use_thoughts=args.agent == "rbrl",
+        use_thoughts=args.thoughts,
         critic=critic,
         in_context_learning=args.in_context_learning,
     )
