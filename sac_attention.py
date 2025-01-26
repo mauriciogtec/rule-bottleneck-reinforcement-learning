@@ -160,8 +160,15 @@ class Args:
 
 
 def make_env(env_id, seed, max_episode_steps=None):
+    def scale_reward(r):
+        return r / max_episode_steps
+
     def thunk():
         env = gym.make(env_id)
+        if env_id == "HeatAlerts":
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
+        elif env_id == "Uganda":
+            env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
@@ -835,7 +842,9 @@ def main(args: Args):
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 writer.add_scalar("losses/entropy", entropy, global_step)
                 variance_explained = 1 - _running_qse / _running_qss
-                writer.add_scalar("losses/variance_explained", variance_explained, global_step)
+                writer.add_scalar(
+                    "losses/variance_explained", variance_explained, global_step
+                )
 
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss, global_step)
