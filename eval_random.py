@@ -27,7 +27,7 @@ class Args:
     """The WandB project name."""
     wandb_entity: Optional[str] = None
     """The WandB entity/team name."""
-    max_episode_steps: int = 64
+    max_episode_steps: int = 16
     """The maximum number of steps per episode."""
     wandb_project_name: str = "rulebots"
     """the wandb's project name"""
@@ -37,6 +37,8 @@ class Args:
     """discount factor"""
     agent: str = "random"
     """the agent to evaluate"""  # used for logging
+    exp_name: Optional[str] = None
+    """the name of the experiment"""
 
 
 def make_env(env_id, seed, max_episode_steps=None):
@@ -59,7 +61,7 @@ if __name__ == "__main__":
 
     args = tyro.cli(Args)
 
-    run_name = f"random_policy_eval__{args.env_id}__{args.max_episode_steps}__{int(time.time())}"
+    run_name = f"random_policy_eval__{args.env_id}__{args.max_episode_steps}__{args.exp_name}__{int(time.time())}"
 
     # Configure logging
     logging.basicConfig(

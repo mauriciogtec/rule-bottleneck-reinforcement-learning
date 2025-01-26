@@ -122,7 +122,7 @@ if __name__ == "__main__":
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
 
-    run_name = f"numeric_ppo_eval__{args.env_id}__{args.seed}__{int(time.time())}"
+    run_name = f"numeric_ppo_eval__{args.env_id}__{args.seed}__{args.exp_name}__{int(time.time())}"
     if args.track:
         import wandb
 
