@@ -17,13 +17,13 @@ class HUITMistral:
     """
     Custom chat model for a HUIT AWS Bendrock endpoint.
     **Only for internal use at Harvard.
-    """
+"""
 
     def __init__(
         self,
         model: str = "mistral.mistral-large-2407-v1:0",
         max_attempts: int = 3,
-        wait_time_between_attempts: int = 15,
+        wait_time_between_attempts: int = 60,
     ):
         metadata = {}
         metadata["endpoint_url"] = "https://go.apis.huit.harvard.edu/ais-bedrock-llm/v1"
@@ -41,7 +41,7 @@ class HUITMistral:
         self,
         messages: List[Dict[Literal["role", "content"], str]],
         max_tokens: int = 100,
-        temperature: float = 1.0,
+        temperature: float = 0.5,
         top_p: float = 0.9,
         **kwargs: Any,
     ) -> NamedTuple:
@@ -116,7 +116,7 @@ class HUITMeta:
         self,
         model: str = "meta.llama3-1-8b-instruct-v1:0",
         max_attempts: int = 3,
-        wait_time_between_attempts: int = 15,
+        wait_time_between_attempts: int = 60,
     ):
         metadata = {}
         metadata["endpoint_url"] = "https://go.apis.huit.harvard.edu/ais-bedrock-llm/v1"
@@ -148,14 +148,16 @@ class HUITMeta:
         prompt = ""
         for m in messages:
             prompt += f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}<|eot_id|>"
-        prompt += "<|start_header_id|>assistant<|end_header_id|>\n"
+        prompt += "<|start_header_id|>assistant<|end_header_id|>"
+        prompt = prompt.replace("(", "[")
+        prompt = prompt.replace(")", "]")
         return prompt
 
     def invoke(
         self,
         messages: List[Dict[Literal["role", "content"], str]],
         max_tokens: int = 100,
-        temperature: float = 1.0,
+        temperature: float = 0.5,
         top_p: float = 0.9,
         **kwargs: Any,
     ) -> NamedTuple:
@@ -219,7 +221,7 @@ class HUITOpenAI:
         self,
         model: str = "gpt-4o-mini",
         max_attempts: int = 3,
-        wait_time_between_attempts: int = 3,
+        wait_time_between_attempts: int = 60,
     ):
         metadata = {}
         metadata["endpoint_url"] = (
@@ -235,7 +237,7 @@ class HUITOpenAI:
         self,
         messages: List[Dict[Literal["role", "content"], str]],
         max_tokens: int = 100,
-        temperature: float = 1.0,
+        temperature: float = 0.5,
         top_p: float = 0.9,
         **kwargs: Any,
     ) -> NamedTuple:
@@ -317,8 +319,9 @@ def invoke_with_retries(
     model: ValidLLMs,
     messages: List[Dict[Literal["role", "content"], str]],
     *args,
-    max_attempts: int = 3,
+    max_attempts: int = 10,
     wait_time_between_attempts: int = 60,
+    temperature=0.5,
     **kwargs,
 ):
     attempts = 0
@@ -327,7 +330,7 @@ def invoke_with_retries(
         if attempts > max_attempts:
             raise RuntimeError("Failed to get a response from the endpoint.")
         try:
-            result = model.invoke(messages, *args, **kwargs)
+            result = model.invoke(messages, *args, temperature=temperature, **kwargs)
             return result
         except Exception as e:
             warnings.warn(f"Attempt {attempts} failed: {e}")

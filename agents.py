@@ -37,7 +37,7 @@ def generate_rule_combinations(
 
 def parse_rules(x: str) -> List[str]:
     # 1. Remove the following patters
-    patterns = ["```yaml", "```yml", "```", "```json"]
+    patterns = ["```yaml", "```yml", "```", "```json", "json", ]
     x = re.sub("|".join(patterns), "", x)
 
     # 2. Remove trailing white space, and collapse new lines
@@ -52,6 +52,13 @@ def parse_rules(x: str) -> List[str]:
 
     # 4. Remove empty lines
     x = [line for line in x if line.strip() != ""]
+
+    # Make sure there are no line breaks inside brances {}
+    # Any match of the form {xxxx\nxxxx} is replaced by {xxxx xxxx}
+    x = [
+        re.sub(r"\{([^}]+)\}", lambda m: m.group(0).replace("\n", " "), line)
+        for line in x
+    ]
 
     # 5. Add the braces back
     # x = [f"{{{line}}}" for line in x]
@@ -223,9 +230,10 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
         f"\n\n{rules}\n\n"
         "You will now be given a question you need to answer with a simple 'yes' or 'no'.\n\n"
     )
-    q1 = "Is/are the rule/rules alone sufficient to understand the optimal action that should be taken next given the problem state?"
-    q2 = "Is the condition in the rule/rules directly applicable in the current problem state?"
-    q3 = "Is/are the selected rule/rules sufficient to explain the selected action without contradiction?"
+    q1 = "Is/are the rule/rules **alone** sufficient to understand the optimal action/decision that the system should take in current the problem state?"
+    q2 = "Is the condition in the rule/rules actionable and complete in the current problem state (containing sufficient detail about the current problem state without unnecessary information)?"
+    q3 = "Did the selected rule/rules sufficiently help to understand the previous decision without contradictions?"
+    q4 = "Is the justification of the rule satisfactory without false logic or hallucinations?"
 
     coda = (
         "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
@@ -250,7 +258,7 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
 
     # Answer q3
     temp_messages = messages.copy()
-    msg = (
+    msg = rule_scores_prompt + (
         f"The decision taken in the current problem state was: {outputs['action']}.\n\n"
         f"### Question\n\n{q3 + coda}"
     )
@@ -258,6 +266,15 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
     r3 = float("yes" in r3_.lower())
     temp_messages.append({"role": "assistant", "content": r3_})
+
+    # Answer q4
+    temp_messages = messages.copy()
+    msg = rule_scores_prompt + "### Question\n\n" + q4 + coda
+    temp_messages.append({"role": "user", "content": msg})
+    r4_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    r4 = float("yes" in r4_.lower())
+    temp_messages.append({"role": "assistant", "content": r4_})
+
 
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
@@ -270,9 +287,9 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # temp_messages.append({"role": "assistant", "content": r5_})
 
     # Calculate the reward"]
-    outputs["sel_reward"] = float(np.mean([r1, r2, r3]))
-    outputs["sel_reward_scores"] = [r1, r2, r3]
-    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_}
+    outputs["sel_reward"] = float(np.mean([r1, r2, r3, r4]))
+    outputs["sel_reward_scores"] = [r1, r2, r3, r4]
+    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
 
 
 def _gen_thoughts_for_rule_agents(outputs, messages, llm):
@@ -311,14 +328,14 @@ def _gen_rules(
     rules_prompt = (
         f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
         " For each rule, provide the explanation of why it is important to consider it at the given state."
-        " Each rule should be in machine-readable JSON Lines format. Each line should be JSON dictionary using the following schema:\n\n"
+        " Each rule should be in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
         " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
         "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
         "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
         "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
         "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
-        "- Start and finish your answer with the characters '```'.\n"
+        "- Start each line with the character '```- {\"'.\n"
     )
 
     if example_rules is not None:
@@ -326,7 +343,46 @@ def _gen_rules(
 
     tmp_messages = messages.copy()
     tmp_messages.append({"role": "user", "content": rules_prompt})
-    response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
+    rules = parse_rules(response)
+
+    # send second call using the OpenAI API
+    if save_prompts:
+        messages.append({"role": "user", "content": rules_prompt})
+        rules_str = "\n".join(outputs["rules"])
+        messages.append({"role": "assistant", "content": rules_str})
+
+    return rules
+
+
+def _gen_rules_wiht_in_context_learning(
+    outputs,
+    messages,
+    llm,
+    num_rules,
+    scored_rules: str,
+    save_prompts: bool = True,
+):
+    rules_prompt = (
+        f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
+        f"You will be given examples of rules ranked by their **fitnes score**. Your goal is to propose only rules "
+        " with high fitness scores.\n"
+        "For each rule, provide the explanation of why it is important to consider it at the given state."
+        " Each rule should be in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
+        " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
+        "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
+        "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
+        "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
+        "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
+        "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state.\n"
+        "- You do not need to provide the fitness score, only the rule.\n"
+        "- Start each line with the character '```- {\"'.\n"
+        f"### Scored rules\n\n{scored_rules}\n\n"
+    )
+
+    tmp_messages = messages.copy()
+    tmp_messages.append({"role": "user", "content": rules_prompt})
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
     rules = parse_rules(response)
 
     # send second call using the OpenAI API
@@ -421,6 +477,7 @@ class RulesSelectorActorCritic(BaseAgent):
         critic: Optional[layers.CrossAttentionNetwork] = None,
         deterministic: bool = False,
         use_thoughts: bool = True,
+        in_context_learning: bool = False,
     ):
         super().__init__(
             task_text=task_text,
@@ -429,6 +486,7 @@ class RulesSelectorActorCritic(BaseAgent):
             use_thoughts=use_thoughts,
         )
 
+        self.in_context_learning = in_context_learning
         self.actor = actor
         self.critic = critic
         self.max_rule_combinations = max_rule_combinations
@@ -455,6 +513,40 @@ class RulesSelectorActorCritic(BaseAgent):
             self.example_rules,
             save_prompts=False,
         )
+        if self.in_context_learning:
+            # use the critic to rank the rules
+            rules_emb = self.embedder.embed_documents(rules)
+            dev = next(self.actor.parameters()).device
+            rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(dev)
+            state_vector = outputs["state_vector"]
+            if state_vector.dim() == 1:
+                state_vector = state_vector.unsqueeze(0)
+
+            queries, keys = rules_emb, state_vector
+            with torch.no_grad():
+                values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                values = (values - values.mean()) / (values.std() + 1e-6)
+
+            # append the the score to each rule
+            scored_rules = [
+                f"{r} --> {{'score': {v.item()}}}" for r, v in zip(rules, values)
+            ]
+
+            # sort the rules by the critic values
+            ix = np.argsort(values)[::-1]
+            scored_rules = [scored_rules[i] for i in ix]
+
+            new_rules = _gen_rules_wiht_in_context_learning(
+                outputs,
+                messages,
+                self.llm,
+                self.num_rules,
+                scored_rules,
+                save_prompts=False,
+            )
+            outputs["scored_rules"] = scored_rules
+            rules = new_rules
+
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
         )
@@ -474,7 +566,8 @@ class RulesSelectorActorCritic(BaseAgent):
             state_vector = state_vector.unsqueeze(0)
 
         queries, keys = rules_emb, state_vector
-        logits = self.actor(queries, keys)
+        with torch.no_grad():
+            logits = self.actor(queries, keys)
 
         dist = torch.distributions.Categorical(logits=logits)
         if not self.deterministic:

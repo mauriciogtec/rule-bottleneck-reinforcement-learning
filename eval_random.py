@@ -39,6 +39,22 @@ class Args:
     """the agent to evaluate"""  # used for logging
 
 
+def make_env(env_id, seed, max_episode_steps=None):
+    def scale_reward(r):
+        return r / max_episode_steps
+
+    def thunk():
+        env = gym.make(env_id)
+        if env_id == "HeatAlertsNumeric":
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.reset(seed=seed)
+        return env
+
+    return thunk
+
+
 if __name__ == "__main__":
 
     args = tyro.cli(Args)
@@ -73,9 +89,8 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
 
     # Create the environment
-    env = gym.make(
-        args.env_id, max_episode_steps=args.max_episode_steps,
-    )
+    env = make_env(args.env_id, args.seed, args.max_episode_steps)()
+
     # env = E.wrappers.SymlogRewardsWrapper(env)
     env.reset(seed=args.seed)
 
