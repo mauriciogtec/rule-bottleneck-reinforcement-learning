@@ -232,7 +232,8 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     )
     q1 = "Is/are the rule/rules **alone** sufficient to understand the optimal action/decision that the system should take in current the problem state?"
     q2 = "Is the condition in the rule/rules actionable and complete in the current problem state (containing sufficient detail about the current problem state without unnecessary information)?"
-    q3 = "Did the selected rule/rules sufficient helped to understand the action that was selected (without contradictions or hallucinations)?"
+    q3 = "Did the selected rule/rules sufficiently help to understand the previous decision without contradictions?"
+    q4 = "Is the justification of the rule satisfactory without false logic or hallucinations?"
 
     coda = (
         "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
@@ -266,6 +267,15 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     r3 = float("yes" in r3_.lower())
     temp_messages.append({"role": "assistant", "content": r3_})
 
+    # Answer q4
+    temp_messages = messages.copy()
+    msg = rule_scores_prompt + "### Question\n\n" + q4 + coda
+    temp_messages.append({"role": "user", "content": msg})
+    r4_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    r4 = float("yes" in r4_.lower())
+    temp_messages.append({"role": "assistant", "content": r4_})
+
+
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
     # r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
@@ -277,9 +287,9 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # temp_messages.append({"role": "assistant", "content": r5_})
 
     # Calculate the reward"]
-    outputs["sel_reward"] = float(np.mean([r1, r2, r3]))
-    outputs["sel_reward_scores"] = [r1, r2, r3]
-    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_}
+    outputs["sel_reward"] = float(np.mean([r1, r2, r3, r4]))
+    outputs["sel_reward_scores"] = [r1, r2, r3, r4]
+    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
 
 
 def _gen_thoughts_for_rule_agents(outputs, messages, llm):
