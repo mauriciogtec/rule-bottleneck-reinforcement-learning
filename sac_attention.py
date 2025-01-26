@@ -382,7 +382,7 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_id = f"sac_attention__{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
     ckpt_path = f"checkpoints/{run_name}.state"
@@ -390,12 +390,6 @@ def main(args: Args):
     json_logger_mode = "w" if not args.resume else "a"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
-
-    args.agent = "rbrl"
-    if not args.thoughts:
-        args.agent += "__no-thoughts"
-    if not args.in_context_learning:
-        args.agent += "__no-in-context"
 
     if args.overwrite_ckpt:
         # delete checkpoint pat
@@ -922,4 +916,11 @@ def main(args: Args):
 
 if __name__ == "__main__":
     args = tyro.parse(Args)
+
+    args.agent = "rbrl"
+    if not args.thoughts:
+        args.agent += "-no-thoughts"
+    if not args.in_context_learning:
+        args.agent += "-no-in-context"
+
     main(args)
