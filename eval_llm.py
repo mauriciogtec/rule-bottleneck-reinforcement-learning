@@ -98,7 +98,7 @@ def main(args: Args):
     set_seed(args.seed)
 
     t = int(time())
-    run_name = f"eval_llm_{args.env_id}__{args.agent}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
+    run_name = f"eval_llm__{args.env_id}__{args.agent}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
     params = vars(args)
 
     if args.track:
