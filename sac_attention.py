@@ -280,7 +280,6 @@ def update_critic(
         qf1_a_values,
         qf2_loss.item(),
         qf2_a_values,
-        next_q_value,
         qss,
     )
 
