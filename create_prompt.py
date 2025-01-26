@@ -27,7 +27,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 import jsonlines
 
 ## TODO: add sac_attention.py
-valid_agent_lst = ['base_agent', 'llm_rules_agent', 'no_thoughts_agent'， ]
+valid_agent_lst = ['base_agent', 'llm_rules_agent', 'no_thoughts_agent']
 
 @dataclass
 class Args:
