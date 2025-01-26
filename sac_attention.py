@@ -421,7 +421,7 @@ def main(args: Args):
             resume='auto',
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
-        examples_table = wandb.Table(columns=["global_step", "example"])
+        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -743,7 +743,8 @@ def main(args: Args):
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
             if args.track:
-                examples_table.add_data(global_step, example)
+                examples_table.add_data(global_step, run_id, example)
+                wandb.log({"examples": examples_table})
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
@@ -935,6 +936,6 @@ if __name__ == "__main__":
     if not args.in_context_learning:
         args.agent += "-no-in-context"
     
-    args.agent += "+" + args.llm
+    args.agent += "--" + args.llm
 
     main(args)
