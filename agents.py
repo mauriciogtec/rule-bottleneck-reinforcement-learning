@@ -505,14 +505,27 @@ class RulesSelectorActorCritic(BaseAgent):
         """Wrapper for generating rules that includes combinations of and embeddings for rules.
         First, generates combinations of rules, next it filters using an RL selector
         """
-        rules = _gen_rules(
-            outputs,
-            messages,
-            self.llm,
-            self.num_rules,
-            self.example_rules,
-            save_prompts=False,
-        )
+        max_attemps = 0
+        while max_attemps < self.max_parse_attempts:
+            try:
+                rules = _gen_rules(
+                    outputs,
+                    messages,
+                    self.llm,
+                    self.num_rules,
+                    self.example_rules,
+                    save_prompts=False,
+                )
+                # check that we have at least one rule to select from
+                if isinstance(rules, list) and len(rules) > 0:
+                    break
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error: {e}")
+                max_attemps += 1
+        if max_attemps == self.max_parse_attempts:
+            raise ValueError("Failed to generate rules")
+        
         if self.in_context_learning:
             # use the critic to rank the rules
             rules_emb = self.embedder.embed_documents(rules)
@@ -602,10 +615,10 @@ class RulesSelectorActorCritic(BaseAgent):
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
         action_prompt = (
-            f"Below is/are the priorization rule/rules that could be useful to make an optimal decision in the current state:\n\n"
+            f"Below is/are a priorization rule/rules to make an optimal decision in the current state:\n\n"
             f"{outputs['sel_rule']}\n\n"
             "\n\n"
-            "Now, choose the optimal action given the current problem state and the priorization rules. "
+            "Now, choose the optimal action given the current problem state and this/these priorization rule/rules. "
             "Your answer must consist exclusively of one of the following actions:"
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
