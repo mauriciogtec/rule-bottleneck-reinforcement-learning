@@ -144,7 +144,7 @@ class Args:
     # Buffer collection mode
     buffer_collection_steps: int = 64
     """the number of steps to collect data to the buffer"""
-    load_buffer: bool = True
+    load_buffer: bool = False
     """if toggled, the agent will load the buffer from the pickle file if it exists"""
     buffer_size: int = 4096
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -407,17 +407,21 @@ def main(args: Args):
 
     if args.track:
         import wandb
-
+        # replace : with - to avoid wandb bug
+        wandb_run_name = run_name.replace(":", "-")
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=run_name,
+            name=wandb_run_name,
+            id=wandb_run_name,
             monitor_gym=True,
-            save_code=True,
-            resume='auto'
+            save_code=False,
+            resume='auto',
+            settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
+        examples_table = wandb.Table(columns=["global_step", "example"])
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -738,6 +742,8 @@ def main(args: Args):
             )
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
+            if args.track:
+                examples_table.add_data(global_step, example)
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
