@@ -61,7 +61,7 @@ class Args:
     # eval
     num_episodes: int = 16
     """the number of eval iterations"""
-    max_episode_steps: int = 64
+    max_episode_steps: int = 32
     """the number of steps per eval iteration"""
 
     # Algorithm

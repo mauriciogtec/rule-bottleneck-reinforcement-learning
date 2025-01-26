@@ -84,7 +84,7 @@ class Args:
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    max_episode_steps: int = 64
+    max_episode_steps: int = 32
     """the maximum number of steps per episode"""
 
     # to be filled in runtime

@@ -8,7 +8,6 @@ import time
 from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
-from math import ceil
 from typing import Literal, Optional
 
 import gymnasium as gym
@@ -167,8 +166,6 @@ def make_env(env_id, seed, max_episode_steps=None):
         env = gym.make(env_id)
         if env_id == "HeatAlerts":
             env = gym.wrappers.TransformReward(env, func=scale_reward)
-        elif env_id == "Uganda":
-            env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
@@ -389,7 +386,7 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
     ckpt_path = f"checkpoints/{run_name}.state"
@@ -931,5 +928,7 @@ if __name__ == "__main__":
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
         args.agent += "-no-in-context"
+    
+    args.agent += "+" + args.llm
 
     main(args)

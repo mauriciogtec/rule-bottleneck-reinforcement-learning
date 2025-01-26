@@ -27,7 +27,7 @@ class Args:
     """The WandB project name."""
     wandb_entity: Optional[str] = None
     """The WandB entity/team name."""
-    max_episode_steps: int = 64
+    max_episode_steps: int = 32
     """The maximum number of steps per episode."""
     wandb_project_name: str = "rulebots"
     """the wandb's project name"""

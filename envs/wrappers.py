@@ -3,7 +3,7 @@ import re
 import warnings
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Optional
 
 import gymnasium as gym
 from gymnasium import Env, Wrapper, spaces
@@ -137,14 +137,14 @@ class LanguageWrapper(Wrapper, ABC):
 
         return obs, reward, terminated, truncated, info
 
-    def reset(self, seed=None, options={}):
+    def reset(self, seed=None, options: Optional[Dict[str, Any]] = None):
         """
         Reset the environment.
 
         Returns:
             tuple: A tuple containing the embedded initial observation and additional info.
         """
-        obs_original, info = self.env.reset(seed=None)
+        obs_original, info = super().reset(seed=seed, options=options)
         # TODO: add support for the options parameter
 
         obs_text = self.state_descriptor(obs_original, info)
