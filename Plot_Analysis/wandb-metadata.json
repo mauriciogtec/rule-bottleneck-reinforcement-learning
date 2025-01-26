@@ -1,0 +1,81 @@
+{
+  "os": "Linux-4.18.0-513.18.1.el8_9.x86_64-x86_64-with-glibc2.28",
+  "python": "CPython 3.10.16",
+  "startedAt": "2025-01-22T21:18:59.953699Z",
+  "args": [
+    "--wandb-entity",
+    "rulebots",
+    "--track",
+    "--seed",
+    "123"
+  ],
+  "program": "/n/home06/haichuan/rulebots/sac_attention.py",
+  "codePath": "sac_attention.py",
+  "git": {
+    "remote": "https://github.com/mauriciogtec/rulebots.git",
+    "commit": "366292aa0647f160ce69bd15220d07394fff5136"
+  },
+  "email": "haichuanwang23@gmail.com",
+  "root": "/n/home06/haichuan/rulebots",
+  "host": "holy7c04104.rc.fas.harvard.edu",
+  "executable": "/n/home06/haichuan/.conda/envs/rulebots/bin/python",
+  "codePathLocal": "sac_attention.py",
+  "cpu_count": 48,
+  "cpu_count_logical": 48,
+  "disk": {
+    "/": {
+      "total": "53660876800",
+      "used": "10906275840"
+    }
+  },
+  "memory": {
+    "total": "201927192576"
+  },
+  "cpu": {
+    "count": 48,
+    "countLogical": 48
+  },
+  "slurm": {
+    "array_job_id": "382931",
+    "array_task_count": "3",
+    "array_task_id": "1",
+    "array_task_max": "2",
+    "array_task_min": "0",
+    "array_task_step": "1",
+    "cluster_name": "odyssey",
+    "conf": "/etc/slurm/slurm.conf",
+    "cpus_on_node": "8",
+    "gtids": "0",
+    "job_account": "tambe_lab",
+    "job_cpus_per_node": "8",
+    "job_end_time": "1737623855",
+    "job_gid": "5100",
+    "job_id": "388278",
+    "job_name": "cpu_sac_batch.slurm",
+    "job_nodelist": "holy7c04104",
+    "job_num_nodes": "1",
+    "job_partition": "shared",
+    "job_qos": "normal",
+    "job_start_time": "1737580655",
+    "job_uid": "66195",
+    "job_user": "haichuan",
+    "jobid": "388278",
+    "localid": "0",
+    "mem_per_node": "12288",
+    "nnodes": "1",
+    "nodeid": "0",
+    "nodelist": "holy7c04104",
+    "nprocs": "8",
+    "ntasks": "8",
+    "prio_process": "0",
+    "procid": "0",
+    "script_context": "prolog_task",
+    "stepmgr": "holy7c04104",
+    "submit_dir": "/n/home06/haichuan/rulebots",
+    "submit_host": "boslogin06.rc.fas.harvard.edu",
+    "task_pid": "2082509",
+    "tasks_per_node": "8",
+    "topology_addr": "main.holyoke.holyhdr.holy7c04104",
+    "topology_addr_pattern": "switch.switch.switch.node"
+  }
+}

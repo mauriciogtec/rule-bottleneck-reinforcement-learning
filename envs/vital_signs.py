@@ -68,12 +68,13 @@ def reward_function(sign_dict, min_max, clip_value=1, scaler=0.1):
 
 
 class VitalSignsSimple(Env):
+
     def __init__(
         self,
         path: str,
         init_agents=4,  # B=3 in the paper
         # max_num_agents=10,  # N=20 in the paper
-        budget=5,  # They have a budget, which does not necessarily equal to init_agent
+        budget=5,  # They have a budget, which does not necessarily eexample_rulesl to init_agent
         # t_min=1,  # t_min = 3 in the paper
         # t_max=5,  # t_max = 5 in the paper
         system_duration=10,  # = 50 in the paper, no letter
@@ -84,6 +85,7 @@ class VitalSignsSimple(Env):
         joining_interval=5,  # Here, simulate the number of internal vital signs steps
         T: Optional[int] = None,  # planning length / for finite horizon evaluation
         time_discount: Optional[float] = 0.99,  # discount factor for time,
+        ignore_free_penalty: Optional[float] = 1.0,
     ):
         ## Check inputs
         assert (
@@ -93,6 +95,7 @@ class VitalSignsSimple(Env):
         ## Random number generator
         self.np_random = np.random.default_rng()
         self.T = T
+        self.ignore_free_penalty = ignore_free_penalty
 
         # load GMM
         self._load_gmm(path)
@@ -230,7 +233,12 @@ class VitalSignsSimple(Env):
 
         gamma = self.time_discount
 
+        num_free = sum([self.device_states[i]["time_worn"] == 0 for i in range(self.budget)])
         if not is_free:
+            # first check that there was no remaining free device, otherwise penalzie
+            if num_free > 0:
+                reward -= self.ignore_free_penalty
+
             # simulate the rest of the time for the current holder
             mean, cov = self.device_states[action]["gmm"]
             time_worn = self.device_states[action]["time_worn"]

@@ -27,7 +27,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 import jsonlines
 
 ## TODO: add sac_attention.py
-valid_agent_lst = ['base_agent', 'llm_rules_agent', 'no_thoughts_agent']
+valid_agent_lst = ['base_agent', 'llm_rules_agent', 'no_thoughts_agent'， ]
 
 @dataclass
 class Args:
@@ -261,13 +261,10 @@ def main(args: Args):
 
                 total_episodes += 1
                 
-
         step += 1
-
 
     envs.close()
     writer.close()
-
 
 if __name__ == "__main__":
     args = tyro.cli(Args)

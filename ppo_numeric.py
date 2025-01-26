@@ -1,6 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import os
-import random
 import time
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -43,7 +42,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 50000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-3
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -71,7 +70,7 @@ class Args:
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: Optional[float] = None
     """the target KL divergence threshold"""
 
     # architcture
@@ -81,7 +80,7 @@ class Args:
     # eval
     num_eval_episodes: int = 16
     """the number of steps to run in each eval environment per policy rollout"""
-    eval_interval: int = 5
+    eval_interval: int = 1
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
@@ -100,11 +99,17 @@ class Args:
 
 
 def make_env(env_id, seed, max_episode_steps=None):
+    def scale_reward(r):
+        return r / max_episode_steps
+
     def thunk():
         env = gym.make(env_id)
+        if env_id == "HeatAlertsNumeric":
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
+        elif env_id == "UgandaNumeric":
+            env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.FlattenObservation(env)
         env.reset(seed=seed)
         return env
 
@@ -175,22 +180,24 @@ if __name__ == "__main__":
         return layer
 
     actor_network = nn.Sequential(
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
         layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
-        # nn.LayerNorm(args.hidden_dim),
+        nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
         nn.SiLU(),
-        # nn.LayerNorm(args.hidden_dim),
+        nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), std=1.0),
     )
 
     value_network = nn.Sequential(
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
         layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
-        # nn.LayerNorm(args.hidden_dim),
+        nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
         nn.SiLU(),
-        # nn.LayerNorm(args.hidden_dim),
+        nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, 1), 0.01),
     )
     agent = nn.ModuleDict({"actor": actor_network, "critic": value_network})
@@ -219,7 +226,6 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    autotune = np.zeros(args.num_envs, dtype=bool)
 
     autoreset = np.zeros(args.num_envs, dtype=bool)
     for iteration in range(1, args.num_iterations + 1):

@@ -174,6 +174,9 @@ class LanguageWrapper(Wrapper, ABC):
             str: The text description of the action.
         """
         act_space = self.env.action_space
+        if s is None or str(s) == "":
+            return act_space.sample()
+
         if isinstance(act_space, spaces.Discrete):
             # get the first int
             numbers = re.findall(r"\d+", str(s))
