@@ -803,7 +803,7 @@ def main(args: Args):
                         lang_agent=lang_agent,
                     )
                     _running_qss += 0.01 * (qss - _running_qss)
-                    _running_qse += 0.01 * (qf_loss.item() - _running_qse)
+                    _running_qse += 0.01 * (qf_loss - _running_qse)
 
                 for _ in range(actor_updates):
                     # Update actor
