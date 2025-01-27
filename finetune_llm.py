@@ -467,7 +467,7 @@ def main(args: Args):
     if args.track:
         import wandb
 
-        wandb["init"](
+        wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
