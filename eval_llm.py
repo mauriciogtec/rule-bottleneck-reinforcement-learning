@@ -104,7 +104,7 @@ def main(args: Args):
     set_seed(args.seed)
 
     t = int(time())
-    run_name = f"{args.agent}__{args.env_id}__{args.llm}__{args.exp_name}__{args.seed}"
+    run_name = f"{args.agent_with_llm}__{args.env_id}__{args.exp_name}__{args.seed}"
     params = vars(args)
 
     if args.track:
@@ -334,6 +334,6 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     args = tyro.parse(Args)
 
-    args.agent_with_llm += args.agent + "--" + args.llm
+    args.agent_with_llm = args.agent + "--" + args.llm
 
     main(args)
