@@ -55,6 +55,8 @@ class Args:
     """the number of parallel game environments"""
     agent: PureLanguageAgents = "llm_rules_no_thoughts"
     """the agent to use"""
+    agent_with_llm: Optional[str] = None
+    """the agent with the language model to use/to be filled later"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
@@ -219,7 +221,12 @@ def main(args: Args):
             done_now = terminations[j] or truncations[j]
             if not done_now and not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j])
-                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
+                if any(
+                    [
+                        args.agent.startswith(x)
+                        for x in ("llm_rules_agent", "llm_rules_no_thoughts")
+                    ]
+                ):
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                     _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j])
                     _ep_buffer["total_rewards"][j].append(
@@ -327,6 +334,6 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     args = tyro.parse(Args)
 
-    args.agent += "--" + args.llm
+    args.agent_with_llm += args.agent + "--" + args.llm
 
     main(args)

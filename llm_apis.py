@@ -332,7 +332,7 @@ def invoke_with_retries(
             raise RuntimeError("Failed to get a response from the endpoint.")
         try:
             result = model.invoke(
-                messages, *args, temperature=temperature, max_tokens=kwargs, **kwargs
+                messages, *args, temperature=temperature, max_tokens=max_tokens, **kwargs
             )
             return result
         except Exception as e:
