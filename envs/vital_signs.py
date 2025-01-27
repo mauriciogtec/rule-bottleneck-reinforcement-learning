@@ -714,7 +714,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
         rule_3 = (
             '{"background": "Patients with abnormal vital signs will benefit from continued use of the device",'
             ' "rule": "Prioritize reallocating the devices of patients with normal vital signs over those with abnormal vital signs",'
-            ' "state relevance": "In the current problem state, the patient wearing device #2 has low SPO2 (85%), while the vital signs of other patients are normal",'
+            ' "state relevance": "The patient wearing device #2 is at risk because it has low SPO2 (85%), so Device ID should *not* be reallocated. The patients wearing devices 0, 1, 3, 4 are not at risk.",'
             ' "goal relevance": "The agent goal is to maximize the benefits to wear the device to revert abnormal vital signs to normal"}'
         )
         return [rule_1, rule_2, rule_3]
