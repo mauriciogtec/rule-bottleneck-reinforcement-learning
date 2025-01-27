@@ -502,15 +502,6 @@ def main(args: Args):
     else:
         alpha = args.alpha
 
-    buffer_file = f"buffers/buffer_{args.llm}.pkl"
-    if args.load_buffer and os.path.exists(buffer_file):
-        with open(buffer_file, "rb") as f:
-            buffer = pickle.load(f)
-        needs_save_buffer = False
-    else:
-        buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=dev)
-        needs_save_buffer = True
-
     starting_step = 0
     start_time = time.time()
     best_total_reward = -float("inf")
@@ -536,10 +527,10 @@ def main(args: Args):
         best_total_reward = checkpoint["best_total_reward"]
         best_model = checkpoint["best_model"]
         best_model_epoch = checkpoint["best_model_epoch"]
-        buffer = checkpoint["buffer"]
+        # buffer = checkpoint["buffer"]
         logging.info(f"Resumed training from checkpoint at step {starting_step}.")
 
-    logging.info(f"Starting buffer size: {buffer.size()}")
+    # logging.info(f"Starting buffer size: {buffer.size()}")
 
     qf1_target = deepcopy(qf1)
     qf2_target = deepcopy(qf2)
@@ -618,25 +609,6 @@ def main(args: Args):
                     writer.add_scalar("charts/episodic_length", l, global_step)
 
                     logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
-
-        for j in range(args.num_envs):
-            if not autoreset[j]:
-                sample = {}
-                sample["obs_vec"] = obs_vec[j]
-                sample["obs_text"] = obs_text[j]
-                sample["rules"] = rules[j]
-                sample["rules_emb"] = rules_emb[j]
-                sample["dones"] = dones[j]
-                sample["sel_idxs"] = sel_idxs[j]
-                sample["actions"] = actions[j]
-                sample["next_obs_vec"] = next_obs_vec[j]
-                sample["next_obs_text"] = next_obs_text[j]
-                sample["next_rules_emb"] = next_rules_emb[j]
-                sample["next_rules"] = next_rules[j]
-                sample["rewards"] = rewards[j]
-                sample["sel_rewards"] = sel_rewards[j]
-                sample["env_rewards"] = env_rewards[j]
-                buffer.add(sample)
 
         # accumulate and log the rewards
         for j in range(args.num_envs):
