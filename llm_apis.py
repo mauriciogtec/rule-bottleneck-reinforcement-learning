@@ -17,7 +17,7 @@ class HUITMistral:
     """
     Custom chat model for a HUIT AWS Bendrock endpoint.
     **Only for internal use at Harvard.
-"""
+    """
 
     def __init__(
         self,
@@ -322,6 +322,7 @@ def invoke_with_retries(
     max_attempts: int = 10,
     wait_time_between_attempts: int = 60,
     temperature=0.5,
+    max_tokens=100,
     **kwargs,
 ):
     attempts = 0
@@ -330,7 +331,9 @@ def invoke_with_retries(
         if attempts > max_attempts:
             raise RuntimeError("Failed to get a response from the endpoint.")
         try:
-            result = model.invoke(messages, *args, temperature=temperature, **kwargs)
+            result = model.invoke(
+                messages, *args, temperature=temperature, max_tokens=kwargs, **kwargs
+            )
             return result
         except Exception as e:
             warnings.warn(f"Attempt {attempts} failed: {e}")

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
@@ -27,11 +27,10 @@ class HeatAlertsLang(LanguageWrapper):
     @property
     def task_text(self) -> str:
         return (
-            "You are assisting officials from the National Weather Service in making optimized"
-            " decisions about when to issue public heatwave alerts. You will determine whether"
-            " to issue an alert by considering multiple factors related to current weather conditions,"
-            " past alert history, and the remaining number of alerts for the season.\n\n"
-            "The goal is to minimize the cumulative number of hospitalizations due to heat-related illnesses."
+            "Assist officials from the National Weather Service in deciding when to issue public heatwave alerts"
+            " to minimize heat-related hospitalizations. Consider the limited alert budget, weather conditions,"
+            " day of the week, past alert history, and remaining alerts for the season."
+            " Consecutive alerts tend to lose effectiveness."
         )
 
     @property
@@ -76,15 +75,15 @@ class HeatAlertsLang(LanguageWrapper):
             str: The text description of the observation.
         """
         template = (
-            "\n- Location (FIPS code): {}"
+            "- Location [FIPS code]: {}"
             "\n- **Remaining alert budget**: {} "
             "\n- Current date and day of summer: {}"
             "\n- Current heat index: {} F"
-            "\n- Quantile of current heat index relative to historical weather in current location (0-100): {} %"
+            "\n- Quantile of current heat index relative to historical weather in current location: {} %"
             "\n- Average heat index over the past 7 days: {} F"
             "\n- Excess heat compared to the last 7 days: {} F"
-            "\n- Weekend (yes/no): {} "
-            "\n- Holiday (yes/no): {} "
+            "\n- Weekend [yes/no]: {} "
+            "\n- Holiday [yes/no]: {} "
             "\n- Alerts in last 14 days: {} "
             "\n- Alerts in last 7 days: {} "
             "\n- Alerts in last 3 days: {} "

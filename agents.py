@@ -355,6 +355,7 @@ def _gen_rules(
     tmp_messages.append({"role": "user", "content": rules_prompt})
     response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
     rules = parse_rules(response)
+    outputs["rules"] = rules
 
     # send second call using the OpenAI API
     if save_prompts:
@@ -365,7 +366,7 @@ def _gen_rules(
     return rules
 
 
-def _gen_rules_wiht_in_context_learning(
+def _gen_rules_with_in_context_learning(
     outputs,
     messages,
     llm,
@@ -394,6 +395,7 @@ def _gen_rules_wiht_in_context_learning(
     tmp_messages.append({"role": "user", "content": rules_prompt})
     response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
     rules = parse_rules(response)
+    outputs["rules"] = rules
 
     # send second call using the OpenAI API
     if save_prompts:
@@ -554,12 +556,13 @@ class RulesSelectorActorCritic(BaseAgent):
             scored_rules = [
                 f"{r} --> {{'score': {v.item()}}}" for r, v in zip(rules, values)
             ]
+            outputs["scored_rules"] = scored_rules
 
             # sort the rules by the critic values
             ix = np.argsort(values)[::-1]
             scored_rules = [scored_rules[i] for i in ix]
 
-            new_rules = _gen_rules_wiht_in_context_learning(
+            new_rules = _gen_rules_with_in_context_learning(
                 outputs,
                 messages,
                 self.llm,
