@@ -548,32 +548,34 @@ class RulesSelectorActorCritic(BaseAgent):
                 state_vector = state_vector.unsqueeze(0)
 
             queries, keys = rules_emb, state_vector
-            with torch.no_grad():
-                values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
-                # values = (values - values.mean()) / (values.std() + 1e-6)
-                values = (values - values.min()) / (values.max() - values.min())
-                values = values.clip(0.1, 0.9)
+            if rules_emb.shape[0] > 1:
+                with torch.no_grad():
+                    values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    # values = (values - values.mean()) / (values.std() + 1e-6)
+                    values = 0.1 * + 0.8 * (values - values.min()) / (values.max() - values.min())
 
-            # append the the score to each rule
-            scored_rules = [
-                f"{r} --> {{'score': {v.item()}}}" for r, v in zip(rules, values)
-            ]
-            outputs["scored_rules"] = scored_rules
+                # append the the score to each rule
+                scored_rules = [
+                    f"{r} --> {{'score': {v.item()}}}" for r, v in zip(rules, values)
+                ]
+                outputs["scored_rules"] = scored_rules
 
-            # sort the rules by the critic values
-            ix = np.argsort(values)[::-1]
-            scored_rules = [scored_rules[i] for i in ix]
+                # sort the rules by the critic values
+                ix = np.argsort(values)[::-1]
+                scored_rules = [scored_rules[i] for i in ix]
 
-            new_rules = _gen_rules_with_in_context_learning(
-                outputs,
-                messages,
-                self.llm,
-                self.num_rules,
-                scored_rules,
-                save_prompts=False,
-            )
-            outputs["scored_rules"] = scored_rules
-            rules = new_rules
+                new_rules = _gen_rules_with_in_context_learning(
+                    outputs,
+                    messages,
+                    self.llm,
+                    self.num_rules,
+                    scored_rules,
+                    save_prompts=False,
+                )
+                outputs["scored_rules"] = scored_rules
+                rules = new_rules
+            else:
+                outputs["scored_rules"] = None
 
         outputs["rules"] = rules = generate_rule_combinations(
             rules, max_combs=self.max_rule_combinations
