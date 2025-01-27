@@ -44,7 +44,7 @@ def blood_penalty(blood_pressure):
         return -math.exp(abs(blood_pressure - 127) / 5)  # Exponential penalty
 
 
-def reward_function(sign_dict, min_max, clip_value=20, scaler=0.1):
+def reward_function(sign_dict, min_max, clip_value=1, scaler=0.1):
     reward = 0
     sign_dict = {
         sign: c * (min_max[sign][1] - min_max[sign][0]) + min_max[sign][0]
@@ -60,19 +60,21 @@ def reward_function(sign_dict, min_max, clip_value=20, scaler=0.1):
         elif signs == "SPO2":
             reward += spo2_penalty(sign_dict[signs])
 
-    # Clip the reward to avoid large values
-    reward = np.clip(reward, reward - clip_value, reward + clip_value)
+    # Scale and clip the reward to avoid large values
+    reward = reward * scaler
+    reward = np.maximum(-clip_value, reward)
 
-    return scaler * reward
+    return reward
 
 
 class VitalSignsSimple(Env):
+
     def __init__(
         self,
         path: str,
         init_agents=4,  # B=3 in the paper
         # max_num_agents=10,  # N=20 in the paper
-        budget=5,  # They have a budget, which does not necessarily equal to init_agent
+        budget=5,  # They have a budget, which does not necessarily eexample_rulesl to init_agent
         # t_min=1,  # t_min = 3 in the paper
         # t_max=5,  # t_max = 5 in the paper
         system_duration=10,  # = 50 in the paper, no letter
@@ -80,9 +82,10 @@ class VitalSignsSimple(Env):
         intervention_success_rate=0.7,
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
-        joining_interval=5,  # Here, simulate the number of internal vital signs steps
+        # joining_interval=5,  # Here, simulate the number of internal vital signs steps
         T: Optional[int] = None,  # planning length / for finite horizon evaluation
         time_discount: Optional[float] = 0.99,  # discount factor for time,
+        ignore_free_penalty: Optional[float] = 1.0,
     ):
         ## Check inputs
         assert (
@@ -92,6 +95,7 @@ class VitalSignsSimple(Env):
         ## Random number generator
         self.np_random = np.random.default_rng()
         self.T = T
+        self.ignore_free_penalty = ignore_free_penalty
 
         # load GMM
         self._load_gmm(path)
@@ -107,7 +111,7 @@ class VitalSignsSimple(Env):
         # self.t_max = t_max
         # self.joining_number = joining_number
         self.system_duration = system_duration
-        self.joining_interval = joining_interval
+        # self.joining_interval = joining_interval
 
         self.degree_of_arm_noise = degree_of_arm_noise
         self.intervention_success_rate = intervention_success_rate
@@ -229,7 +233,12 @@ class VitalSignsSimple(Env):
 
         gamma = self.time_discount
 
+        num_free = sum([self.device_states[i]["time_worn"] == 0 for i in range(self.budget)])
         if not is_free:
+            # first check that there was no remaining free device, otherwise penalzie
+            if num_free > 0:
+                reward -= self.ignore_free_penalty
+
             # simulate the rest of the time for the current holder
             mean, cov = self.device_states[action]["gmm"]
             time_worn = self.device_states[action]["time_worn"]
@@ -252,7 +261,7 @@ class VitalSignsSimple(Env):
                 reward += r * (gamma**t)
 
         # Assign the device to the new patient
-        self.device_states[action]["time_worn"] = 1
+        self.device_states[action]["time_worn"] = 0
         self.device_states[action]["vitals"] = current_vital
         self.device_states[action]["variability"] = variability
         self.device_states[action]["signs_history"] = signs_history
@@ -261,7 +270,7 @@ class VitalSignsSimple(Env):
         # == 2. Update the remaining device/agents ==
         for i in range(self.budget):
             is_free = self.device_states[i]["time_worn"] == 0
-            if not is_free and i != action:
+            if not is_free or i == action:  # also compute for the new patient
                 self.device_states[i]["time_worn"] += 1
 
                 # advance the vital signs
@@ -274,7 +283,7 @@ class VitalSignsSimple(Env):
 
                 reward += r
 
-                # remove them from the system if system duration reached
+                # remove them from the system if system reached
                 if self.device_states[i]["time_worn"] >= self.system_duration:
                     self.device_states[i]["time_worn"] = 0
                     self.device_states[i]["vitals"] = np.zeros(self.nv)
@@ -526,24 +535,20 @@ class VitalSignsSimple(Env):
             for signs in sign_dict:
                 if signs == "COVERED_SKIN_TEMPERATURE":
                     if temperature_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            1.5, 0.5
-                        )
+                        delta = self.np_random.normal(1.5, 0.5)
+                        sign_dict[signs] -= delta
                 elif signs == "PULSE_RATE":
                     if pulse_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            15, 5
-                        )
+                        delta = self.np_random.normal(15, 5)
+                        sign_dict[signs] -= delta
                 elif signs == "RESPIRATORY_RATE":
                     if respiratory_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] - self.np_random.normal(
-                            10, 10 / 3
-                        )
+                        delta = self.np_random.normal(10, 10 / 3)
+                        sign_dict[signs] -= delta
                 elif signs == "SPO2":
                     if spo2_penalty(sign_dict[signs]) < 0:
-                        sign_dict[signs] = sign_dict[signs] + self.np_random.normal(
-                            3, 1
-                        )
+                        delta = self.np_random.normal(5, 5 / 3)
+                        sign_dict[signs] += delta
 
         if min_max:
             # renormalize
@@ -609,8 +614,8 @@ class VitalSignsSimpleLang(LanguageWrapper):
             " there is a limited number of devices, you will need to decide which patients should stop"
             " wearing the device to reallocate it to the incoming patients. Incoming patients must"
             " always receive a device.\n"
-            "Normal Vital Sign Range: To define the normal range, we primarily follow the thresholds used for alerts signaling abnormal"
-            " vital sings in the study on vital sign monitoring devices for maternal health in Mbarara (Boatin et al. 2021) featured earlier.\n"
+            # "Normal Vital Sign Range: To define the normal range, we primarily follow the thresholds used for alerts signaling abnormal"
+            # " vital sings in the study on vital sign monitoring devices for maternal health in Mbarara (Boatin et al. 2021) featured earlier.\n"
             "Cost Function: A cost will be inccoured if the heart rate exceeds 120, the temperature exceeds 38C, the respiratory rate exceeds 30,"
             " or if the SPO2 rate falls below 90. The cost is calculated as an exponential function of the deviation from these thresholds.\n"
             "Effect of Intervention: The abnormal vital signs of patients wearing a device are reduced towards their normal range with an estimated"
@@ -628,11 +633,11 @@ class VitalSignsSimpleLang(LanguageWrapper):
         # )
         return (
             "Choose the id of the device that will be reallocated to the new incoming patient."
-            "Your answer should be a single integer i from 0 to 4 (the number of devices) such that:\n\n"
+            f"Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices) such that:\n\n"
             "- Always choose a free device if available\n"
             "- If no free device is available, then choose device i whose current patient is at least risk or"
             " would benefit less from wearing the device."
-            "Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}"
+            " Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}"
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -693,27 +698,24 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def example_rules(self) -> List[str]:
         rule_1 = (
-            "There is no advantage in having unused wearable devices; therefore, assign a free device to "
-            "incoming patients whenever possible. This rule applies to the current free devices [0, 1, 3]. "
-            "If these devices are re-allocated to the incoming patient, no current patient will be affected "
-            "negatively. This rule aligns with the goal of maximizing the number of patients wearing a device.\n"
+            '{"background": "There is no advantage in having unused wearable devices",'
+            ' "rule": "If there are free devices, always choose them over non-free devices",'
+            ' "state relevance": "Currently, devices 0, 1 and 3 are free",'
+            ' "goal relevance": "The goal is to maximize the number of patients wearing a device"}'
         )
 
         rule_2 = (
-            "Patients with high volatility in their vital signs are at higher risk of abnormal vital signs even "
-            "if their last observed signs are normal. Therefore, do not reallocate their device to the new patient "
-            "unless there are no other options. Currently, no device is free. All patients have normal signs; however, "
-            "patient wearing device #3 has a high volatility in its blood pressure (128 +- 30). If device #3 were given "
-            "to the new patient, this can result in abnormal signs for the patient currently wearing it. Reallocating the "
-            "device of a patient with low volatility is safer. The agent’s goal is to ensure patients at risk are wearing a device.\n"
+            '{"background": "Patients with high volatility in their vital signs are at higher risk of abnormal vital signs even if their last observed signs are normal",'
+            ' "rule": "Prioritize reallocating the devices of patients with low volatility in their vital signs if there are no free devices."n'
+            ' "state relevance": "Currently, no device is free. All patients have normal signs; however, patient wearing device #3 has a high volatility in its blood pressure (128 +- 30)",'
+            ' "goal relevance": "Reallocating the device of a patient with low volatility is safer. The agent\'s goal is to ensure patients at risk are wearing a device"}'
         )
 
         rule_3 = (
-            "Because patients with current abnormal vital signs will benefit from continued use of the device, do not reallocate "
-            "their devices, and instead reallocate devices of patients with normal vital signs. In the current problem state, the "
-            "patient wearing device #2 has low SPO2 (85%), while the vital signs of other patients are normal. If device #2 is selected "
-            "for reallocation, the vitals of its current patient will not improve as fast; therefore, reallocating other devices is preferable. "
-            "This rule aligns with the agent’s goal of ensuring patients at risk are wearing a device."
+            '{"background": "Patients with abnormal vital signs will benefit from continued use of the device",'
+            ' "rule": "Prioritize reallocating the devices of patients with normal vital signs over those with abnormal vital signs",'
+            ' "state relevance": "The patient wearing device #2 is at risk because it has low SPO2 (85%), so Device ID should *not* be reallocated. The patients wearing devices 0, 1, 3, 4 are not at risk.",'
+            ' "goal relevance": "The agent goal is to maximize the benefits to wear the device to revert abnormal vital signs to normal"}'
         )
         return [rule_1, rule_2, rule_3]
 

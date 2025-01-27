@@ -2,7 +2,6 @@ import logging
 import os
 import random
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from time import time
 from typing import Optional
@@ -13,10 +12,9 @@ import torch
 import torch.optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 import agents
-from agents import ValidAgents
+from agents import PureLanguageAgents
 import envs as E  # registers the gym environments during import
 from llm_apis import get_llm_api, ValidLLMs
 
@@ -45,23 +43,31 @@ class Args:
     """the interval to log examples"""
     wandb_save_code: bool = True
     """if toggled, the code will be saved to wandb"""
+    resume: bool = True
+    """if toggled, the run will be resumed"""
+    reinit: bool = False
+    """if toggled, the run will be reinitialized"""
 
     # Environment
     env_id: str = "Uganda"
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    agent: ValidAgents = "llm_rules_agent"
+    agent: PureLanguageAgents = "llm_rules_no_thoughts"
     """the agent to use"""
+    agent_with_llm: Optional[str] = None
+    """the agent with the language model to use/to be filled later"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
+    use_thoughts_with_rules: bool = False
+    """if toggled, the thoughts will be used with rules"""
 
     # eval
-    num_episodes: int = 64
+    num_episodes: int = 32
     """the number of eval iterations"""
-    num_eval_steps: int = 16
+    max_episode_steps: int = 32
     """the number of steps per eval iteration"""
 
     # Algorithm
@@ -76,39 +82,45 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
 
 
+def make_env(env_id, seed, max_episode_steps=None):
+    def thunk():
+        env = gym.make(env_id)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env.reset(seed=seed)
+        return env
+
+    return thunk
+
+
 def main(args: Args):
-    def make_env(env_id, eval=False):
-        def thunk():
-            if eval:
-                env = gym.make(env_id, max_episode_steps=None, T=args.num_eval_steps)
-            else:
-                env = gym.make(env_id)
-
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            return env
-
-        return thunk
-
-    eval_env_funs = [make_env(args.env_id, eval=True) for i in range(args.num_envs)]
+    eval_env_funs = [
+        make_env(args.env_id, args.seed + i, max_episode_steps=args.max_episode_steps)
+        for i in range(args.num_envs)
+    ]
     envs = gym.vector.SyncVectorEnv(eval_env_funs)
     chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
 
     t = int(time())
-    run_name = f"eval_llm_{args.env_id}__{args.agent}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
+    run_name = f"{args.agent_with_llm}__{args.env_id}__{args.exp_name}__{args.seed}"
     params = vars(args)
 
     if args.track:
         import wandb
 
+        wandb_run_name = run_name.replace(":", "-")
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
             config=params,
-            name=run_name,
+            name=wandb_run_name,
+            id=wandb_run_name,
             monitor_gym=True,
+            # resume=args.resume,
+            reinit=True,
             save_code=args.wandb_save_code,
         )
     writer = SummaryWriter(f"runs/{run_name}")
@@ -119,13 +131,13 @@ def main(args: Args):
         % ("\n".join([f"|{key}|{value}|" for key, value in params.items()])),
     )
 
-    if args.agent == "base_agent":
+    if args.agent.startswith("base_agent"):
         lang_agent = agents.BaseAgent(
             task_text=envs.metadata["task_text"],
             action_space_text=envs.metadata["action_space_text"],
             llm=chat_model,
         )
-    elif args.agent == "llm_rules_agent":
+    elif args.agent.startswith("llm_rules_agent"):
         example_rules = envs.envs[0].metadata["example_rules"]
         example_rules = "".join(f"- {x}\n" for x in example_rules)
         lang_agent = agents.LLMRulesAgent(
@@ -135,7 +147,17 @@ def main(args: Args):
             llm=chat_model,
             example_rules=example_rules,
         )
-    elif args.agent == "no_thoughts_agent":
+    elif args.agent.startswith("llm_rules_no_thoughts"):
+        example_rules = envs.envs[0].metadata["example_rules"]
+        example_rules = "".join(f"- {x}\n" for x in example_rules)
+        lang_agent = agents.LLMRulesAgentNoThoughts(
+            task_text=envs.metadata["task_text"],
+            action_space_text=envs.metadata["action_space_text"],
+            num_rules=args.num_rules,
+            llm=chat_model,
+            example_rules=example_rules,
+        )
+    elif args.agent.startswith("no_thoughts_agent"):
         lang_agent = agents.NoThoughtsAgent(
             task_text=envs.metadata["task_text"],
             action_space_text=envs.metadata["action_space_text"],
@@ -157,9 +179,12 @@ def main(args: Args):
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
 
     all_mean_rewards = []
+    all_returns = []
 
     total_episodes = 0
     step = 0
+    autoreset = np.zeros(args.num_envs, dtype=bool)
+
     while total_episodes < args.num_episodes:
         global_step += 1
 
@@ -168,50 +193,73 @@ def main(args: Args):
             outputs, messages = lang_agent.parallel_pipeline(next_state_text)
         else:
             outputs, messages = lang_agent(next_state_text)
+        env_actions = [x["action"] for x in outputs]
 
         # Step the environment
-        env_actions = [x["action"] for x in outputs]
         obs, env_rewards, terminations, truncations, infos = envs.step(env_actions)
         _, next_state_text = obs
 
-        if args.agent == "llm_rules_agent":
+        if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
             sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
             sel_rewards = [x["sel_reward"] for x in outputs]
+
+        if "episode" in infos:
+            for i in range(args.num_envs):
+                if infos["_episode"][i]:
+                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                    writer.add_scalar("charts/episodic_return", r, total_episodes)
+                    writer.add_scalar("charts/episodic_length", l, total_episodes)
+
+                    all_returns.append(r)
+
+                    logging.info(
+                        f"global_step={total_episodes}, episodic_return={r:.4f}"
+                    )
 
         # accumulate and log the rewards
         for j in range(args.num_envs):
             done_now = terminations[j] or truncations[j]
-            if not done_now:
+            if not done_now and not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j])
-                if args.agent == "llm_rules_agent":
+                if any(
+                    [
+                        args.agent.startswith(x)
+                        for x in ("llm_rules_agent", "llm_rules_no_thoughts")
+                    ]
+                ):
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                     _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j])
                     _ep_buffer["total_rewards"][j].append(
                         env_rewards[j] + sel_rewards[j]
                     )
-            else:
+            elif not autoreset[j]:
                 mean_reward = np.mean(_ep_buffer["env_rewards"][j])
                 all_mean_rewards.append(mean_reward)
                 # log the rewards
                 writer.add_scalar(
                     f"charts/episodic_env_rewards",
                     mean_reward,
-                    global_step,
+                    total_episodes,
                 )
                 _ep_buffer["env_rewards"][j].clear()
 
-                if args.agent == "llm_rules_agent":
+                if any(
+                    [
+                        args.agent.startswith(x)
+                        for x in ("llm_rules_agent", "llm_rules_no_thoughts")
+                    ]
+                ):
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(
-                            f"charts/sel_reward_scores/q{i}", x, global_step
+                            f"charts/sel_reward_scores/q{i}", x, total_episodes
                         )
                     m = np.mean(_ep_buffer["sel_rewards_total"][j])
-                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar("charts/episodic_sel_rewards", m, total_episodes)
                     writer.add_scalar(
                         "charts/episodic_total_rewards",
                         np.mean(_ep_buffer["total_rewards"][j]),
-                        global_step,
+                        total_episodes,
                     )
                     _ep_buffer["sel_rewards_scores"][j].clear()
                     _ep_buffer["sel_rewards_total"][j].clear()
@@ -219,51 +267,45 @@ def main(args: Args):
 
                 total_episodes += 1
 
-        if "episode" in infos:
-            for i in range(args.num_envs):
-                if infos["_episode"][i]:
-                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
-                    writer.add_scalar("charts/episodic_return", r, global_step)
-                    writer.add_scalar("charts/episodic_length", l, global_step)
-
-                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
-
         if step == 0 or step % args.log_examples_interval == 0:
-            if args.agent == "llm_rules_agent":
+            if any(
+                args.agent.startswith(x)
+                for x in ("llm_rules_agent", "llm_rules_no_thoughts")
+            ):
                 rules_str = "\n".join(outputs[0]["rules"])
                 rules_scores = [
                     f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
                 ]
                 rules_scores_str = "\n".join(rules_scores)
+                thoughts = outputs[0].get("thoughts", None)
+                example = [
+                    f"{outputs[0]['initial_prompt']}\n",
+                    f"### Thoughts\n {thoughts}\n" if thoughts else "",
+                    f"### Rules\n {rules_str}\n",
+                    f"### Selected Rules Explainability\n{rules_scores_str}\n",
+                    f"### Environment Action {outputs[0]['action']}\n",
+                    f"### Explanation\n {outputs[0]['explanation']}\n",
+                ]
+                example = "".join(example)
+            elif args.agent.startswith("no_thoughts_agent"):
+                example = (
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Environment Action {env_actions[0]}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
+                )
+            elif args.agent.startswith("base_agent"):
                 example = (
                     f"{outputs[0]['initial_prompt']}\n"
                     f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                    f"### Rules\n {rules_str}\n"
-                    f"### Selected Rules Explainability\n{rules_scores_str}\n"
-                    f"### Environment Action {outputs[0]['action']}\n"
-                    f"### Explanation\n {outputs[0]['explanation']}\n"
-                    f"### Explanation rules only\n {outputs[0]['explanation_rule_only']}"
-                )
-            elif args.agent == "no_thoughts_agent":
-                example = (
-                    f"{outputs[0]['initial_prompt']}\n"
                     f"### Environment Action\[0]n {env_actions}\n"
                     f"### Explanation\n {outputs[0]['explanation']}"
-                )
-            elif args.agent == "base_agent":
-                example = (
-                    f"{outputs[0]['initial_prompt']}\n"
-                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                    f"### Environment Action\[0]n {env_actions}\n"
-                    f"### Explanation\n {outputs[0]['explanation']}"
-                    f"### Explanation no thoughts\n {outputs[0]['explanation_no_thoughts']}"
                 )
 
             conversation = "\n".join(
                 [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
             )
-            writer.add_text("text/examples", example, global_step)
-            writer.add_text("llm_prompts/conversation", conversation, global_step)
+            writer.add_text("text/examples", example, total_episodes)
+            # writer.add_text("llm_prompts/conversation", conversation, global_step)
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
@@ -274,17 +316,15 @@ def main(args: Args):
                 }
             )
 
-        if step % 16 == 0:
-            logging.info(
-                f"global_step={global_step}, total_episodes={total_episodes}/{args.num_episodes}"
-            )
         step += 1
+        autoreset = np.array(terminations) | np.array(truncations)
 
     # Log summary statistics
-    mean_reward = np.mean(all_mean_rewards)
-    std_reward = np.std(all_mean_rewards)
-    writer.add_scalar("mean_reward", mean_reward, 0)
-    writer.add_scalar("std_reward", std_reward, 0)
+    mean_return = np.mean(all_returns)
+    std_return = np.std(all_returns)
+    writer.add_scalar("mean_return", mean_return, 0)
+    writer.add_scalar("std_return", std_return, 0)
+    print(f"mean_reward: {mean_return}, std_reward: {std_return}")
 
     envs.close()
     writer.close()
@@ -292,4 +332,8 @@ def main(args: Args):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    args = tyro.parse(Args)
+
+    args.agent_with_llm = args.agent + "--" + args.llm
+
     main(args)

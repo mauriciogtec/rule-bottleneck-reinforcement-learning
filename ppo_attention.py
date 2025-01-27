@@ -12,7 +12,7 @@ import tyro
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -29,7 +29,7 @@ from torch import tensor, FloatTensor
 from llm_apis import get_llm_api, ValidLLMs
 import envs as E  # registers the gym environments during import
 from agents import RulesSelectorActorCritic
-from layers import AttentionNetwork, pool_attention_network
+from layers import CrossAttentionNetwork, pool_attention_network
 
 # configure logging
 logging.basicConfig(
@@ -61,28 +61,6 @@ def load_checkpoint(checkpoint_path, device):
     else:
         logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
         return None
-
-
-def parallel_pipeline(lang_agent, state_text, state_vector, post_action=True):
-    # Get the action and value in parallel
-    def call_pipeline(i):
-        with torch.no_grad():
-            return lang_agent(
-                state_text=state_text[i],
-                state_vector=state_vector[i],
-                post_action=post_action,
-            )
-
-    num_envs = len(state_text)
-    num_procs = min(os.cpu_count() - 1, num_envs)
-    with ThreadPoolExecutor(max_workers=num_procs) as executor:
-        results = list(executor.map(call_pipeline, range(num_envs)))
-        env_actions, outputs, messages = zip(*results)
-        env_actions = list(env_actions)
-        outputs = {key: [output[key] for output in outputs] for key in outputs[0]}
-        messages = list(messages)
-
-    return env_actions, outputs, messages
 
 
 def collate_samples(x: List[List]):
@@ -121,7 +99,7 @@ class Args:
     """the interval to log examples"""
     save_interval: int = 1
     """the interval to save the model"""
-    resume: bool = True
+    resume: bool = False
     """if toggled, the model will be resumed from the last checkpoint"""
     max_rule_combinations: int = 1
     """the maximum number of rule combinations to use"""
@@ -131,7 +109,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
+    cuda: bool = False
     """if toggled, cuda will be enabled by default"""
     ckpt_interval: int = 1
     """the saving interval of the model"""
@@ -198,11 +176,11 @@ class Args:
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    rolling_rewards_window: int = 64
+    rolling_returns_window: int = 64
     """the rolling rewards window"""
 
     # LLM
-    num_rules: int = 10
+    num_rules: int = 5
     """The number of rules for rule-based LLM-only agent"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
@@ -216,26 +194,11 @@ class Args:
     """if toggled, the pipeline will be parallelized"""
 
 
-# def make_env(env_id, seed, eval=False):
-#     def thunk():
-#         if eval:
-#             env = gym.make(env_id, max_episode_steps=None)
-#         else:
-#             env = gym.make(env_id)
-
-#         env = gym.wrappers.RecordEpisodeStatistics(env)
-#         # env = E.wrappers.SymlogRewardsWrapper(env)
-#         env.reset(seed=seed)
-#         return env
-
-#     return thunk
-
-
 def main(args: Args):
     run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
-    ckpt_path = f"checkpoints/best_{run_name}.state"
+    ckpt_path = f"checkpoints/{run_name}.state"
     text_logs_path = f"text_logs/{run_name}.jsonl"
     json_logger_mode = "w" if not args.resume else "a"
     os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
@@ -275,9 +238,6 @@ def main(args: Args):
     set_seed(args.seed)
     dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.seed}"
-    run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
-
     if args.track:
         import wandb
 
@@ -297,13 +257,13 @@ def main(args: Args):
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    actor = AttentionNetwork(
+    actor = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
         dropout=args.dropout,
     )
-    critic = AttentionNetwork(
+    critic = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
@@ -311,14 +271,17 @@ def main(args: Args):
     )
     model = nn.ModuleDict({"actor": actor, "critic": critic}).to(dev)
 
+    example_rules = envs.envs[0].metadata["example_rules"]
+    example_rules = "".join(f"- {x}\n" for x in example_rules)
     lang_agent = RulesSelectorActorCritic(
         actor=actor,
-        task_text=envs.metadata["task_text"],
-        action_space_text=envs.metadata["action_space_text"],
+        task_text=envs.envs[0].metadata["task_text"],
+        action_space_text=envs.envs[0].metadata["action_space_text"],
+        num_rules=num_rules,
         llm=chat_model,
         embededder=embed_model,
-        num_rules=num_rules,
-        max_rule_combinations=args.max_rule_combinations,
+        max_rule_combinations=1,
+        example_rules=example_rules,
     )
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -353,13 +316,14 @@ def main(args: Args):
     obs, infos = envs.reset()
     state_vector, state_text = obs
     state_vector = tensor(state_vector, dtype=torch.float32).to(dev)
+    dones = [False for _ in range(args.num_envs)]
 
     iter_start = (global_step // args.total_timesteps) + 1
 
     # keep logging buffers for the rewards
     autoreset = np.zeros(args.num_envs, dtype=bool)
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
-    _rolling_rewards = deque(maxlen=args.rolling_rewards_window)
+    _rolling_returns = deque(maxlen=args.rolling_returns_window)
 
     for iter in range(iter_start, num_iterations + 1):
         # start on policy buffer
@@ -379,7 +343,7 @@ def main(args: Args):
         for step in tqdm(
             range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
         ):
-            global_step += args.num_envs
+            global_step += 1  # args.num_envs # changed to 1 to align with sac
 
             # Get the action and value in parallel
             if args.parallel_pipeline:
@@ -391,12 +355,12 @@ def main(args: Args):
                 outputs, messages = lang_agent(state_text, state_vector)
 
             # Add states and dones
-            env_actions = [x["action"] for x in outputs]
+            actions = [x["action"] for x in outputs]
             entropies = [x["entropy"] for x in outputs]
-            sel_logprobs = [x["sel_logprob"].exp() for x in outputs]
+            sel_logprobs = [x["sel_logprob"] for x in outputs]
 
             # Step the environment
-            next_obs, env_rewards, dones, truncations, infos = envs.step(env_actions)
+            next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
             next_state_vector, next_state_text = next_obs
             next_state_vector = tensor(next_state_vector, dtype=torch.float32)
             next_state_vector = next_state_vector.to(dev)
@@ -407,7 +371,7 @@ def main(args: Args):
 
             # total rewards
             rewards = env_rewards + sel_rewards
-            _rolling_rewards.extend(list(rewards))
+            _rolling_returns.extend(list(rewards))
 
             # compute the values
             # mean pool over rules for state-value
@@ -422,19 +386,15 @@ def main(args: Args):
                     b_state_vec[j].append(state_vector[j])
                     b_rules_emb[j].append(outputs[j]["rules_emb"])
                     b_done[j].append(tensor(dones[j], dtype=torch.float32).to(dev))
-                    b_sel_idx[j].append(
-                        tensor(outputs[j]["sel_idx"], dtype=torch.long).to(dev)
-                    )
-                    b_sel_logprob[j].append(
-                        tensor(outputs[j]["sel_logprob"], dtype=torch.float32).to(dev)
-                    )
+                    b_sel_idx[j].append(outputs[j]["sel_idx"])
+                    b_sel_logprob[j].append(outputs[j]["sel_logprob"])
                     b_reward[j].append(tensor(rewards[j], dtype=torch.float32).to(dev))
                     b_value[j].append(tensor(values[j], dtype=torch.float32).to(dev))
 
             # accumulate and log the rewards
             for j in range(args.num_envs):
-                done_now = dones[j] or truncations[j]
-                if not done_now:
+                needs_reset = trunc[j] or dones[j]
+                if not needs_reset:
                     _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                     _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                     _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
@@ -445,29 +405,31 @@ def main(args: Args):
                     # log the rewards
                     writer.add_scalar(
                         f"charts/episodic_env_rewards",
-                        np.mean(_ep_buffer["env_rewards"][j]),
+                        np.mean(_ep_buffer["env_rewards"][j]).item(),
                         global_step,
                     )
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(
-                            f"charts/sel_reward_scores/q{i}", x, global_step
+                            f"charts/sel_reward_scores/q{i}", x.item(), global_step
                         )
                     m = np.mean(_ep_buffer["sel_rewards_total"][j])
-                    writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                    writer.add_scalar(
+                        "charts/episodic_sel_rewards", m.item(), global_step
+                    )
                     writer.add_scalar(
                         "charts/episodic_entropy",
-                        np.mean(_ep_buffer["entropy"][j]),
+                        np.mean(_ep_buffer["entropy"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_sel_probs",
-                        np.mean(_ep_buffer["sel_probs"][j]),
+                        np.mean(_ep_buffer["sel_probs"][j]).item(),
                         global_step,
                     )
                     writer.add_scalar(
                         "charts/episodic_total_rewards",
-                        np.mean(_ep_buffer["total_rewards"][j]),
+                        np.mean(_ep_buffer["total_rewards"][j]).item(),
                         global_step,
                     )
 
@@ -524,26 +486,20 @@ def main(args: Args):
                     }
                 )
 
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
-                )
-
             # advance
-            autoreset = np.logical_or(dones, truncations)
+            autoreset = np.logical_or(autoreset, dones)
             obs = next_obs
             state_vector = next_state_vector
             state_text = next_state_text
 
-        # save best model
-        total_reward = env_rewards.mean().item()
-        if best_total_reward < total_reward:
-            best_total_reward = total_reward
-            best_model = model.state_dict()
+            # save best model
+            total_reward = np.mean(_rolling_returns)
+            if (
+                best_total_reward < total_reward
+                and len(_rolling_returns) == args.rolling_returns_window
+            ):
+                best_total_reward = total_reward
+                best_model = model.state_dict()
 
         if iter % args.save_interval == 0 or iter == num_iterations:
             ckpt = {
@@ -555,15 +511,6 @@ def main(args: Args):
                 "best_model": best_model,
             }
             torch.save(ckpt, ckpt_path)
-
-        # b_state_vec = permute_env_time_dims_and_tensorize(_state_vectors, device)
-        # b_rules_emb = permute_env_time_dims_and_tensorize(_rules_embs, device)
-        # b_sel_idx = permute_env_time_dims_and_tensorize(_sel_idxs, device)
-        # b_value = permute_env_time_dims_and_tensorize(_values, device)
-        # b_sel_logprob = permute_env_time_dims_and_tensorize(_sel_logprobs, device)
-        # b_reward = permute_env_time_dims_and_tensorize(_rewards, device)
-        # b_done = permute_env_time_dims_and_tensorize(_dones, device)
-        # b_entropy = _all_envs_tensor(_entropies)
 
         # need to obtain the new rules
         if args.parallel_pipeline:
@@ -577,7 +524,7 @@ def main(args: Args):
 
         next_rules_emb = [FloatTensor(x["rules_emb"]) for x in outputs]
         next_rules_emb = nested_tensor(next_rules_emb).to(dev)
-        next_dones = FloatTensor(dones).to(dev)
+        dones = FloatTensor(dones).to(dev)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -588,20 +535,19 @@ def main(args: Args):
             # need to do per environment to deal with potentially different lengths
             # as well as nested tensors for the rules
             # (and maybe future support for different state space shapes)
-            b_advantages = []
-            b_returns = []
+            b_advantage = []
+            b_return = []
 
             for j in range(args.num_envs):
-                T = len(
-                    b_reward[j]
-                )  # it is not equal to num steps due to the autoreset skip
-                b_advantages.append(torch.zeros(T, device=dev))
-                b_returns.append(torch.zeros(T, device=dev))
+                # it is not equal to num steps due to the autoreset skip
+                T = len(b_reward[j])
+                b_advantage.append(torch.zeros(T, device=dev))
+                b_return.append(torch.zeros(T, device=dev))
 
                 lastgaelam = 0
                 for t in reversed(range(T)):
                     if t == T - 1:
-                        nextnonterminal = 1.0 - next_dones[j]
+                        nextnonterminal = 1.0 - dones[j]
                         nextvalues = next_values[j]
                     else:
                         nextnonterminal = 1.0 - b_done[j][t + 1]
@@ -611,41 +557,44 @@ def main(args: Args):
                         + args.gamma * nextvalues * nextnonterminal
                         - b_value[j][t]
                     )
-                    b_advantages[j][t] = lastgaelam = (
+                    b_advantage[j][t] = lastgaelam = (
                         delta
                         + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     )
-                    b_returns[j][t] = b_advantages[j][t] + b_value[j][t]
+                    b_return[j][t] = b_advantage[j][t] + b_value[j][t]
 
         # flatten the batch
         b_state_vec = collate_samples(b_state_vec)
         b_sel_logprob = collate_samples(b_sel_logprob)
         b_sel_idx = collate_samples(b_sel_idx)
-        b_advantages = collate_samples(b_advantages)
-        b_returns = collate_samples(b_returns)
+        b_advantage = collate_samples(b_advantage)
+        b_return = collate_samples(b_return)
         b_value = collate_samples(b_value)
         b_rules_emb = collate_samples(b_rules_emb)
 
         # Optimizing the policy and value network
         N = b_state_vec.shape[0]
-        b_inds = np.arange(N, dtype=np.int32)
+        b_inds = torch.arange(N, dtype=torch.long).to(dev)
         clipfracs = []
         for epoch in tqdm(range(args.update_epochs), desc=f"Iter: {iter},  Optimizing"):
-            np.random.shuffle(b_inds)
+            b_inds = torch.randperm(N).to(dev)
             for start in range(0, N, minibatch_size):
-                end = start + minibatch_size
+                end = min(start + minibatch_size, N)
                 mb_inds = b_inds[start:end]
 
                 # get the new policy
+                mb_rules_emb = nested_tensor([b_rules_emb[ix] for ix in mb_inds]).to(
+                    dev
+                )
                 dist = lang_agent.get_policy_from_embeddings(
                     b_state_vec[mb_inds],
-                    b_rules_emb[mb_inds],
+                    mb_rules_emb,
                 )
                 new_sel_logprob = dist.log_prob(b_sel_idx[mb_inds])
                 new_entropy = dist.entropy().mean()
 
                 # get the new value
-                new_value = critic(b_rules_emb[mb_inds], b_state_vec[mb_inds])
+                new_value = critic(mb_rules_emb, b_state_vec[mb_inds])
                 new_value = pool_attention_network(new_value)
 
                 logratio = new_sel_logprob - b_sel_logprob[mb_inds]
@@ -659,7 +608,7 @@ def main(args: Args):
                         ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
                     ]
 
-                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = b_advantage[mb_inds]
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
                         mb_advantages.std() + 1e-8
@@ -674,17 +623,17 @@ def main(args: Args):
 
                 # Value loss
                 if args.clip_vloss:
-                    v_loss_unclipped = (new_value - b_returns[mb_inds]) ** 2
+                    v_loss_unclipped = (new_value - b_return[mb_inds]) ** 2
                     v_clipped = b_value[mb_inds] + torch.clamp(
                         new_value - b_value[mb_inds],
                         -args.clip_coef,
                         args.clip_coef,
                     )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_clipped = (v_clipped - b_return[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
                 else:
-                    v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = 0.5 * ((new_value - b_return[mb_inds]) ** 2).mean()
 
                 entropy_loss = new_entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -697,7 +646,7 @@ def main(args: Args):
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = b_value.cpu().numpy(), b_returns.cpu().numpy()
+        y_pred, y_true = b_value.cpu().numpy(), b_return.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
