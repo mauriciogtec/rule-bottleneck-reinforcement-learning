@@ -133,6 +133,7 @@ if __name__ == "__main__":
             config=vars(args),
             name=run_name,
             id=run_name,
+            resume='auto',
             monitor_gym=True,
             save_code=True,
         )
@@ -237,7 +238,7 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
-            global_step += args.num_envs
+            global_step += 1  # args.num_envs # changed to 1 to align with sac
             obs[step] = next_obs
             dones[step] = next_done
 
