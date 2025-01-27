@@ -353,7 +353,7 @@ def _gen_rules(
 
     tmp_messages = messages.copy()
     tmp_messages.append({"role": "user", "content": rules_prompt})
-    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
     rules = parse_rules(response)
     outputs["rules"] = rules
 
@@ -376,7 +376,7 @@ def _gen_rules_with_in_context_learning(
 ):
     rules_prompt = (
         f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
-        f"You will be given examples of rules ranked by their **fitnes score**. Your goal is to propose only rules "
+        f"You will be given examples of rules ranked by their **fitness score** in [0,1]. Your goal is to propose only rules "
         " with high fitness scores.\n"
         "For each rule, provide the explanation of why it is important to consider it at the given state."
         " Each rule should be in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
@@ -393,7 +393,7 @@ def _gen_rules_with_in_context_learning(
 
     tmp_messages = messages.copy()
     tmp_messages.append({"role": "user", "content": rules_prompt})
-    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024).content
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
     rules = parse_rules(response)
     outputs["rules"] = rules
 
@@ -550,7 +550,9 @@ class RulesSelectorActorCritic(BaseAgent):
             queries, keys = rules_emb, state_vector
             with torch.no_grad():
                 values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
-                values = (values - values.mean()) / (values.std() + 1e-6)
+                # values = (values - values.mean()) / (values.std() + 1e-6)
+                values = (values - values.min()) / (values.max() - values.min())
+                values = values.clip(0.1, 0.9)
 
             # append the the score to each rule
             scored_rules = [
