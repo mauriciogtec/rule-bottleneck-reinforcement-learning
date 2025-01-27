@@ -207,7 +207,17 @@ class BaseAgent:
         self.gen_explanation(outputs, messages)
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
-        return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+        prompt = (
+            "First, reason about what elements should be considered when choosing the optimal action."
+            " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+            " of each action in the current state."
+        )
+        messages.append({"role": "user", "content": prompt})
+        outputs["thoughts"] = invoke_with_retries(
+            self.llm, messages, temperature=0.5, max_tokens=256
+        ).content
+        messages.append({"role": "assistant", "content": outputs["thoughts"]})
+
 
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         return _gen_explanation(outputs, messages, self.llm)
