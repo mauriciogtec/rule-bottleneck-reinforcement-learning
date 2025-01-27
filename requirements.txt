@@ -9,4 +9,7 @@ torch-summary
 jsonlines
 wandb
 scikit-learn
-git+https://github.com/NSAPH-Projects/weather2alert@dev
+matplotlib
+proplot
+pandas
+# git+https://github.com/NSAPH-Projects/weather2alert@dev
