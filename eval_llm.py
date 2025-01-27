@@ -236,7 +236,12 @@ def main(args: Args):
                 )
                 _ep_buffer["env_rewards"][j].clear()
 
-                if args.agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
+                if any(
+                    [
+                        args.agent.startswith(x)
+                        for x in ("llm_rules_agent", "llm_rules_no_thoughts")
+                    ]
+                ):
                     m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
                     for i, x in enumerate(m):
                         writer.add_scalar(

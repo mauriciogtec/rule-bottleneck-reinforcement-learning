@@ -82,7 +82,7 @@ class VitalSignsSimple(Env):
         intervention_success_rate=0.7,
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
-        joining_interval=5,  # Here, simulate the number of internal vital signs steps
+        # joining_interval=5,  # Here, simulate the number of internal vital signs steps
         T: Optional[int] = None,  # planning length / for finite horizon evaluation
         time_discount: Optional[float] = 0.99,  # discount factor for time,
         ignore_free_penalty: Optional[float] = 1.0,
@@ -111,7 +111,7 @@ class VitalSignsSimple(Env):
         # self.t_max = t_max
         # self.joining_number = joining_number
         self.system_duration = system_duration
-        self.joining_interval = joining_interval
+        # self.joining_interval = joining_interval
 
         self.degree_of_arm_noise = degree_of_arm_noise
         self.intervention_success_rate = intervention_success_rate
