@@ -64,8 +64,8 @@ class Args:
     """if toggled, tries to resume training from the latest checkpoint"""
     ckpt_interval: int = 200
     """the saving interval of the model"""
-    overwrite_ckpt: bool = False
-    """if toggled and resuming is on, it will start fresh in resume mode, otherwise ignored"""
+    checkpoint: str
+    """the checkpoint to load the model from"""
 
     # Environment
     env_id: str = "Uganda"
@@ -77,38 +77,7 @@ class Args:
     max_episode_steps: Optional[int] = 16
     """the maximum number of steps per episode"""
 
-    # Algorithm
-    total_timesteps: int = 1280
-    """total timesteps of the experiments"""
-    gamma: float = 0.95
-    """the discount factor gamma"""
-    tau: float = 1.0
-    """target smoothing coefficient (default: 1)"""
-    batch_size: int = 16
-    """the batch size of sample from the reply memory"""
-    learning_starts: int = 256
-    """timestep to start learning"""
-    policy_lr: float = 1e-4
-    """the learning rate of the policy network optimizer"""
-    q_lr: float = 1e-4
-    """the learning rate of the Q network network optimizer"""
-    update_frequency: float | int = 1
-    """the frequency of training updates"""
-    warmup_updates: int = 1
-    """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 16
-    """the number of updates to the actor per update cycle"""
-    critic_updates: int = 4
-    """the number of updates to the critic per update cycle"""
-    target_network_frequency: int = 64
-    """the frequency of updates for the target networks"""
-    alpha: float = 0.01
-    """Entropy regularization coefficient."""
-    autotune: bool = False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
-    """coefficient for scaling the autotune entropy target"""
-    dropout: float = 0.05
+    dropout: float = 0.0
     """the dropout rate"""
 
     # Eval
@@ -513,6 +482,7 @@ def main(args: Args):
         critic=critic,
         in_context_learning=args.in_context_learning,
     )
+    lang_agent.deterministic = args.eval_deterministic
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
     q_params = list(qf1.parameters()) + list(qf2.parameters())
@@ -649,8 +619,6 @@ def main(args: Args):
 
                     logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
 
-                    _rolling_returns.append(r)
-
         for j in range(args.num_envs):
             if not autoreset[j]:
                 sample = {}
@@ -774,155 +742,7 @@ def main(args: Args):
         sel_idxs = next_sel_idxs
         outputs, messages = next_outputs, next_messages
 
-        # ALGO LOGIC: training.
-        if buffer.size() > args.learning_starts:
-            if needs_save_buffer:
-                os.makedirs(os.path.dirname(buffer_file), exist_ok=True)
-                with open(buffer_file, "wb") as f:
-                    pickle.dump(buffer, f)
-                logging.info(f"Buffer saved to {buffer_file}")
-                needs_save_buffer = False
-            if global_step % args.update_frequency == 0:
-                if global_step > 0:
-                    critic_updates = args.critic_updates
-                    actor_updates = args.actor_updates
-                else:
-                    critic_updates = args.warmup_updates
-                    actor_updates = args.warmup_updates
-
-                for _ in range(critic_updates):
-                    # Update critic
-                    (
-                        qf_loss,
-                        qf1_loss,
-                        qf1_a_values,
-                        qf2_loss,
-                        qf2_a_values,
-                        qss,
-                    ) = update_critic(
-                        buffer=buffer,
-                        batch_size=args.batch_size,
-                        gamma=args.gamma,
-                        alpha=alpha,
-                        qf1=qf1,
-                        qf2=qf2,
-                        qf1_target=qf1_target,
-                        qf2_target=qf2_target,
-                        q_optimizer=q_optimizer,
-                        device=dev,
-                        lang_agent=lang_agent,
-                    )
-                    _running_qss += 0.01 * (qss - _running_qss)
-                    _running_qse += 0.01 * (qf_loss - _running_qse)
-
-                for _ in range(actor_updates):
-                    # Update actor
-                    actor_loss, entropy, probs, log_probs = update_actor(
-                        buffer=buffer,
-                        batch_size=args.batch_size,
-                        alpha=alpha,
-                        actor_optimizer=actor_optimizer,
-                        qf1=qf1,
-                        qf2=qf2,
-                        lang_agent=lang_agent,
-                        device=dev,
-                    )
-
-                    if args.autotune:  # Check if alpha tuning is enabled
-                        alpha_loss, alpha = update_alpha(
-                            probs=probs,
-                            log_probs=log_probs,
-                            target_entropy=target_entropy,
-                            log_alpha=log_alpha,
-                            alpha_optimizer=a_optimizer,
-                        )
-
-            if global_step % args.log_frequency == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss, global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss, global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss, global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
-                writer.add_scalar("losses/entropy", entropy, global_step)
-                variance_explained = 1 - _running_qse / _running_qss
-                writer.add_scalar(
-                    "losses/variance_explained", variance_explained, global_step
-                )
-
-                if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss, global_step)
-
-            # update the target networks
-            if global_step % args.target_network_frequency == 0:
-                for param, target_param in zip(
-                    qf1.parameters(), qf1_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        args.tau * param.data + (1 - args.tau) * target_param.data
-                    )
-                for param, target_param in zip(
-                    qf2.parameters(), qf2_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        args.tau * param.data + (1 - args.tau) * target_param.data
-                    )
-        save_state = {
-            "actor_state": actor.state_dict(),
-            "qf1_state": qf1.state_dict(),
-            "qf2_state": qf2.state_dict(),
-            "q_optimizer_state": q_optimizer.state_dict(),
-            "actor_optimizer_state": actor_optimizer.state_dict(),
-            "global_step": global_step + 1,
-            "elapsed_time": time.time() - start_time,
-            "best_total_reward": best_total_reward,
-            "best_model": best_model,
-            "best_model_epoch": best_model_epoch,
-            "buffer": buffer,
-        }
-        if args.autotune:
-            save_state["log_alpha"] = log_alpha
-            save_state["a_optimizer_state"] = a_optimizer.state_dict()
-        save_checkpoint(save_state, ckpt_path)
-
-        if global_step % args.ckpt_interval == 0:
-            save_checkpoint(
-                save_state, ckpt_path.replace(".state", f"__{global_step}.state")
-            )
-
-        # Evaluation loop
-        lang_agent.deterministic = True
-
-        if args.eval and global_step % args.eval_interval == 0:
-            eval_returns = []
-            eval_obs, _ = eval_envs.reset()
-            eval_obs_vec, eval_obs_text = eval_obs
-            eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
-            eval_episodes = 0
-            while eval_episodes < eval_envs.num_envs:
-                with torch.no_grad():
-                    eval_outputs, _ = lang_agent.parallel_pipeline(
-                        eval_obs_text,
-                        eval_obs_vec,
-                    )
-                eval_actions = [x["action"] for x in eval_outputs]
-                eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
-                eval_obs_vec, eval_next_obs_vec = eval_obs_vec
-                eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
-                if "episode" in eval_infos:
-                    for i in range(args.num_envs):
-                        if eval_infos["_episode"][i]:
-                            eval_returns.append(eval_infos["episode"]["r"][i])
-                            eval_episodes += 1
-
-            # log
-            writer.add_scalar(
-                "charts/eval_return", np.mean(eval_returns).item(), global_step
-            )
-
-        lang_agent.deterministic = False
-
+    
     envs.close()
     eval_envs.close()
     writer.close()
@@ -931,7 +751,7 @@ def main(args: Args):
 if __name__ == "__main__":
     args = tyro.parse(Args)
 
-    args.agent = "rbrl"
+    args.agent = "eval-rbrl"
     if not args.thoughts:
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
