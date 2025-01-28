@@ -26,13 +26,20 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 import jsonlines
 
-valid_agent_lst = ['rule_select_agent', 'base_agent', 'no_thoughts_agent', 'llm_rules_no_thoughts', 'llm_rules_agent']
+valid_agent_lst = [
+    "rule_select_agent",
+    "base_agent",
+    "no_thoughts_agent",
+    "llm_rules_no_thoughts",
+    "llm_rules_agent",
+]
 checkpoint_path = "rbrl-no-in-context__Uganda__v7b__gpt-4o-mini-huit__457__0.state"
 # Define device (CPU or GPU)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the checkpoint
 checkpoint = torch.load(checkpoint_path, map_location=device)
+
 
 @dataclass
 class Args:
@@ -115,19 +122,16 @@ def make_env(env_id, seed, max_episode_steps=None):
     return thunk
 
 
-
 def main(args: Args):
-    eval_env_funs = [
-        make_env(args.env_id, args.seed + i, max_episode_steps=args.max_episode_steps)
-        for i in range(args.num_envs)
-    ]
-    envs = gym.vector.SyncVectorEnv(eval_env_funs)
+    env = make_env(args.env_id, args.seed, max_episode_steps=args.max_episode_steps)()
     chat_model = get_llm_api(args.llm)
 
     set_seed(args.seed)
 
     t = int(time())
-    run_name = f"survey_agents__{args.env_id}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
+    run_name = (
+        f"survey_agents__{args.env_id}__{args.llm}__{args.exp_name}__{args.seed}__{t}"
+    )
     params = vars(args)
 
     if args.track:
@@ -142,8 +146,8 @@ def main(args: Args):
             monitor_gym=True,
             save_code=args.wandb_save_code,
         )
-        table = wandb.Table(columns=["step", "state", *args.agent_list])
-                                     
+        table = wandb.Table(columns=["episode", "step", "state", "action", *args.agent_list])
+
     writer = SummaryWriter(f"runs/{run_name}")
 
     writer.add_text(
@@ -154,7 +158,7 @@ def main(args: Args):
 
     global_step = 0
 
-    obs, infos = envs.reset()
+    obs, infos = env.reset()
     _, next_state_text = obs
 
     ## We need to create different buffers for different agents
@@ -168,11 +172,11 @@ def main(args: Args):
 
     ## Initializatio  needed for Rule Select Agent
     rule_dim = embed_dim = 768
-    state_dim = envs.single_observation_space[0].shape[-1]
+    state_dim = env.observation_space[0].shape[-1]
     hidden_dim = 16
     num_rules = 5
     dropout_val = 0.05
-    proj_type_input = "linear" 
+    proj_type_input = "linear"
 
     actor = CrossAttentionNetwork(
         q_dim=rule_dim,
@@ -185,80 +189,89 @@ def main(args: Args):
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
-        dropout= dropout_val,
+        dropout=dropout_val,
         proj_type=proj_type_input,
     )
     qf2 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
-        dropout= dropout_val,
+        dropout=dropout_val,
         proj_type=proj_type_input,
     )
+
     # Define critic function
     def critic(rules_emb, obs_vec):
         q1 = qf1(rules_emb, obs_vec)
         q2 = qf2(rules_emb, obs_vec)
         return torch.min(q1, q2)
-    
+
     embed_model = TogetherEmbeddings(model=args.embedder_lm)
+
+    lang_agents = {}
+    for agent in args.agent_list:
+        if agent == "base_agent":
+            lang_agent = agents.BaseAgent(
+                task_text=envs.metadata["task_text"],
+                action_space_text=envs.metadata["action_space_text"],
+                llm=chat_model,
+            )
+        elif agent == "llm_rules_agent":
+            example_rules = envs.envs[0].metadata["example_rules"]
+            example_rules = "".join(f"- {x}\n" for x in example_rules)
+            lang_agent = agents.LLMRulesAgent(
+                task_text=envs.metadata["task_text"],
+                action_space_text=envs.metadata["action_space_text"],
+                num_rules=args.num_rules,
+                llm=chat_model,
+                example_rules=example_rules,
+            )
+        elif agent == "llm_rules_no_thoughts":
+            example_rules = envs.envs[0].metadata["example_rules"]
+            example_rules = "".join(f"- {x}\n" for x in example_rules)
+            lang_agent = agents.LLMRulesAgentNoThoughts(
+                task_text=envs.metadata["task_text"],
+                action_space_text=envs.metadata["action_space_text"],
+                num_rules=args.num_rules,
+                llm=chat_model,
+                example_rules=example_rules,
+            )
+        elif agent == "no_thoughts_agent":
+            lang_agent = agents.NoThoughtsAgent(
+                task_text=envs.metadata["task_text"],
+                action_space_text=envs.metadata["action_space_text"],
+                llm=chat_model,
+            )
+        elif agent.startswith("rbrl"):
+            example_rules = envs.envs[0].metadata["example_rules"]
+            example_rules = "".join(f"- {x}\n" for x in example_rules)
+            lang_agent = agents.RulesSelectorActorCritic(
+                actor=actor,
+                task_text=envs.metadata["task_text"],
+                action_space_text=envs.metadata["action_space_text"],
+                num_rules=args.num_rules,
+                example_rules=example_rules,
+                llm=chat_model,
+                embededder=embed_model,
+                use_thoughts=args.use_thoughts_with_rules,
+                critic=critic,
+            )
+            ## TODO: Hi Mauracio, please check do you want other initialization for rule select agent
+        else:
+            raise ValueError(f"Unknown baseline: {args.agent}")
+        lang_agents[agent] = lang_agent
+
+    obs, infos = envs.reset()
+    _, next_state_text = obs
 
     while total_episodes < args.num_episodes:
         global_step += 1
 
         # Collect actions for each agent, randomly pick one to advance the state
         actions_per_agent = {}
+        examples_per_agent = {}
 
-        for agent in args.agent_lst:
-            if agent == "base_agent":
-                lang_agent = agents.BaseAgent(
-                task_text=envs.metadata["task_text"],
-                action_space_text=envs.metadata["action_space_text"],
-                llm=chat_model,
-            )
-            elif agent == "llm_rules_agent":
-                example_rules = envs.envs[0].metadata["example_rules"]
-                example_rules = "".join(f"- {x}\n" for x in example_rules)
-                lang_agent = agents.LLMRulesAgent(
-                    task_text=envs.metadata["task_text"],
-                    action_space_text=envs.metadata["action_space_text"],
-                    num_rules=args.num_rules,
-                    llm=chat_model,
-                    example_rules=example_rules,
-                )
-            elif agent == "llm_rules_no_thoughts":
-                example_rules = envs.envs[0].metadata["example_rules"]
-                example_rules = "".join(f"- {x}\n" for x in example_rules)
-                lang_agent = agents.LLMRulesAgentNoThoughts(
-                    task_text=envs.metadata["task_text"],
-                    action_space_text=envs.metadata["action_space_text"],
-                    num_rules=args.num_rules,
-                    llm=chat_model,
-                    example_rules=example_rules,
-                )
-            elif agent == "no_thoughts_agent":
-                lang_agent = agents.NoThoughtsAgent(
-                    task_text=envs.metadata["task_text"],
-                    action_space_text=envs.metadata["action_space_text"],
-                    llm=chat_model,
-                )
-            elif agent == "rule_select_agent":
-                example_rules = envs.envs[0].metadata["example_rules"]
-                example_rules = "".join(f"- {x}\n" for x in example_rules)
-                lang_agent = agents.RulesSelectorActorCritic(
-                    actor = actor,
-                    task_text=envs.metadata["task_text"],
-                    action_space_text=envs.metadata["action_space_text"],
-                    num_rules=args.num_rules,
-                    example_rules=example_rules,
-                    llm=chat_model,
-                    embededder=embed_model,
-                    critic = critic,
-                ) 
-                ## TODO: Hi Mauracio, please check do you want other initialization for rule select agent
-            else:
-                raise ValueError(f"Unknown baseline: {args.agent}")
-            
+        for agent, lang_agent in lang_agents.items():
             # Get the action and value in parallel
             if args.parallel_pipeline:
                 outputs, messages = lang_agent.parallel_pipeline(next_state_text)
@@ -271,106 +284,82 @@ def main(args: Args):
             if agent == "llm_rules_agent" or agent == "rule_select_agent":
                 sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
                 sel_rewards = [x["sel_reward"] for x in outputs]
-            
+
                 # accumulate and log the rewards
                 for j in range(args.num_envs):
-                    _ep_buffer["sel_rewards_scores"][agent][j].append(sel_reward_scores[j])
+                    _ep_buffer["sel_rewards_scores"][agent][j].append(
+                        sel_reward_scores[j]
+                    )
                     _ep_buffer["sel_rewards_total"][agent][j].append(sel_rewards[j])
 
-            if step == 0 or step % args.log_examples_interval == 0:
-                if agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
-                    rules_str = "\n".join(outputs[0]["rules"])
-                    rules_scores = [
-                        f"{k}: {v}"
-                        for k, v in outputs[0]["sel_reward_scores_raw"].items()
-                    ]
-                    rules_scores_str = "\n".join(rules_scores)
-                    thoughts = outputs[0].get("thoughts", None)
-                    example = [
-                        f"### Agent: {agent}\n"
-                        f"{outputs[0]['initial_prompt']}\n",
-                        f"### Thoughts\n {thoughts}\n" if thoughts else "",
-                        f"### Rules\n {rules_str}\n",
-                        f"### Selected Rules Explainability\n{rules_scores_str}\n",
-                        f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n",
-                        f"### Explanation\n {outputs[0]['explanation']}\n",
-                    ]
-                    example = "".join(example)
-                elif agent == "no_thoughts_agent":
-                    example = (
-                        f"### Agent: {agent}\n"
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}"
-                    )
-                elif agent == "base_agent":
-                    example = (
-                        f"### Agent: {agent}\n"
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                        f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}"
-                    )
-                elif agent == "rule_select_agent":
-                    example = (
-                        f"### Agent: {agent}\n"
-                        f"{outputs[0]['initial_prompt']}\n"
-                        f"### Thoughts\n {outputs[0]['thoughts']}\n"
-                        f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
-                        f"### Explanation\n {outputs[0]['explanation']}"
-                    )
-                ## TODO: Hi Mauracio, I will let you decide what else our rule select agent needs to output
-
-                conversation = "\n".join(
-                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
+            if agent in ("llm_rules_agent", "llm_rules_no_thoughts"):
+                rules_str = "\n".join(outputs[0]["rules"])
+                rules_scores = [
+                    f"{k}: {v}" for k, v in outputs[0]["sel_reward_scores_raw"].items()
+                ]
+                rules_scores_str = "\n".join(rules_scores)
+                thoughts = outputs[0].get("thoughts", None)
+                example = [
+                    f"### Agent: {agent}\n" f"{outputs[0]['initial_prompt']}\n",
+                    f"### Thoughts\n {thoughts}\n" if thoughts else "",
+                    f"### Rules\n {rules_str}\n",
+                    f"### Selected Rules Explainability\n{rules_scores_str}\n",
+                    f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n",
+                    f"### Explanation\n {outputs[0]['explanation']}\n",
+                ]
+                example = "".join(example)
+            elif agent == "no_thoughts_agent":
+                example = (
+                    f"### Agent: {agent}\n"
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
                 )
-                writer.add_text(f"{agent}/text/examples", example, global_step)
-                writer.add_text(f"{agent}/llm_prompts/conversation", conversation, global_step)
-
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
+            elif agent == "base_agent":
+                example = (
+                    f"### Agent: {agent}\n"
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                    f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
+                )
+            elif agent == "rbrl":
+                example = (
+                    f"### Agent: {agent}\n"
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Thoughts\n {outputs[0]['thoughts']}\n"
+                    f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
+                )
+            elif agent == "rbrl-no-thoughts":
+                example = (
+                    f"### Agent: {agent}\n"
+                    f"{outputs[0]['initial_prompt']}\n"
+                    f"### Recommended Environment Action by {agent}: {outputs[0]['action']}\n"
+                    f"### Explanation\n {outputs[0]['explanation']}"
                 )
 
-                if step % 16 == 0:
-                    logging.info(
-                        f"Agent: {agent}, global_step={global_step}, total_episodes={total_episodes}/{args.num_episodes}"
+            examples_per_agent[agent] = example
+
+            if args.track:
+                table.add_data(
+                    global_step, next_state_text, *actions_per_agent.values()
                 )
-        
+                wandb.log(table, step=global_step)
+
         # Randomly select one agent's action to step the environment
-        selected_agent = random.choice(args.agent_lst)
+        selected_agent = random.choice(args.agent_list)
         env_actions = actions_per_agent[selected_agent]
         obs, env_rewards, terminations, truncations, infos = envs.step(env_actions)
         _, next_state_text = obs
         # Log which agent's actions were chosen
-        logging.info(f"Selected Agent to interact with the environment: {selected_agent}, Actions: {env_actions}")
-
-        # Step 3: Process terminations and log rewards
-        for j in range(args.num_envs):
-            done_now = terminations[j] or truncations[j]
-            if done_now:
-                if agent == "llm_rules_agent" or agent == "rule_select_agent":
-                    m = np.mean(_ep_buffer["sel_rewards_scores"][agent][j], axis=0)
-                    for i, x in enumerate(m):
-                        writer.add_scalar(
-                            f"charts/{agent}_sel_reward_scores/q{i}", x, global_step
-                        )
-                    writer.add_scalar(f"{agent}/charts/episodic_sel_rewards", m, global_step)
-                    _ep_buffer["sel_rewards_scores"][agent][j].clear()
-                    _ep_buffer["sel_rewards_total"][agent][j].clear()
-                    _ep_buffer["total_rewards"][agent][j].clear()
-
-                total_episodes += 1
-                
-        step += 1
+        logging.info(
+            f"Selected Agent to interact with the environment: {selected_agent}, Actions: {env_actions}"
+        )
 
     envs.close()
     writer.close()
-            
+
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -383,18 +372,7 @@ if __name__ == "__main__":
     else:
         args.agent_lst.append("llm_rules_no_thoughts")
         rbrl_agent += "-no-thoughts"
-    
+
     args.agent_lst.append(rbrl_agent)
 
     main(args)
-
-           
-                
-     
-
-
-
-
-
-
-
