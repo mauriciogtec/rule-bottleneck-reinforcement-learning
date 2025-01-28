@@ -15,6 +15,7 @@ runs*/
 wandb/
 checkpoints*/
 text_logs/
+logs/
 
 # data analysis
 notebooks/
