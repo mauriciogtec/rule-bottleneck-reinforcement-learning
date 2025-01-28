@@ -28,12 +28,7 @@ from agents import RulesSelectorActorCritic, PureLanguageAgents
 from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
 
-# configure logging
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s]: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.INFO,
-)
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
@@ -96,7 +91,7 @@ class Args:
     """the frequency of training updates"""
     warmup_updates: int = 1
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 16
+    actor_updates: int = 4
     """the number of updates to the actor per update cycle"""
     critic_updates: int = 4
     """the number of updates to the critic per update cycle"""
@@ -104,7 +99,7 @@ class Args:
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
     """Entropy regularization coefficient."""
-    autotune: bool = False
+    autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
@@ -140,6 +135,12 @@ class Args:
     """the reward coefficient for the rules"""
     in_context_learning: bool = True
     """if toggled, the agent will learn in context"""
+
+    # Options
+    rule_type: Literal["rule", "free"] = "rule"
+    """the type of the rule"""
+    conversation_history_in_explanation: bool = True
+    """if toggled, the agent will use conversation history in explanation"""
 
     # Buffer collection mode
     buffer_collection_steps: int = 64
@@ -388,6 +389,20 @@ def update_alpha(
 def main(args: Args):
     run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
+
+
+    # configure logging
+    log_file = f"logs/{run_id}.err"
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s]: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
     ckpt_path = f"checkpoints/{run_name}.state"
     text_logs_path = f"text_logs/{run_name}.jsonl"
