@@ -13,7 +13,7 @@ multirun/
 outputs/
 runs*/
 wandb/
-checkpoints*/
+checkpoints*
 text_logs/
 
 # data analysis
