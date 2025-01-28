@@ -209,7 +209,7 @@ class BaseAgent:
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
         prompt = (
             "First, reason about what elements should be considered when choosing the optimal action."
-            " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+            " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
             " of each action in the current state."
         )
         messages.append({"role": "user", "content": prompt})
@@ -302,19 +302,30 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
 
 
-def _gen_thoughts_for_rule_agents(outputs, messages, llm):
-    thought_prompt = (
-        "First, reason about what elements should be considered when choosing the optimal action"
-        " in the given task of the decision making agent."
-        " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
-        " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
-        " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = True):
+    # prompt = (
+    #     "First, reason about what elements should be considered when choosing the optimal action"
+    #     " in the given task of the decision making agent."
+    #     " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+    #     " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
+    #     " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+    # )
+    prompt = (
+        "First, reason about what elements should be considered when choosing the optimal action."
+        " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
+        " of each action in the current state."
     )
-    messages.append({"role": "user", "content": thought_prompt})
-    outputs["thoughts"] = invoke_with_retries(
-        llm, messages, temperature=0.5, max_tokens=200
-    ).content
-    messages.append({"role": "assistant", "content": outputs["thoughts"]})
+    tmp_messages = messages.copy()
+    tmp_messages.append({"role": "user", "content": prompt})
+    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
+    
+    if save_prompts:
+        outputs["thoughts"] = response
+        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "assistant", "content": outputs["thoughts"]})
+
+    return response
+    
 
 
 def _gen_explanation(outputs, messages, llm):
@@ -406,6 +417,31 @@ def _gen_rules_with_in_context_learning(
     return rules
 
 
+def _gen_thoughts_with_in_context_learning(
+    outputs,
+    messages,
+    llm,
+    scored_thoughts: str,
+    save_prompts: bool = True,
+):
+    prompt = (
+        "Now, reason about what elements should be considered when choosing the optimal action."
+        " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
+        " of each action in the current state."
+        f"Below are examples of answers ranked by their **quality score** in [0,1]. ## Example answers\n\n{scored_thoughts}\n\n"
+    )
+    tmp_messages = messages.copy()
+    tmp_messages.append({"role": "user", "content": prompt})
+    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
+
+    if save_prompts:
+        outputs["thoughts"] = response
+        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "assistant", "content": outputs["thoughts"]})
+
+    return response
+
+
 class LLMRulesAgent(BaseAgent):
     """The rule-based agent generates a set of rules in addition to thoughts"""
 
@@ -490,6 +526,7 @@ class RulesSelectorActorCritic(BaseAgent):
         deterministic: bool = False,
         use_thoughts: bool = True,
         in_context_learning: bool = False,
+        optimize_thoughts_only: bool = False,
     ):
         super().__init__(
             task_text=task_text,
@@ -508,6 +545,9 @@ class RulesSelectorActorCritic(BaseAgent):
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
         self.deterministic = deterministic
+        self.optimize_thoughts_only = optimize_thoughts_only
+        if self.optimize_thoughts_only:
+            self.use_thoughts = False # they will be randomly generated
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         super().pre_action(outputs, messages)
@@ -520,14 +560,21 @@ class RulesSelectorActorCritic(BaseAgent):
         max_attemps = 0
         while max_attemps < self.max_parse_attempts:
             try:
-                rules = _gen_rules(
-                    outputs,
-                    messages,
-                    self.llm,
-                    self.num_rules,
-                    self.example_rules,
-                    save_prompts=False,
-                )
+                if not self.optimize_thoughts_only:
+                    rules = _gen_rules(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_rules,
+                        self.example_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    rules = [
+                        _gen_thoughts_for_rule_agents(outputs, messages, self.llm, save_prompts=False)
+                        for _ in range(self.num_rules)
+                    ]
+                    outputs["rules"] = rules
                 # check that we have at least one rule to select from
                 if isinstance(rules, list) and len(rules) > 0:
                     break
@@ -552,11 +599,11 @@ class RulesSelectorActorCritic(BaseAgent):
                 with torch.no_grad():
                     values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
                     # values = (values - values.mean()) / (values.std() + 1e-6)
-                    values = 0.1 * + 0.8 * (values - values.min()) / (values.max() - values.min())
+                    values = 0.1 + 0.8 * (values - values.min()) / (values.max() - values.min())
 
                 # append the the score to each rule
                 scored_rules = [
-                    f"{r} --> {{'score': {v.item()}}}" for r, v in zip(rules, values)
+                    f"{r} --> {{'score': {v.item():.2f}}}" for r, v in zip(rules, values)
                 ]
                 outputs["scored_rules"] = scored_rules
 
@@ -564,22 +611,30 @@ class RulesSelectorActorCritic(BaseAgent):
                 ix = np.argsort(values)[::-1]
                 scored_rules = [scored_rules[i] for i in ix]
 
-                new_rules = _gen_rules_with_in_context_learning(
-                    outputs,
-                    messages,
-                    self.llm,
-                    self.num_rules,
-                    scored_rules,
-                    save_prompts=False,
-                )
-                outputs["scored_rules"] = scored_rules
+                if not self.optimize_thoughts_only:
+                    new_rules = _gen_rules_with_in_context_learning(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_rules,
+                        scored_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    # here we save the prompt/answerbecause we will use them to optimize the thoughts
+                    new_rules = [
+                        _gen_thoughts_with_in_context_learning(
+                            outputs, messages, self.llm, scored_rules, save_prompts=True
+                        )
+                        for _ in range(self.num_rules)
+                    ]
                 rules = new_rules
-            else:
-                outputs["scored_rules"] = None
 
-        outputs["rules"] = rules = generate_rule_combinations(
-            rules, max_combs=self.max_rule_combinations
-        )
+        # rules = generate_rule_combinations(. #TODO: implement this
+        #     rules, max_combs=self.max_rule_combinations
+        # )
+
+        outputs["rules"] = rules
 
         # dont' add all rules, confuses the LLM and increases the cost
         # messages.append({"role": "assistant", "content": rules_str})

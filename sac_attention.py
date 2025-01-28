@@ -97,7 +97,7 @@ class Args:
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.01
+    alpha: float = 0.1
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
@@ -135,6 +135,8 @@ class Args:
     """the reward coefficient for the rules"""
     in_context_learning: bool = True
     """if toggled, the agent will learn in context"""
+    optimize_thoughts_only: bool = False
+    """if toggled, the agent will optimize thoughts only, not structured rules"""
 
     # Options
     rule_type: Literal["rule", "free"] = "rule"
@@ -527,6 +529,7 @@ def main(args: Args):
         use_thoughts=args.thoughts,
         critic=critic,
         in_context_learning=args.in_context_learning,
+        optimize_thoughts_only=args.optimize_thoughts_only,
     )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
@@ -951,6 +954,10 @@ if __name__ == "__main__":
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
         args.agent += "-no-in-context"
+    if args.rule_reward_coef != 1.0:
+        args.agent += f"-expl-rew-{args.rule_reward_coef}"
+    if args.optimize_thoughts_only:
+        args.agent += "-oto"
     
     args.agent += "--" + args.llm
 

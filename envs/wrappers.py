@@ -55,6 +55,7 @@ class LanguageWrapper(Wrapper, ABC):
         if hasattr(self, "example_rules"):
             self.metadata["example_rules"] = self.example_rules
         self.parse_action = parse_action
+        self.metadata["action_parser"] = self.action_parser
 
     @property
     @abstractmethod
