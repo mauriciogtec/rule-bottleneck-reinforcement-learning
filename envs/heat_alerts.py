@@ -27,10 +27,11 @@ class HeatAlertsLang(LanguageWrapper):
     @property
     def task_text(self) -> str:
         return (
-            "Assist officials from the National Weather Service in deciding when to issue public heatwave alerts"
-            " to minimize heat-related hospitalizations. Consider the limited alert budget, weather conditions,"
+            "Assist policymakers in deciding when to issue public alert to protect against heatwaves"
+            " Your goal is to minimize the long-term heat-related hospitalizations and mortality."
+            " Your decision should be based on the alert budget, weather conditions,"
             " day of the week, past alert history, and remaining alerts for the season."
-            " Consecutive alerts tend to lose effectiveness."
+            " The goal is to issue alerts when they are most effective, minimizing alert fatigue and optimizing for limited resources."
         )
 
     @property
@@ -39,7 +40,7 @@ class HeatAlertsLang(LanguageWrapper):
             "A single integer value representing the decision:\n"
             "1 = issue an alert\n"
             "0 = do not issue an alert\n"
-            "Never recommend an alert if the remaining alert budget is 0. Respone in JSON format. For example: {'action': 1}"
+            "Alerts can only be issued if the 'Remaining alert budget' is positive. Respone in JSON format. For example: {'action': 1}"
         )
 
     @property
@@ -47,22 +48,22 @@ class HeatAlertsLang(LanguageWrapper):
         example1 = (
             '{"background": "Heat alerts are not effective in cold weather", '
             '"rule": "If the heat index is below 80 F, do not issue an alert", '
-            '"state relevance": "The current heat index is 78 F, which is below the threshold", '
-            '"goal relevance": "The decision-makers goal is to avoid issuing unnecessary alerts if they are not effective"}'
+            '"state relevance": "The current heat index is 78 F, which is below the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to avoid issuing unnecessary alerts if they are not effective"}'
         )
 
         example2 = (
             '{"background": "Repeated alerts can lead to alert fatigue", '
             '"rule": "If there have been 3 or more alerts in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
-            '"state relevance": "There have been 3 alerts in the last 7 days and the current heat index is 98 F, which is below the threshold", '
-            '"goal relevance": "The decision-makers goal is to avoid alert fatigue by limiting the number of alerts issued"}'
+            '"state relevance": "There have been 3 alerts in the last 7 days and the current heat index is 98 F, which is below the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to avoid alert fatigue by limiting the number of alerts issued"}'
         )
 
         example3 = (
             '{"background": "Heat alerts are more effective during weekends when people are more likely to be outdoors", '
             '"rule": "If it is a weekend and the heat index is above 90 F, issue an alert", '
-            '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold", '
-            '"goal relevance": "The decision-makers goal is to issue alerts when they are most effective"}'
+            '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to issue alerts when they are most effective"}'
         )
 
         return [example1, example2, example3]
