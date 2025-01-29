@@ -17,6 +17,7 @@ HeatAlerts = partial(
     budget=10,
     sample_budget=True,
     random_starts=True,
+    top_k_fips=10,
     min_effectiveness=0.1,
 )
 BuySellSimple = partial(BuySellSimpleLang)
@@ -30,6 +31,7 @@ HeatAlertsNumeric = partial(
     sample_budget=True,
     random_starts=True,
     min_effectiveness=0.1,
+    top_k_fips=1,
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
 

@@ -106,7 +106,7 @@ def make_env(env_id, seed, max_episode_steps=None):
         env = gym.make(env_id)
         if env_id == "HeatAlertsNumeric":
             env = gym.wrappers.TransformReward(env, func=scale_reward)
-        elif env_id == "UgandaNumeric":
+        elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -150,7 +150,8 @@ if __name__ == "__main__":
     # torch.manual_seed(args.seed)
     # torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cpu")
 
     # env setup
     train_env_funs = [

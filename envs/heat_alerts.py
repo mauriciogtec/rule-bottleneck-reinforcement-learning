@@ -27,42 +27,43 @@ class HeatAlertsLang(LanguageWrapper):
     @property
     def task_text(self) -> str:
         return (
-            "Assist officials from the National Weather Service in deciding when to issue public heatwave alerts"
-            " to minimize heat-related hospitalizations. Consider the limited alert budget, weather conditions,"
-            " day of the week, past alert history, and remaining alerts for the season."
-            " Consecutive alerts tend to lose effectiveness."
+            "Assist policymakers in deciding when to issue public warnings to protect against heatwaves"
+            " Your goal is to minimize the long-term impact on health and mortality."
+            " Your decision should be based on the remaining budget, weather conditions,"
+            " day of the week, past warning history, and remaining warnings for the season."
+            " The goal is to issue warnings when they are most effective, minimizing warning fatigue and optimizing for limited resources."
         )
 
     @property
     def action_space_text(self) -> str:
         return (
             "A single integer value representing the decision:\n"
-            "1 = issue an alert\n"
-            "0 = do not issue an alert\n"
-            "Never recommend an alert if the remaining alert budget is 0. Respone in JSON format. For example: {'action': 1}"
+            "1 = issue a warning\n"
+            "0 = do not issue a warning\n"
+            "Warning can only be issued if the 'Remaining number of warnings/budget' is positive. Respone in JSON format. For example: {'action': 1}"
         )
 
     @property
     def example_rules(self) -> List[str]:
         example1 = (
-            '{"background": "Heat alerts are not effective in cold weather", '
-            '"rule": "If the heat index is below 80 F, do not issue an alert", '
-            '"state relevance": "The current heat index is 78 F, which is below the threshold", '
-            '"goal relevance": "The decision-makers goal is to avoid issuing unnecessary alerts if they are not effective"}'
+            '{"background": "Heat warnings are not effective in cold weather", '
+            '"rule": "If the heat index is below 80 F, do not issue a warning", '
+            '"state relevance": "The current heat index is 78 F, which is below the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to avoid issuing unnecessary alerts if they are not effective"}'
         )
 
         example2 = (
-            '{"background": "Repeated alerts can lead to alert fatigue", '
-            '"rule": "If there have been 3 or more alerts in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
-            '"state relevance": "There have been 3 alerts in the last 7 days and the current heat index is 98 F, which is below the threshold", '
-            '"goal relevance": "The decision-makers goal is to avoid alert fatigue by limiting the number of alerts issued"}'
+            '{"background": "Repeated warnings can lead to warning fatigue", '
+            '"rule": "If there have been 3 or more warnings in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
+            '"state relevance": "There have been 3 warnings in the last 7 days and the current heat index is 98 F, which is below the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to avoid alert fatigue by limiting the number of alerts issued"}'
         )
 
         example3 = (
-            '{"background": "Heat alerts are more effective during weekends when people are more likely to be outdoors", '
-            '"rule": "If it is a weekend and the heat index is above 90 F, issue an alert", '
-            '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold", '
-            '"goal relevance": "The decision-makers goal is to issue alerts when they are most effective"}'
+            '{"background": "Heat warnings are more effective during weekends when people are more likely to be outdoors", '
+            '"rule": "If it is a weekend and the heat index is above 90 F, issue an warnings", '
+            '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold"}'
+            # '"goal relevance": "The decision-makers goal is to issue alerts when they are most effective"}'
         )
 
         return [example1, example2, example3]
@@ -76,7 +77,7 @@ class HeatAlertsLang(LanguageWrapper):
         """
         template = (
             "- Location [FIPS code]: {}"
-            "\n- **Remaining alert budget**: {} "
+            "\n- Remaining warning budget: {} "
             "\n- Current date and day of summer: {}"
             "\n- Current heat index: {} F"
             "\n- Quantile of current heat index relative to historical weather in current location: {} %"
@@ -84,10 +85,10 @@ class HeatAlertsLang(LanguageWrapper):
             "\n- Excess heat compared to the last 7 days: {} F"
             "\n- Weekend [yes/no]: {} "
             "\n- Holiday [yes/no]: {} "
-            "\n- Alerts in last 14 days: {} "
-            "\n- Alerts in last 7 days: {} "
-            "\n- Alerts in last 3 days: {} "
-            "\n- Alert streak: {} "
+            "\n- Warnings in last 14 days: {} "
+            "\n- Warnings in last 7 days: {} "
+            "\n- Warnings in last 3 days: {} "
+            "\n- Warning streak: {} "
             "\n- Heat forecasts for next 14 days: {} "
             "\n- Max forecasted per week for the rest of the summer: {}"
         )
@@ -115,6 +116,7 @@ class HeatAlertsLang(LanguageWrapper):
         dates = ep.index[env.t + 1 : env.t + 15]
         f14 = dict(zip(dates, f14))
         f14 = {k: f"{int(v)} F" for k, v in f14.items()}
+        f14 = "\n- " + "\n- ".join([f"{k}: {v}" for k, v in f14.items()])
         # f14 = (f14.round().astype(str) + "%").to_dict()
         # f14 = "\n  * ".join([f"{k}: {v}" for k, v in f14.items()])
 
@@ -125,10 +127,13 @@ class HeatAlertsLang(LanguageWrapper):
         hi_max_weekly = (
             (100 * hi_max_weekly).round(2).astype(int).astype(str) + " F"
         ).to_dict()
+        hi_max_weekly = "\n- " + "\n- ".join(
+            [f"{k}: {v}" for k, v in hi_max_weekly.items()]
+        )
 
         obs_text = template.format(
             env.location,
-            int(obs.remaining_budget) if obs.remaining_budget > 0 else "0 (no alerts left)",
+            int(obs.remaining_budget) if obs.remaining_budget > 0 else "0",
             date,
             int(curr_hi),
             int(heat_qi[env.t]),
