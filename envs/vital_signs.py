@@ -592,7 +592,8 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "Choose the id of the device that will be reallocated to the new incoming patient."
+            # "Choose the id of the device that will be reallocated to the new incoming patient."
+            "Which device do you pick?"
             f" Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices)."
             # "- Always choose a free device if available\n"
             # "- If no free device is available, then choose device i whose current patient is at least risk or"
