@@ -67,6 +67,8 @@ class Args:
     """the interval to log examples"""
     wandb_save_code: bool = True
     """if toggled, the code will be saved to wandb"""
+    dropout: float = 0.0
+    """the dropout rate"""
 
     # Environment
     env_id: str = "Uganda"
@@ -91,7 +93,7 @@ class Args:
     """the number of steps per eval iteration"""
 
     # Algorithm
-    num_rules: int = 1
+    num_rules: int = 5
     """The number of rules for rule-based LLM-only agent"""
 
     ## Embedder
@@ -173,30 +175,33 @@ def main(args: Args):
     state_dim = env.observation_space[0].shape[-1]
     hidden_dim = 16
     num_rules = 5
-    dropout_val = 0.05
+
     proj_type_input = "linear"
 
     actor = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
-        dropout=dropout_val,
+        dropout=args.dropout,
         proj_type=proj_type_input,
     )
     qf1 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
-        dropout=dropout_val,
+        dropout=args.dropout,
         proj_type=proj_type_input,
     )
     qf2 = CrossAttentionNetwork(
         q_dim=rule_dim,
         k_dim=state_dim,
         hidden_dim=hidden_dim,
-        dropout=dropout_val,
+        dropout=args.dropout,
         proj_type=proj_type_input,
     )
+    actor.eval()
+    qf1.eval()
+    qf2.eval()
 
     # Define critic function
     def critic(rules_emb, obs_vec):
@@ -220,7 +225,7 @@ def main(args: Args):
             lang_agent = agents.LLMRulesAgent(
                 task_text=env.metadata["task_text"],
                 action_space_text=env.metadata["action_space_text"],
-                num_rules=args.num_rules,
+                num_rules=1,
                 llm=chat_model,
                 example_rules=example_rules,
             )
@@ -230,7 +235,7 @@ def main(args: Args):
             lang_agent = agents.LLMRulesAgentNoThoughts(
                 task_text=env.metadata["task_text"],
                 action_space_text=env.metadata["action_space_text"],
-                num_rules=args.num_rules,
+                num_rules=1,
                 llm=chat_model,
                 example_rules=example_rules,
             )
@@ -269,15 +274,16 @@ def main(args: Args):
                 use_thoughts="no-thoughts" not in agent,
                 critic=critic,
             )
-            best_actor, best_qf1, best_qf2 = best_model
-            lang_agent.actor = best_actor
+            lang_agent.deterministic = True
+            # best_actor, best_qf1, best_qf2 = best_model
+            # lang_agent.actor = best_actor
 
-            def critic(rules_emb, obs_vec):
-                q1 = best_qf1(rules_emb, obs_vec)
-                q2 = best_qf2(rules_emb, obs_vec)
-                return torch.min(q1, q2)
+            # def critic(rules_emb, obs_vec):
+            #     q1 = best_qf1(rules_emb, obs_vec)
+            #     q2 = best_qf2(rules_emb, obs_vec)
+            #     return torch.min(q1, q2)
 
-            lang_agent.critic = critic
+            # lang_agent.critic = critic
 
         else:
             raise ValueError(f"Unknown baseline: {args.agent}")
