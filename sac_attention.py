@@ -167,8 +167,8 @@ def make_env(env_id, seed, max_episode_steps=None):
 
     def thunk():
         env = gym.make(env_id)
-        if env_id == "HeatAlerts":
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
+        # if env_id == "HeatAlerts":
+        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
@@ -574,8 +574,8 @@ def main(args: Args):
         qf1.load_state_dict(checkpoint["qf1_state"])
         qf2.load_state_dict(checkpoint["qf2_state"])
         if args.autotune:
-            log_alpha = checkpoint["log_alpha"]
-            alpha = log_alpha.exp().item()
+            # log_alpha = checkpoint["log_alpha"]
+            # alpha = log_alpha.exp().item()
             a_optimizer.load_state_dict(checkpoint["a_optimizer_state"])
         q_optimizer.load_state_dict(checkpoint["q_optimizer_state"])
         actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state"])

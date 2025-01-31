@@ -14,11 +14,12 @@ MimicIII = partial(VitalSignsSimpleLang, "models/mimic-iii.npz", time_discount=0
 MimicIV = partial(VitalSignsSimpleLang, "models/mimic-iv.npz", time_discount=0.95)
 HeatAlerts = partial(
     HeatAlertsLang,
-    budget=10,
-    sample_budget=True,
+    budget=5,
+    sample_budget=False,
     random_starts=True,
-    top_k_fips=10,
-    min_effectiveness=0.1,
+    reward_type="saved",
+    top_k_fips=1,
+    years=[2010]
 )
 BuySellSimple = partial(BuySellSimpleLang)
 
@@ -27,11 +28,12 @@ MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discoun
 MimicIVNumeric = partial(VitalSignsSimple, "models/mimic-iv.npz", time_discount=0.95)
 HeatAlertsNumeric = partial(
     HeatAlertEnv,
-    budget=10,
-    sample_budget=True,
+    budget=5,
+    sample_budget=False,
+    reward_type="saved",
     random_starts=True,
-    min_effectiveness=0.1,
     top_k_fips=1,
+    years=[2010]
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
 

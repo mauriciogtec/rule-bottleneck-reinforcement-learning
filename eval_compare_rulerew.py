@@ -51,6 +51,9 @@ class Args:
     rbrl_checkpoint: str
     """the path to the rule-based RL checkpoint"""
 
+    rulerew_checkpoint: str
+    """the path to the rule-based non-reward RL checkpoint"""
+
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
     seed: int = 1
@@ -245,7 +248,7 @@ def main(args: Args):
                 action_space_text=env.metadata["action_space_text"],
                 llm=chat_model,
             )
-        elif agent.startswith("rbrl"):
+        elif agent == "rbrl":
             checkpoint = load_checkpoint(args.rbrl_checkpoint, "cpu")
             # logging.info(
             #     f"Resuming training from checkpoint at step {checkpoint['global_step']}."
@@ -276,18 +279,60 @@ def main(args: Args):
             )
             lang_agent.deterministic = True
 
-            best_actor, best_qf1, best_qf2 = best_model
-            lang_agent.actor = best_actor
+            # best_actor, best_qf1, best_qf2 = best_model
+            # lang_agent.actor = best_actor
 
-            def critic(rules_emb, obs_vec):
-                q1 = best_qf1(rules_emb, obs_vec)
-                q2 = best_qf2(rules_emb, obs_vec)
-                return torch.min(q1, q2)
+            # def critic(rules_emb, obs_vec):
+            #     q1 = best_qf1(rules_emb, obs_vec)
+            #     q2 = best_qf2(rules_emb, obs_vec)
+            #     return torch.min(q1, q2)
 
-            lang_agent.critic = critic
+            # lang_agent.critic = critic
+        
+        elif agent.startswith("rbrl-expl-rew"):
+            checkpoint = load_checkpoint(args.rulerew_checkpoint, "cpu")
+            # logging.info(
+            #     f"Resuming training from checkpoint at step {checkpoint['global_step']}."
+            # )
+            actor.load_state_dict(checkpoint["actor_state"])
+            qf1.load_state_dict(checkpoint["qf1_state"])
+            qf2.load_state_dict(checkpoint["qf2_state"])
+
+            best_total_reward = checkpoint["best_total_reward"]
+            best_model = checkpoint["best_model"]
+            best_model_epoch = checkpoint["best_model_epoch"]
+            # buffer = checkpoint["buffer"]
+            # log best model epoch
+            logging.info(f"Loading model from best epoch: {best_model_epoch}")
+
+            example_rules = env.metadata["example_rules"]
+            example_rules = "".join(f"- {x}\n" for x in example_rules)
+            lang_agent = agents.RulesSelectorActorCritic(
+                actor=actor,
+                task_text=env.metadata["task_text"],
+                action_space_text=env.metadata["action_space_text"],
+                num_rules=args.num_rules,
+                example_rules=example_rules,
+                llm=chat_model,
+                embededder=embed_model,
+                use_thoughts="no-thoughts" not in agent,
+                critic=critic,
+            )
+            lang_agent.deterministic = True
+
+            # best_actor, best_qf1, best_qf2 = best_model
+            # lang_agent.actor = best_actor
+
+            # def critic(rules_emb, obs_vec):
+            #     q1 = best_qf1(rules_emb, obs_vec)
+            #     q2 = best_qf2(rules_emb, obs_vec)
+            #     return torch.min(q1, q2)
+
+            # lang_agent.critic = critic
 
         else:
             raise ValueError(f"Unknown baseline: {args.agent}")
+
         lang_agents[agent] = lang_agent
 
     next_state_vec, next_state_text = obs
@@ -424,6 +469,6 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
 
     # make agent list
-    args.agent_list = ["base_agent", "no_thoughts_agent", "llm_rules_agent",  "rbrl", "rbrl-no-thoughts"]
+    args.agent_list = ["rbrl", "rbrl-expl-rew-0.0"]
 
     main(args)

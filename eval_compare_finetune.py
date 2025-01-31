@@ -50,6 +50,8 @@ def load_checkpoint(checkpoint_path, device):
 class Args:
     rbrl_checkpoint: str
     """the path to the rule-based RL checkpoint"""
+    finetune_checkpoint: str
+    """the path to the finetune checkpoint
 
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""

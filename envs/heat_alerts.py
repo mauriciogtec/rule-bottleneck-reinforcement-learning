@@ -31,7 +31,9 @@ class HeatAlertsLang(LanguageWrapper):
             " Your goal is to minimize the long-term impact on health and mortality."
             " Your decision should be based on the remaining budget, weather conditions,"
             " day of the week, past warning history, and remaining warnings for the season."
-            " The goal is to issue warnings when they are most effective, minimizing warning fatigue and optimizing for limited resources."
+            " The goal is to issue warnings when they are most effective with a budget on the possible number of warnings."
+            " The protective effect of warnings only last for a day or two."
+            " However, warning fatigue is possible when warnings are issued in a row."
         )
 
     @property
@@ -46,24 +48,21 @@ class HeatAlertsLang(LanguageWrapper):
     @property
     def example_rules(self) -> List[str]:
         example1 = (
-            '{"background": "Heat warnings are not effective in cold weather", '
-            '"rule": "If the heat index is below 80 F, do not issue a warning", '
-            '"state relevance": "The current heat index is 78 F, which is below the threshold"}'
-            # '"goal relevance": "The decision-makers goal is to avoid issuing unnecessary alerts if they are not effective"}'
+            '{"background": "Warnings are more effective when heat is less expected.", '
+            '"rule": "If it is early/late in the summer and the heat index is high and unexpected.", '
+            '"state relevance": "The current heat index is 95 F. It is late in the summer. There are alerts remaining. It has been chill lately."}'
         )
 
         example2 = (
             '{"background": "Repeated warnings can lead to warning fatigue", '
             '"rule": "If there have been 3 or more warnings in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
             '"state relevance": "There have been 3 warnings in the last 7 days and the current heat index is 98 F, which is below the threshold"}'
-            # '"goal relevance": "The decision-makers goal is to avoid alert fatigue by limiting the number of alerts issued"}'
         )
 
         example3 = (
             '{"background": "Heat warnings are more effective during weekends when people are more likely to be outdoors", '
             '"rule": "If it is a weekend and the heat index is above 90 F, issue an warnings", '
             '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold"}'
-            # '"goal relevance": "The decision-makers goal is to issue alerts when they are most effective"}'
         )
 
         return [example1, example2, example3]

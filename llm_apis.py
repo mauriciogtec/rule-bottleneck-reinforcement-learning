@@ -120,12 +120,15 @@ def llama_prompt_from_messages(
         str: Formatted string for Llama 3.
     """
     # Initialize the prompt with the begin_of_text token
-    prompt = ""
-    for m in messages:
-        prompt += (
-            f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}<|eot_id|>"
-        )
-    prompt += "<|start_header_id|>assistant<|end_header_id|>"
+    import transformers
+    tokenizer = transformers.AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    # prompt = ""
+    # for m in messages:
+    #     prompt += (
+    #         f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}\n<|eot_id|"
+    #     )
+    # prompt += "<|start_header_id|>assistant<|end_header_id|>"
     prompt = prompt.replace("(", "[")
     prompt = prompt.replace(")", "]")
     return prompt
