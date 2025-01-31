@@ -84,7 +84,7 @@ class Args:
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    max_episode_steps: int = 64
+    max_episode_steps: int = 32
     """the maximum number of steps per episode"""
 
     # to be filled in runtime
@@ -106,7 +106,7 @@ def make_env(env_id, seed, max_episode_steps=None):
         env = gym.make(env_id)
         if env_id == "HeatAlertsNumeric":
             env = gym.wrappers.TransformReward(env, func=scale_reward)
-        elif env_id == "UgandaNumeric":
+        elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -122,7 +122,7 @@ if __name__ == "__main__":
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
 
-    run_name = f"numeric_ppo_eval__{args.env_id}__{args.seed}__{int(time.time())}"
+    run_name = f"numeric_ppo_eval__{args.env_id}__{args.seed}__{args.exp_name}__{int(time.time())}"
     if args.track:
         import wandb
 
@@ -132,6 +132,8 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
+            id=run_name,
+            resume='auto',
             monitor_gym=True,
             save_code=True,
         )
@@ -148,7 +150,8 @@ if __name__ == "__main__":
     # torch.manual_seed(args.seed)
     # torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cpu")
 
     # env setup
     train_env_funs = [
@@ -236,7 +239,7 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
-            global_step += args.num_envs
+            global_step += 1  # args.num_envs # changed to 1 to align with sac
             obs[step] = next_obs
             dones[step] = next_done
 

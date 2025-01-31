@@ -82,7 +82,7 @@ class VitalSignsSimple(Env):
         intervention_success_rate=0.7,
         variability_window=5,
         # joining_number=2,  # Here, vital signs only advance after N patients join
-        joining_interval=5,  # Here, simulate the number of internal vital signs steps
+        # joining_interval=5,  # Here, simulate the number of internal vital signs steps
         T: Optional[int] = None,  # planning length / for finite horizon evaluation
         time_discount: Optional[float] = 0.99,  # discount factor for time,
         ignore_free_penalty: Optional[float] = 1.0,
@@ -111,7 +111,7 @@ class VitalSignsSimple(Env):
         # self.t_max = t_max
         # self.joining_number = joining_number
         self.system_duration = system_duration
-        self.joining_interval = joining_interval
+        # self.joining_interval = joining_interval
 
         self.degree_of_arm_noise = degree_of_arm_noise
         self.intervention_success_rate = intervention_success_rate
@@ -575,48 +575,15 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def task_text(self) -> str:
         return (
-            # "You are an agent assisting doctors from a hospital to allocate wearable"
-            # " devices to monitor and improve patients' vital signs."
-            # " The vital signs considered include pulse rate, respiratory rate, SPO2,"
-            # " and covered skin temperature.\n\n"
-            # " Each device can be allocated to a patient to help manage their"
-            # " vital signs. It is known that patients wearing the device can improve"
-            # " their vital signs when outside the normal range, and prevent abnormality.\n\n"
-            # "The normal vital signs range is defined as follows: A heart rate above 120,"
-            # " a temperature above 38°C, a respiratory rate above 30, and an SPO2 rate below 90.\n\n"
-            # "The reward function (negative of cost) of the decision problem is calculated as "
-            # "follows: For a heart rate h, the penalty is -exp(|h-120|/17). For a temperature t,"
-            # " the penalty is -exp(|t-38.0|/2). For a respiratory rate r, the penalty is -exp(|r-30|/5)."
-            # " For an SPO2 rate s, the penalty is -exp(|s-90|/4).\n\n"
-            # "The abnormal vital signs of patients wearing a device are reduced towards the normal range."
-            # " The effect of the intervention is probabilistic, with the magnitude of the adjustment"
-            # " varying for each vital sign.\n\n"
-            # "### Problem description\n\n"
-            # "At each timestep, you will be asked which device to allocate to the new incoming patient."
-            # " Since there are only a limited number of devices, when a device is not free, you will need device "
-            # " currently in use will be reallocated to the new incoming patient."
-            # " You will be given the list of devices and information about whether it is currently assigned to"
-            # " a patient, along with information about the vital signs of the patient.\n\n"
-            # "New patients **always** need to be assigned a device."
-            # " The cost function will continue to be calculated for the previous holder until they leave the"
-            # f" system. A patient can wear a device for a maximum of {self.env.system_duration} timesteps, and then they"
-            # " exit the system.\n\n"
-            # "### Goal\n\n"
-            # "The goal is to minimize the long-term cumulative cost of abnormal vital signs by"
-            # " prioritizing assigning free devices to the incoming patients. Or, when no devices are free, prioritizing "
-            # " taking away the device from a patient who has the least necessity for it, e.g., due to normal signs and low risk."
             "You are assisting doctors from a hospital in making optimized"
             " decisions about which patient should receive a vital sign monitor device."
-            " It is known that wearing the device can help improve the patient's vital signs. "
-            " and prevent abnormality."
+            " The device can help improve the patient's vital signs. "
             " Your goal is to ensure the optimal allocation of devices, such that patients with a higher"
             " risk continue wearing a device until their vital signs are within the normal range. Since"
             " there is a limited number of devices, you will need to decide which patients should stop"
             " wearing the device to reallocate it to the incoming patients. Incoming patients must"
             " always receive a device.\n"
-            "Normal Vital Sign Range: To define the normal range, we primarily follow the thresholds used for alerts signaling abnormal"
-            " vital sings in the study on vital sign monitoring devices for maternal health in Mbarara (Boatin et al. 2021) featured earlier.\n"
-            "Cost Function: A cost will be inccoured if the heart rate exceeds 120, the temperature exceeds 38C, the respiratory rate exceeds 30,"
+            "Cost Function: A cost will be inccoured if the pulse rate exceeds 120, the temperature exceeds 38C, the respiratory rate exceeds 30,"
             " or if the SPO2 rate falls below 90. The cost is calculated as an exponential function of the deviation from these thresholds.\n"
             "Effect of Intervention: The abnormal vital signs of patients wearing a device are reduced towards their normal range with an estimated"
             " 70% success rate. "
@@ -624,20 +591,14 @@ class VitalSignsSimpleLang(LanguageWrapper):
 
     @property
     def action_space_text(self) -> str:
-        # return (
-        #     "Choose the id of the device that will be reallocate to the new incoming patient."
-        #     f"Your answer should be a single integer i from 0 to {self.env.budget - 1} (the number of devices) such that:\n"
-        #     "- If device i is currently worn by a patient, then this patient will stop benefiting from the intervention.\n"
-        #     "- If device i is free, then no active patient will stop benefiting from the intervention."
-        #     "Your answer should start with the device id as an integer value and do not provide any additional information."
-        # )
         return (
-            "Choose the id of the device that will be reallocated to the new incoming patient."
-            f"Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices) such that:\n\n"
-            "- Always choose a free device if available\n"
-            "- If no free device is available, then choose device i whose current patient is at least risk or"
-            " would benefit less from wearing the device."
-            " Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}"
+            # "Choose the id of the device that will be reallocated to the new incoming patient."
+            "Which device do you pick?"
+            f" Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices)."
+            # "- Always choose a free device if available\n"
+            # "- If no free device is available, then choose device i whose current patient is at least risk or"
+            # " would benefit less from wearing the device."
+            " Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -698,24 +659,22 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def example_rules(self) -> List[str]:
         rule_1 = (
-            '{"background": "There is no advantage in having unused wearable devices",'
-            ' "rule": "If there are free devices, always choose them over non-free devices",'
-            ' "state relevance": "Currently, devices 0, 1 and 3 are free",'
-            ' "goal relevance": "The goal is to maximize the number of patients wearing a device"}'
+            '{"background": "If a device is free, no patient is receiving the benefit.",'
+            ' "rule": "If device i is free, assign it to the new patient.",'
+            ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
         )
 
         rule_2 = (
             '{"background": "Patients with high volatility in their vital signs are at higher risk of abnormal vital signs even if their last observed signs are normal",'
-            ' "rule": "Prioritize reallocating the devices of patients with low volatility in their vital signs if there are no free devices."n'
-            ' "state relevance": "Currently, no device is free. All patients have normal signs; however, patient wearing device #3 has a high volatility in its blood pressure (128 +- 30)",'
-            ' "goal relevance": "Reallocating the device of a patient with low volatility is safer. The agent\'s goal is to ensure patients at risk are wearing a device"}'
+            ' "rule": "When there are no free devices, reallocate the devices of patients with low volatility and normal vital signs."n'
+            ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
         )
 
         rule_3 = (
             '{"background": "Patients with abnormal vital signs will benefit from continued use of the device",'
             ' "rule": "Prioritize reallocating the devices of patients with normal vital signs over those with abnormal vital signs",'
-            ' "state relevance": "In the current problem state, the patient wearing device #2 has low SPO2 (85%), while the vital signs of other patients are normal",'
-            ' "goal relevance": "The agent goal is to maximize the benefits to wear the device to revert abnormal vital signs to normal"}'
+            ' "state relevance": "The patient wearing device #2 is at risk because it has low SPO2 (85%), so Device ID should *not* be reallocated. Patients wearing devices 0, 1, 3, 4 are not at risk, so they are candidate actions."}'
+
         )
         return [rule_1, rule_2, rule_3]
 

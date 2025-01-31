@@ -1,6 +1,6 @@
 import collections
 import json
-import logging
+import transformers
 import os
 import time
 from typing import Any, Dict, List, Literal, NamedTuple
@@ -17,7 +17,7 @@ class HUITMistral:
     """
     Custom chat model for a HUIT AWS Bendrock endpoint.
     **Only for internal use at Harvard.
-"""
+    """
 
     def __init__(
         self,
@@ -106,6 +106,34 @@ class HUITMistral:
         return Reponse(content=content)
 
 
+def llama_prompt_from_messages(
+    messages: List[Dict[Literal["role", "content"], str]]
+) -> str:
+    """
+    Formats OpenAI-style messages for Llama 3.
+
+    Args:
+        messages (list): List of dictionaries representing messages, each with 'role'
+                        and 'content' keys.
+
+    Returns:
+        str: Formatted string for Llama 3.
+    """
+    # Initialize the prompt with the begin_of_text token
+    import transformers
+    tokenizer = transformers.AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    # prompt = ""
+    # for m in messages:
+    #     prompt += (
+    #         f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}\n<|eot_id|"
+    #     )
+    # prompt += "<|start_header_id|>assistant<|end_header_id|>"
+    prompt = prompt.replace("(", "[")
+    prompt = prompt.replace(")", "]")
+    return prompt
+
+
 class HUITMeta:
     """
     Custom chat model for a HUIT AWS Bendrock endpoint.
@@ -130,28 +158,28 @@ class HUITMeta:
     def max_tokens_key(self) -> str:
         return "max_gen_len"
 
-    @staticmethod
-    def prompt_from_messages(
-        messages: List[Dict[Literal["role", "content"], str]]
-    ) -> str:
-        """
-        Formats OpenAI-style messages for Llama 3.
+    # @staticmethod
+    # def prompt_from_messages(
+    #     messages: List[Dict[Literal["role", "content"], str]]
+    # ) -> str:
+    #     """
+    #     Formats OpenAI-style messages for Llama 3.
 
-        Args:
-            messages (list): List of dictionaries representing messages, each with 'role'
-                            and 'content' keys.
+    #     Args:
+    #         messages (list): List of dictionaries representing messages, each with 'role'
+    #                         and 'content' keys.
 
-        Returns:
-            str: Formatted string for Llama 3.
-        """
-        # Initialize the prompt with the begin_of_text token
-        prompt = ""
-        for m in messages:
-            prompt += f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}<|eot_id|>"
-        prompt += "<|start_header_id|>assistant<|end_header_id|>"
-        prompt = prompt.replace("(", "[")
-        prompt = prompt.replace(")", "]")
-        return prompt
+    #     Returns:
+    #         str: Formatted string for Llama 3.
+    #     """
+    #     # Initialize the prompt with the begin_of_text token
+    #     prompt = ""
+    #     for m in messages:
+    #         prompt += f"<|start_header_id|>{m['role']}<|end_header_id|>{m['content']}<|eot_id|>"
+    #     prompt += "<|start_header_id|>assistant<|end_header_id|>"
+    #     prompt = prompt.replace("(", "[")
+    #     prompt = prompt.replace(")", "]")
+    #     return prompt
 
     def invoke(
         self,
@@ -162,7 +190,7 @@ class HUITMeta:
         **kwargs: Any,
     ) -> NamedTuple:
         # 1. Convert from LangChain messages -> the custom format
-        prompt = self.prompt_from_messages(messages)
+        prompt = llama_prompt_from_messages(messages)
 
         # 2. Construct the payload
         payload = json.dumps(
@@ -282,6 +310,45 @@ class HUITOpenAI:
         return Reponse(content=content)
 
 
+class HFMetaWrapper:
+    def __init__(
+        self,
+        model: transformers.PreTrainedModel,
+        tokenizer: transformers.PreTrainedTokenizer,
+    ):
+        self.llm = model
+        self.tokenizer = tokenizer
+        self.device = next(self.llm.parameters()).device
+
+    def invoke(
+        self,
+        messages: List[Dict[Literal["role", "content"], str]],
+        max_tokens: int = 100,
+        temperature: float = 1.0,
+        top_p: float = 0.9,
+        **kwargs: Any,
+    ) -> NamedTuple:
+        messages = llama_prompt_from_messages(messages)
+
+        # use the hf generate method
+        inputs = self.tokenizer(messages, return_tensors="pt").to(self.device)
+        outputs = self.llm.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+
+        # remove the input tokens from the outputs
+        outputs = outputs[:, inputs["input_ids"].shape[-1] :]
+        content = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        return Reponse(content=content)
+
+
 ModelAPIDict = {
     "google/gemma-2b-it": ChatTogether,
     "meta-llama/Llama-3.2-3B-Instruct-Turbo": ChatTogether,
@@ -322,6 +389,7 @@ def invoke_with_retries(
     max_attempts: int = 10,
     wait_time_between_attempts: int = 60,
     temperature=0.5,
+    max_tokens=100,
     **kwargs,
 ):
     attempts = 0
@@ -330,7 +398,9 @@ def invoke_with_retries(
         if attempts > max_attempts:
             raise RuntimeError("Failed to get a response from the endpoint.")
         try:
-            result = model.invoke(messages, *args, temperature=temperature, **kwargs)
+            result = model.invoke(
+                messages, *args, temperature=temperature, max_tokens=max_tokens, **kwargs
+            )
             return result
         except Exception as e:
             warnings.warn(f"Attempt {attempts} failed: {e}")

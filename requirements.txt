@@ -6,7 +6,13 @@ torch
 torchvision
 torchaudio
 torch-summary
+transformers
+accelerator
+bitsandbytes
+peft
+tyro
+trl
 jsonlines
 wandb
 scikit-learn
-git+https://github.com/NSAPH-Projects/weather2alert@dev
+# git+https://github.com/NSAPH-Projects/weather2alert@dev

@@ -8,7 +8,6 @@ import time
 from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
-from math import ceil
 from typing import Literal, Optional
 
 import gymnasium as gym
@@ -29,12 +28,7 @@ from agents import RulesSelectorActorCritic, PureLanguageAgents
 from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
 
-# configure logging
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s]: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.INFO,
-)
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
@@ -97,15 +91,15 @@ class Args:
     """the frequency of training updates"""
     warmup_updates: int = 1
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 16
+    actor_updates: int = 4
     """the number of updates to the actor per update cycle"""
     critic_updates: int = 4
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.01
+    alpha: float = 0.1
     """Entropy regularization coefficient."""
-    autotune: bool = False
+    autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
@@ -141,11 +135,19 @@ class Args:
     """the reward coefficient for the rules"""
     in_context_learning: bool = True
     """if toggled, the agent will learn in context"""
+    optimize_thoughts_only: bool = False
+    """if toggled, the agent will optimize thoughts only, not structured rules"""
+
+    # Options
+    rule_type: Literal["rule", "free"] = "rule"
+    """the type of the rule"""
+    conversation_history_in_explanation: bool = True
+    """if toggled, the agent will use conversation history in explanation"""
 
     # Buffer collection mode
     buffer_collection_steps: int = 64
     """the number of steps to collect data to the buffer"""
-    load_buffer: bool = True
+    load_buffer: bool = False
     """if toggled, the agent will load the buffer from the pickle file if it exists"""
     buffer_size: int = 4096
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -165,10 +167,8 @@ def make_env(env_id, seed, max_episode_steps=None):
 
     def thunk():
         env = gym.make(env_id)
-        if env_id == "HeatAlerts":
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
-        elif env_id == "Uganda":
-            env = gym.wrappers.FlattenObservation(env)
+        # if env_id == "HeatAlerts":
+        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
@@ -389,8 +389,22 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.llm}__{args.seed}"
+    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
+
+
+    # configure logging
+    log_file = f"logs/{run_id}.err"
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s]: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
     ckpt_path = f"checkpoints/{run_name}.state"
     text_logs_path = f"text_logs/{run_name}.jsonl"
@@ -410,17 +424,21 @@ def main(args: Args):
 
     if args.track:
         import wandb
-
+        # replace : with - to avoid wandb bug
+        wandb_run_name = run_name.replace(":", "-")
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=run_name,
+            name=wandb_run_name,
+            id=wandb_run_name,
             monitor_gym=True,
-            save_code=True,
-            resume=args.resume,
+            save_code=False,
+            resume='auto',
+            settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
+        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -511,6 +529,7 @@ def main(args: Args):
         use_thoughts=args.thoughts,
         critic=critic,
         in_context_learning=args.in_context_learning,
+        optimize_thoughts_only=args.optimize_thoughts_only,
     )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
@@ -555,8 +574,8 @@ def main(args: Args):
         qf1.load_state_dict(checkpoint["qf1_state"])
         qf2.load_state_dict(checkpoint["qf2_state"])
         if args.autotune:
-            log_alpha = checkpoint["log_alpha"]
-            alpha = log_alpha.exp().item()
+            # log_alpha = checkpoint["log_alpha"]
+            # alpha = log_alpha.exp().item()
             a_optimizer.load_state_dict(checkpoint["a_optimizer_state"])
         q_optimizer.load_state_dict(checkpoint["q_optimizer_state"])
         actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state"])
@@ -627,7 +646,6 @@ def main(args: Args):
         rewards = env_rewards + args.rule_reward_coef * sel_rewards
         entropy = [x["entropy"] for x in outputs]
         sel_probs = [x["sel_logprob"].exp() for x in outputs]
-        _rolling_returns.extend(list(rewards.cpu().numpy()))
 
         # Get the next rules
         outputs = deepcopy(outputs)
@@ -648,6 +666,8 @@ def main(args: Args):
                     writer.add_scalar("charts/episodic_length", l, global_step)
 
                     logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
+
+                    _rolling_returns.append(r)
 
         for j in range(args.num_envs):
             if not autoreset[j]:
@@ -741,6 +761,9 @@ def main(args: Args):
             )
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
+            if args.track:
+                examples_table.add_data(global_step, run_id, example)
+                wandb.log({"examples": examples_table})
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
@@ -931,5 +954,11 @@ if __name__ == "__main__":
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
         args.agent += "-no-in-context"
+    if args.rule_reward_coef != 1.0:
+        args.agent += f"-expl-rew-{args.rule_reward_coef}"
+    if args.optimize_thoughts_only:
+        args.agent += "-oto"
+    
+    args.agent += "--" + args.llm
 
     main(args)
