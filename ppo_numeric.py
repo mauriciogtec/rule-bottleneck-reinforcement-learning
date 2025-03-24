@@ -15,7 +15,6 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 import envs as E
-import layers
 
 
 @dataclass
@@ -84,7 +83,7 @@ class Args:
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
-    max_episode_steps: int = 32
+    max_episode_steps: int = 16
     """the maximum number of steps per episode"""
 
     # to be filled in runtime
