@@ -107,6 +107,8 @@ def make_env(env_id, seed, max_episode_steps=None):
             env = gym.wrappers.TransformReward(env, func=scale_reward)
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
+        elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
@@ -277,7 +279,8 @@ if __name__ == "__main__":
 
                 # ALGO LOGIC: action logic
                 with torch.no_grad():
-                    action_logits = actor_network(next_obs)
+                    next_obs = torch.Tensor(next_obs).to(device)
+                    action_logits = actor_network(torch.Tensor(next_obs).to(device))
                     action_dist = Categorical(logits=action_logits)
                     action = action_dist.sample()
                     logprob = action_dist.log_prob(action)
@@ -288,9 +291,8 @@ if __name__ == "__main__":
                     action.cpu().numpy()
                 )
 
-            next_done = terminations
             next_obs = torch.Tensor(next_obs).to(device)
-            next_done = torch.Tensor(next_done).to(device)
+            next_done = torch.Tensor(terminations).to(device)
             values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
