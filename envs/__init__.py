@@ -28,12 +28,14 @@ MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discoun
 MimicIVNumeric = partial(VitalSignsSimple, "models/mimic-iv.npz", time_discount=0.95)
 HeatAlertsNumeric = partial(
     HeatAlertEnv,
-    budget=5,
+    budget=10,
     sample_budget=False,
+    effectiveness_type="data",
     reward_type="saved",
     random_starts=True,
-    top_k_fips=1,
-    years=[2010]
+    penalty=0.1,
+    top_k_fips=10,
+    # years=[2010],
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
 

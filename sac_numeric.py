@@ -57,7 +57,7 @@ class Args:
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    max_episode_steps: Optional[int] = 16
+    max_episode_steps: Optional[int] = 32
     """the maximum number of steps per episode"""
     min_temperature_threshold: float = 0.0
     """Only used for the heat alert environment"""
@@ -87,7 +87,7 @@ class Args:
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.01
+    alpha: float = 0.1
     """Entropy regularization coefficient."""
     autotune: bool = False
     """automatic tuning of the entropy coefficient"""
