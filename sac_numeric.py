@@ -63,7 +63,7 @@ class Args:
     """Only used for the heat alert environment"""
 
     # Algorithm
-    total_timesteps: int = 1280
+    total_timesteps: int = 20000
     """total timesteps of the experiments"""
     gamma: float = 0.95
     """the discount factor gamma"""
@@ -87,7 +87,7 @@ class Args:
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
-    alpha: float = 0.1
+    alpha: float = 0.01
     """Entropy regularization coefficient."""
     autotune: bool = False
     """automatic tuning of the entropy coefficient"""
@@ -160,6 +160,8 @@ def make_env(env_id, seed, max_episode_steps=None, eval=False):
             env = gym.wrappers.TransformReward(env, func=scale_reward)
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
+        elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
