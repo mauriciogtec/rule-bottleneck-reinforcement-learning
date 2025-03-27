@@ -14,6 +14,7 @@ import gymnasium as gym
 import jsonlines
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchsummary
@@ -21,11 +22,11 @@ import tyro
 from langchain_together import TogetherEmbeddings
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
+from torch.distributions.categorical import Categorical
+
 
 import buffers
 import envs as E  # registers the gym environments during import
-from layers import CrossAttentionNetwork
-from llm_apis import ValidLLMs, get_llm_api
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -48,28 +49,18 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
     log_frequency: int = 1
     """the logging frequency of the algorithm"""
-    log_examples_interval: int = 20
-    """the logging frequency of the examples"""
-    resume: bool = False
-    """if toggled, tries to resume training from the latest checkpoint"""
-    ckpt_interval: int = 200
-    """the saving interval of the model"""
-    overwrite_ckpt: bool = False
-    """if toggled and resuming is on, it will start fresh in resume mode, otherwise ignored"""
 
     # Environment
-    env_id: str = "Uganda"
+    env_id: str = "UgandaNumeric"
     """the id of the environment"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    parallel_pipeline: bool = True
-    """if toggled, the pipeline will be parallelized"""
-    max_episode_steps: Optional[int] = 16
+    max_episode_steps: Optional[int] = 32
     """the maximum number of steps per episode"""
+    min_temperature_threshold: float = 0.0
+    """Only used for the heat alert environment"""
 
     # Algorithm
     total_timesteps: int = 1280
@@ -98,7 +89,7 @@ class Args:
     """the frequency of updates for the target networks"""
     alpha: float = 0.1
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
@@ -108,50 +99,46 @@ class Args:
     # Eval
     eval: bool = True
     """if toggled, the agent will be evaluated"""
-    num_eval_episodes: int = 4
+    num_eval_episodes: int = 16
     """the number of episodes to evaluate the agent"""
-    eval_interval: int = 64
+    eval_interval: int = 1
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""
     rolling_returns_window: int = 16
     """the rolling rewards window"""
-    proj_type: Literal["linear", "random"] = "linear"
-    """if toggled, the agent will use random projection"""
 
     # LLM
-    num_rules: int = 5
-    """The number of rules for rule-based LLM-only agent"""
-    llm: ValidLLMs = "gpt-4o-mini-huit"
-    """the language model to use"""
-    embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
-    """the language model to use for embeddings"""
-    embed_dim: int = 768
-    """the dimension of the embeddings"""
+    # num_rules: int = 5
+    # """The number of rules for rule-based LLM-only agent"""
+    # llm: ValidLLMs = "gpt-4o-mini-huit"
+    # """the language model to use"""
+    # embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
+    # """the language model to use for embeddings"""
+    # embed_dim: int = 768
+    # """the dimension of the embeddings"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    rule_reward_coef: float = 1.0
-    """the reward coefficient for the rules"""
-    in_context_learning: bool = True
-    """if toggled, the agent will learn in context"""
-    optimize_thoughts_only: bool = False
-    """if toggled, the agent will optimize thoughts only, not structured rules"""
+    # rule_reward_coef: float = 1.0
+    # """the reward coefficient for the rules"""
+    # in_context_learning: bool = True
+    # """if toggled, the agent will learn in context"""
+    # optimize_thoughts_only: bool = False
+    # """if toggled, the agent will optimize thoughts only, not structured rules"""
 
-    # Options
-    rule_type: Literal["rule", "free"] = "rule"
-    """the type of the rule"""
-    conversation_history_in_explanation: bool = True
-    """if toggled, the agent will use conversation history in explanation"""
+    # # Options
+    # rule_type: Literal["rule", "free"] = "rule"
+    # """the type of the rule"""
+    # conversation_history_in_explanation: bool = True
+    # """if toggled, the agent will use conversation history in explanation"""
 
     # Buffer collection mode
-    buffer_collection_steps: int = 64
-    """the number of steps to collect data to the buffer"""
     load_buffer: bool = False
     """if toggled, the agent will load the buffer from the pickle file if it exists"""
     buffer_size: int = 4096
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
 
-    agent: Optional[str] = None  # to be set by the agent
+    agent: Optional[str] = "sac_numeric"  # to be set by the agent
     """the agent to use"""
     thoughts: bool = True
     """if toggled, the agent will use thoughts"""
@@ -160,33 +147,25 @@ class Args:
     compile_torch: bool = False  # needs fix
 
 
-def make_env(env_id, seed, max_episode_steps=None):
+def make_env(env_id, seed, max_episode_steps=None, eval=False):
     def scale_reward(r):
         return r / max_episode_steps
 
     def thunk():
         env = gym.make(env_id)
-        # if env_id == "HeatAlerts":
-        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
+        if env_id == "HeatAlertsNumeric":
+            env.min_temperature_threshold = args.min_temperature_threshold
+            if eval:
+                env.penalty = 0.0  # no penalty during evaluation
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
+        elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
+            env = gym.wrappers.FlattenObservation(env)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
 
     return thunk
-
-
-def save_checkpoint(state, checkpoint_path):
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    torch.save(state, checkpoint_path)
-
-
-def load_checkpoint(checkpoint_path, device):
-    if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device)
-    else:
-        logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
-        return None
 
 
 def update_critic(
@@ -199,8 +178,9 @@ def update_critic(
     qf1_target,
     qf2_target,
     q_optimizer,
+    actor,
     device,
-    lang_agent,
+    # lang_agent,
 ):
     """
     Update the critic networks (qf1 and qf2) using the sampled data from the replay buffer.
@@ -213,8 +193,8 @@ def update_critic(
         qf1, qf2: Critic networks to be updated.
         qf1_target, qf2_target: Target critic networks.
         q_optimizer: Optimizer for the critic networks.
+        actor: Actor network to be used for policy evaluation.
         device: Device for tensor computations.
-        lang_agent: Language agent to calculate policy from embeddings.
 
     Returns:
         qf_loss: Combined loss for both Q networks.
@@ -223,46 +203,34 @@ def update_critic(
     """
     qf1.train()
     qf2.train()
+
     data = buffer.sample(batch_size)
-    next_obs_vec = (
-        data["next_obs_vec"].unsqueeze(1)
-        if data["next_obs_vec"].dim() == 2
-        else data["next_obs_vec"]
-    )
-    rules_emb = data["rules_emb"]
+    next_obs_vec = data["next_obs_vec"]
+
+    # rules_emb = data["rules_emb"]
     rewards = data["rewards"]
     dones = data["dones"]
 
     with torch.no_grad():
-        dist = lang_agent.get_policy_from_embeddings(next_obs_vec, rules_emb)
+        # dist = lang_agent.get_policy_from_embeddings(next_obs_vec, rules_emb)
+        dist = Categorical(logits=actor(next_obs_vec))
         next_action_probs = F.softmax(dist.logits, dim=-1)
         next_state_log_pi = F.log_softmax(dist.logits, dim=-1)
 
-        qf1_next_tgt = qf1_target(rules_emb, next_obs_vec)
-        qf2_next_tgt = qf2_target(rules_emb, next_obs_vec)
-
-        # Handle nested tensors
-        if qf1_next_tgt.is_nested:
-            qf1_next_tgt = torch.nested.to_padded_tensor(qf1_next_tgt, 0.0)
-            qf2_next_tgt = torch.nested.to_padded_tensor(qf2_next_tgt, 0.0)
+        qf1_next_tgt = qf1_target(next_obs_vec)
+        qf2_next_tgt = qf2_target(next_obs_vec)
 
         min_qf_next_target = (
             next_action_probs
             * (torch.min(qf1_next_tgt, qf2_next_tgt) - alpha * next_state_log_pi)
-        ).sum(dim=1)
+        ).sum(-1)
         next_q_value = rewards + (1 - dones) * gamma * min_qf_next_target
 
-    obs_vec = (
-        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
-    )
-    sel_idxs = data["sel_idxs"].unsqueeze(-1).to(device)
+    obs_vec = data["obs_vec"]
+    sel_idxs = data["actions"].unsqueeze(-1).to(device)
 
-    qf1_values = qf1(rules_emb, obs_vec)
-    qf2_values = qf2(rules_emb, obs_vec)
-
-    if qf1_values.is_nested:
-        qf1_values = torch.nested.to_padded_tensor(qf1_values, 0.0)
-        qf2_values = torch.nested.to_padded_tensor(qf2_values, 0.0)
+    qf1_values = qf1(obs_vec)
+    qf2_values = qf2(obs_vec)
 
     qf1_a_values = qf1_values.gather(1, sel_idxs).squeeze(-1)
     qf2_a_values = qf2_values.gather(1, sel_idxs).squeeze(-1)
@@ -297,7 +265,7 @@ def update_actor(
     actor_optimizer,
     qf1,
     qf2,
-    lang_agent,
+    actor,
     device,
 ):
     """
@@ -309,26 +277,23 @@ def update_actor(
         alpha: Entropy regularization coefficient.
         actor_optimizer: Optimizer for the actor network.
         qf1, qf2: Critic networks used for policy evaluation.
-        lang_agent: Language agent to calculate policy from embeddings.
+        actor: Actor network to be updated.
         device: Device for tensor computations.
 
     Returns:
         actor_loss: Loss for the actor network.
     """
-    lang_agent.actor.train()
+    actor.train()
     data = buffer.sample(batch_size)
-    obs_vec = (
-        data["obs_vec"].unsqueeze(1) if data["obs_vec"].dim() == 2 else data["obs_vec"]
-    )
-    rules_emb = data["rules_emb"]
+    obs_vec = data["obs_vec"]
 
-    dist = lang_agent.get_policy_from_embeddings(obs_vec, rules_emb)
+    dist = Categorical(logits=actor(obs_vec))
     log_probs = F.log_softmax(dist.logits, dim=-1)
     probs = dist.probs
 
     with torch.no_grad():
-        qf1_values = qf1(rules_emb, obs_vec)
-        qf2_values = qf2(rules_emb, obs_vec)
+        qf1_values = qf1(obs_vec)
+        qf2_values = qf2(obs_vec)
 
         if qf1_values.is_nested:
             qf1_values = torch.nested.to_padded_tensor(qf1_values, 0.0)
@@ -343,7 +308,7 @@ def update_actor(
     actor_loss.backward()
     actor_optimizer.step()
 
-    lang_agent.actor.eval()
+    actor.eval()
 
     return actor_loss.item(), entropy, probs, log_probs
 
@@ -388,56 +353,79 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
-    run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
+    # run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
+    # run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
+    # # configure logging
+    # log_file = f"logs/{run_id}.err"
+    # os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    # logging.basicConfig(
+    #     format="%(asctime)s [%(levelname)s]: %(message)s",
+    #     datefmt="%Y-%m-%d %H:%M:%S",
+    #     level=logging.INFO,
+    #     handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
+    # )
 
-    # configure logging
-    log_file = f"logs/{run_id}.err"
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s]: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        level=logging.INFO,
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
+    # ckpt_path = f"checkpoints/{run_name}.state"
+    # text_logs_path = f"text_logs/{run_name}.jsonl"
+    # json_logger_mode = "w" if not args.resume else "a"
+    # os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
+    # jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
 
-    ckpt_path = f"checkpoints/{run_name}.state"
-    text_logs_path = f"text_logs/{run_name}.jsonl"
-    json_logger_mode = "w" if not args.resume else "a"
-    os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
-    jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
+    # if args.overwrite_ckpt:
+    #     # delete checkpoint pat
+    #     if os.path.exists(ckpt_path):
+    #         os.remove(ckpt_path)
 
-    if args.overwrite_ckpt:
-        # delete checkpoint pat
-        if os.path.exists(ckpt_path):
-            os.remove(ckpt_path)
+    #     # delete tensorboard logs
+    #     dirname = f"runs/{run_name}"
+    #     if os.path.exists(dirname):
+    #         shutil.rmtree(dirname)
 
-        # delete tensorboard logs
-        dirname = f"runs/{run_name}"
-        if os.path.exists(dirname):
-            shutil.rmtree(dirname)
+    # if args.track:
+    #     import wandb
 
+    #     # replace : with - to avoid wandb bug
+    #     wandb_run_name = run_name.replace(":", "-")
+    #     wandb.init(
+    #         project=args.wandb_project_name,
+    #         entity=args.wandb_entity,
+    #         sync_tensorboard=True,
+    #         config=vars(args),
+    #         name=wandb_run_name,
+    #         id=wandb_run_name,
+    #         monitor_gym=True,
+    #         save_code=False,
+    #         resume="auto",
+    #         settings=wandb.Settings(init_timeout=1200, _service_wait=600),
+    #     )
+    #     examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+    # writer = SummaryWriter(f"runs/{run_name}")
+    # writer.add_text(
+    #     "hyperparameters",
+    #     "|param|value|\n|-|-|\n%s"
+    #     % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    # )
+    # args = tyro.cli(Args)
+    # args.batch_size = int(args.num_envs * args.num_steps)
+    # args.minibatch_size = int(args.batch_size // args.num_minibatches)
+    # args.num_iterations = args.total_timesteps // args.batch_size
+
+    run_name = f"{args.agent}_eval__{args.env_id}__{args.seed}__{args.exp_name}__{int(time.time())}"
     if args.track:
         import wandb
-        # replace : with - to avoid wandb bug
-        wandb_run_name = run_name.replace(":", "-")
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=wandb_run_name,
-            id=wandb_run_name,
-            monitor_gym=True,
-            save_code=False,
+            name=run_name,
+            id=run_name,
             resume='auto',
-            settings=wandb.Settings(init_timeout=1200, _service_wait=600),
+            monitor_gym=True,
+            save_code=True,
         )
-        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -445,13 +433,7 @@ def main(args: Args):
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
     train_env_funs = [
@@ -459,44 +441,62 @@ def main(args: Args):
         for i in range(args.num_envs)
     ]
     eval_env_funs = [
-        make_env(args.env_id, 1000 * args.seed + i, args.max_episode_steps)
+        make_env(args.env_id, 1000 * args.seed + i, args.max_episode_steps, eval=True)
         for i in range(args.num_envs)
     ]
     envs = gym.vector.SyncVectorEnv(train_env_funs)
     eval_envs = gym.vector.SyncVectorEnv(eval_env_funs)
 
-    # setup language model
-    chat_model = get_llm_api(args.llm)
-    embed_model = TogetherEmbeddings(model=args.embedder_lm)
+    assert isinstance(
+        envs.single_action_space, gym.spaces.Discrete
+    ), "only discrete action space is supported"
 
-    # problem dimensions
-    state_dim = envs.single_observation_space[0].shape[-1]
-    rule_dim = args.embed_dim
-    hidden_dim = args.hidden_dim
-    num_rules = args.num_rules
-    # num_actions = envs.single_action_space.n
+    # actor_network = layers.SelfAttentionNetwork(
+    #     q_dim=envs.single_observation_space.shape[-1],
+    #     output_dim=envs.single_action_space.n,
+    #     hidden_dim=args.hidden_dim,
+    #     normalize_inputs=False,
+    #     num_heads=1,
+    # )
 
-    actor = CrossAttentionNetwork(
-        q_dim=rule_dim,
-        k_dim=state_dim,
-        hidden_dim=hidden_dim,
-        dropout=args.dropout,
-        proj_type=args.proj_type,
+    def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+        torch.nn.init.orthogonal_(layer.weight, std)
+        torch.nn.init.constant_(layer.bias, bias_const)
+        return layer
+
+    actor = nn.Sequential(
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), std=1.0),
     )
-    qf1 = CrossAttentionNetwork(
-        q_dim=rule_dim,
-        k_dim=state_dim,
-        hidden_dim=hidden_dim,
-        dropout=args.dropout,
-        proj_type=args.proj_type,
+
+    qf1 = nn.Sequential(
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), 0.01),
     )
-    qf2 = CrossAttentionNetwork(
-        q_dim=rule_dim,
-        k_dim=state_dim,
-        hidden_dim=hidden_dim,
-        dropout=args.dropout,
-        proj_type=args.proj_type,
+
+    qf2 = nn.Sequential(
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
+        nn.SiLU(),
+        nn.LayerNorm(args.hidden_dim),
+        layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), 0.01),
     )
+
     actor.eval()
     qf1.eval()
     qf2.eval()
@@ -507,29 +507,14 @@ def main(args: Args):
     logging.info("--- Q-function ---")
     torchsummary.summary(qf1)
 
-    # language agent
-    example_rules = envs.envs[0].metadata["example_rules"]
-    example_rules = "\n".join(example_rules)
+    # # language agent
+    # example_rules = envs.envs[0].metadata["example_rules"]
+    # example_rules = "\n".join(example_rules)
 
     def critic(rules_emb, obs_vec):
         q1 = qf1(rules_emb, obs_vec)
         q2 = qf2(rules_emb, obs_vec)
         return torch.min(q1, q2)
-
-    lang_agent = RulesSelectorActorCritic(
-        actor=actor,
-        task_text=envs.envs[0].metadata["task_text"],
-        action_space_text=envs.envs[0].metadata["action_space_text"],
-        num_rules=num_rules,
-        llm=chat_model,
-        embededder=embed_model,
-        max_rule_combinations=1,
-        example_rules=example_rules,
-        use_thoughts=args.thoughts,
-        critic=critic,
-        in_context_learning=args.in_context_learning,
-        optimize_thoughts_only=args.optimize_thoughts_only,
-    )
 
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
     q_params = list(qf1.parameters()) + list(qf2.parameters())
@@ -542,51 +527,20 @@ def main(args: Args):
             1 / torch.tensor(envs.single_action_space.n)
         )
         log_alpha = torch.scalar_tensor(
-            np.log(args.alpha), requires_grad=True, device=dev
+            np.log(args.alpha), requires_grad=True, device=device
         )
         alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
     else:
         alpha = args.alpha
 
-    buffer_file = f"buffers/buffer_{args.llm}.pkl"
-    if args.load_buffer and os.path.exists(buffer_file):
-        with open(buffer_file, "rb") as f:
-            buffer = pickle.load(f)
-        needs_save_buffer = False
-    else:
-        buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=dev)
-        needs_save_buffer = True
+    buffer = buffers.SimpleDictReplayBuffer(args.buffer_size, device=device)
 
     starting_step = 0
     start_time = time.time()
     best_total_reward = -float("inf")
     best_model = None
     best_model_epoch = -1
-
-    checkpoint = load_checkpoint(ckpt_path, dev)
-    if args.resume and checkpoint:
-        logging.info(
-            f"Resuming training from checkpoint at step {checkpoint['global_step']}."
-        )
-        actor.load_state_dict(checkpoint["actor_state"])
-        qf1.load_state_dict(checkpoint["qf1_state"])
-        qf2.load_state_dict(checkpoint["qf2_state"])
-        if args.autotune:
-            # log_alpha = checkpoint["log_alpha"]
-            # alpha = log_alpha.exp().item()
-            a_optimizer.load_state_dict(checkpoint["a_optimizer_state"])
-        q_optimizer.load_state_dict(checkpoint["q_optimizer_state"])
-        actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state"])
-        starting_step = checkpoint["global_step"]
-        start_time = time.time() - checkpoint["elapsed_time"]
-        best_total_reward = checkpoint["best_total_reward"]
-        best_model = checkpoint["best_model"]
-        best_model_epoch = checkpoint["best_model_epoch"]
-        buffer = checkpoint["buffer"]
-        logging.info(f"Resumed training from checkpoint at step {starting_step}.")
-
-    logging.info(f"Starting buffer size: {buffer.size()}")
 
     qf1_target = deepcopy(qf1)
     qf2_target = deepcopy(qf2)
@@ -600,20 +554,12 @@ def main(args: Args):
         qf2_target = torch.compile(qf2_target)
 
     # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset()
-    obs_vec, obs_text = obs
+    # obs, _ = envs.reset()
+    # obs_vec, obs_text = obs
+    obs_vec, _ = envs.reset()
 
     # convert to torch tensor
-    obs_vec = torch.FloatTensor(obs_vec).to(dev)
-
-    # expand state space with the rules, i.e., internal states
-    with torch.no_grad():
-        outputs, messages = lang_agent.parallel_pipeline(
-            obs_text, obs_vec, pre_action_only=True
-        )
-    rules = [x["rules"] for x in outputs]
-    rules_emb = [x["rules_emb"] for x in outputs]
-    sel_idxs = [x["sel_idx"] for x in outputs]
+    obs_vec = torch.FloatTensor(obs_vec).to(device)
     autoreset = np.zeros(args.num_envs, dtype=bool)
 
     # keep logging buffers for the rewards
@@ -624,38 +570,40 @@ def main(args: Args):
     _running_qse = 0.0
 
     for global_step in tqdm(range(starting_step, args.total_timesteps)):
+        # ALGO LOGIC: action logic
         with torch.no_grad():
-            outputs, messages = lang_agent.parallel_pipeline(
-                state_text=obs_text,
-                state_vector=obs_vec,
-                pre_action_outputs=outputs,
-                pre_action_messages=messages,
-            )
-        actions = [x["action"] for x in outputs]
+            action_logits = actor(obs_vec)
+            action_dist = Categorical(logits=action_logits)
+            actions = action_dist.sample()
+            # logprob = action_dist.log_prob(action)
+        # actions = [x["action"] for x in outputs]
 
         # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
-        next_obs_vec, next_obs_text = next_obs
-        dones = torch.FloatTensor(dones).to(dev)
-        next_obs_vec = torch.FloatTensor(next_obs_vec).to(dev)
+        # next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
+        # next_obs_vec, next_obs_text = next_obs
+        next_obs_vec, env_rewards, dones, trunc, infos = envs.step(actions)
+        dones = torch.FloatTensor(dones).to(device)
+        next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
 
-        env_rewards = torch.FloatTensor(env_rewards).to(dev)
-        sel_rewards = torch.FloatTensor([x["sel_reward"] for x in outputs]).to(dev)
-        sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
-        rewards = env_rewards + args.rule_reward_coef * sel_rewards
-        entropy = [x["entropy"] for x in outputs]
-        sel_probs = [x["sel_logprob"].exp() for x in outputs]
+        # env_rewards = torch.FloatTensor(env_rewards).to(device)
+        # sel_rewards = torch.FloatTensor([x["sel_reward"] for x in outputs]).to(device)
+        # sel_reward_scores = [x["sel_reward_scores"] for x in outputs]
+        # rewards = env_rewards + args.rule_reward_coef * sel_rewards
+        # entropy = [x["entropy"] for x in outputs]
+        # sel_probs = [x["sel_logprob"].exp() for x in outputs]
+        env_rewards = torch.FloatTensor(env_rewards).to(device)
+        rewards = env_rewards  # patch
 
         # Get the next rules
-        outputs = deepcopy(outputs)
-        messages = deepcopy(messages)
-        with torch.no_grad():
-            next_outputs, next_messages = lang_agent.parallel_pipeline(
-                next_obs_text, next_obs_vec, pre_action_only=True
-            )
-        next_rules = [x["rules"] for x in next_outputs]
-        next_rules_emb = [x["rules_emb"] for x in next_outputs]
-        next_sel_idxs = [x["sel_idx"] for x in next_outputs]
+        # outputs = deepcopy(outputs)
+        # messages = deepcopy(messages)
+        # with torch.no_grad():
+        #     next_outputs, next_messages = lang_agent.parallel_pipeline(
+        #         next_obs_text, next_obs_vec, pre_action_only=True
+        #     )
+        # next_rules = [x["rules"] for x in next_outputs]
+        # next_rules_emb = [x["rules_emb"] for x in next_outputs]
+        # next_sel_idxs = [x["sel_idx"] for x in next_outputs]
 
         if "episode" in infos:
             for i in range(args.num_envs):
@@ -672,19 +620,19 @@ def main(args: Args):
             if not autoreset[j]:
                 sample = {}
                 sample["obs_vec"] = obs_vec[j]
-                sample["obs_text"] = obs_text[j]
-                sample["rules"] = rules[j]
-                sample["rules_emb"] = rules_emb[j]
+                # sample["obs_text"] = obs_text[j]
+                # sample["rules"] = rules[j]
+                # sample["rules_emb"] = rules_emb[j]
                 sample["dones"] = dones[j]
-                sample["sel_idxs"] = sel_idxs[j]
+                # sample["sel_idxs"] = sel_idxs[j]
                 sample["actions"] = actions[j]
                 sample["next_obs_vec"] = next_obs_vec[j]
-                sample["next_obs_text"] = next_obs_text[j]
-                sample["next_rules_emb"] = next_rules_emb[j]
-                sample["next_rules"] = next_rules[j]
+                # sample["next_obs_text"] = next_obs_text[j]
+                # sample["next_rules_emb"] = next_rules_emb[j]
+                # sample["next_rules"] = next_rules[j]
                 sample["rewards"] = rewards[j]
-                sample["sel_rewards"] = sel_rewards[j]
-                sample["env_rewards"] = env_rewards[j]
+                # sample["sel_rewards"] = sel_rewards[j]
+                # sample["env_rewards"] = env_rewards[j]
                 buffer.add(sample)
 
         # accumulate and log the rewards
@@ -692,11 +640,11 @@ def main(args: Args):
             needs_reset = dones[j] or trunc[j]
             if not needs_reset:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
-                _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
-                _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
+                # _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
+                # _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
                 _ep_buffer["total_rewards"][j].append(rewards[j].item())
-                _ep_buffer["entropy"][j].append(entropy[j].item())
-                _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
+                # _ep_buffer["entropy"][j].append(entropy[j].item())
+                # _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
             else:
                 # log the rewards
                 writer.add_scalar(
@@ -704,21 +652,21 @@ def main(args: Args):
                     np.mean(_ep_buffer["env_rewards"][j]),
                     global_step,
                 )
-                m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
-                for i, x in enumerate(m):
-                    writer.add_scalar(f"charts/sel_reward_scores/q{i}", x, global_step)
-                m = np.mean(_ep_buffer["sel_rewards_total"][j])
-                writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
-                writer.add_scalar(
-                    "charts/episodic_entropy",
-                    np.mean(_ep_buffer["entropy"][j]),
-                    global_step,
-                )
-                writer.add_scalar(
-                    "charts/episodic_sel_probs",
-                    np.mean(_ep_buffer["sel_probs"][j]),
-                    global_step,
-                )
+                # m = np.mean(_ep_buffer["sel_rewards_scores"][j], axis=0)
+                # for i, x in enumerate(m):
+                #     writer.add_scalar(f"charts/sel_reward_scores/q{i}", x, global_step)
+                # m = np.mean(_ep_buffer["sel_rewards_total"][j])
+                # writer.add_scalar("charts/episodic_sel_rewards", m, global_step)
+                # writer.add_scalar(
+                #     "charts/episodic_entropy",
+                #     np.mean(_ep_buffer["entropy"][j]),
+                #     global_step,
+                # )
+                # writer.add_scalar(
+                #     "charts/episodic_sel_probs",
+                #     np.mean(_ep_buffer["sel_probs"][j]),
+                #     global_step,
+                # )
                 writer.add_scalar(
                     "charts/episodic_total_rewards",
                     np.mean(_ep_buffer["total_rewards"][j]),
@@ -726,52 +674,12 @@ def main(args: Args):
                 )
 
                 # flush
-                _ep_buffer["env_rewards"][j].clear()
-                _ep_buffer["sel_rewards_scores"][j].clear()
-                _ep_buffer["sel_rewards_total"][j].clear()
-                _ep_buffer["entropy"][j].clear()
-                _ep_buffer["sel_probs"][j].clear()
+                # _ep_buffer["env_rewards"][j].clear()
+                # _ep_buffer["sel_rewards_scores"][j].clear()
+                # _ep_buffer["sel_rewards_total"][j].clear()
+                # _ep_buffer["entropy"][j].clear()
+                # _ep_buffer["sel_probs"][j].clear()
                 _ep_buffer["total_rewards"][j].clear()
-
-        # Log
-        if global_step % args.log_examples_interval == 0:
-            rules_str = "\n".join(outputs[0]["rules"])
-            rules_scores = [
-                f"Q{d + 1}. {k}: {v}"
-                for d, (k, v) in enumerate(outputs[0]["sel_reward_scores_raw"].items())
-            ]
-            rules_scores_str = "\n".join(rules_scores)
-            thoughts = outputs[0].get("thoughts", None)
-            example = [
-                f"{outputs[0]['initial_prompt']}\n",
-                f"### Thoughts\n{thoughts}\n" if thoughts else "",
-                f"### Rules\n{rules_str}\n",
-                f"### Selected Rule\n{outputs[0]['sel_rule']}\n",
-                f"### Selected Rule Probability\n{outputs[0]['sel_logprob'].exp():.2f}\n",
-                f"### Selected Rule Reward\n {outputs[0]['sel_reward']}\n",
-                f"### Selected Rule Explainability\n{rules_scores_str}\n",
-                f"### Environment Action\n{outputs[0]['action']}\n",
-                f"### Explanation \n{outputs[0]['explanation']}\n",
-            ]
-            example = "".join(example)
-
-            conversation = "\n".join(
-                [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
-            )
-            writer.add_text("text/examples", example, global_step)
-            writer.add_text("llm_prompts/conversation", conversation, global_step)
-            if args.track:
-                examples_table.add_data(global_step, run_id, example)
-                wandb.log({"examples": examples_table})
-
-            # log the conversation and example in jsonl
-            jsonl_logger.write(
-                {
-                    "global_step": global_step,
-                    "example": example,
-                    "conversation": messages[0],
-                }
-            )
 
             # save best model
             total_reward = np.mean(_rolling_returns)
@@ -785,20 +693,21 @@ def main(args: Args):
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         autoreset = np.logical_or(autoreset, dones)
-        obs_vec, obs_text = next_obs_vec, next_obs_text
-        rules = next_rules
-        rules_emb = next_rules_emb
-        sel_idxs = next_sel_idxs
-        outputs, messages = next_outputs, next_messages
+        # obs_vec, obs_text = next_obs_vec, next_obs_text
+        # rules = next_rules
+        # rules_emb = next_rules_emb
+        # sel_idxs = next_sel_idxs
+        # outputs, messages = next_outputs, next_messages
+        obs_vec = next_obs_vec
 
         # ALGO LOGIC: training.
         if buffer.size() > args.learning_starts:
-            if needs_save_buffer:
-                os.makedirs(os.path.dirname(buffer_file), exist_ok=True)
-                with open(buffer_file, "wb") as f:
-                    pickle.dump(buffer, f)
-                logging.info(f"Buffer saved to {buffer_file}")
-                needs_save_buffer = False
+            # if needs_save_buffer:
+            #     os.makedirs(os.path.dirname(buffer_file), exist_ok=True)
+            #     with open(buffer_file, "wb") as f:
+            #         pickle.dump(buffer, f)
+            #     logging.info(f"Buffer saved to {buffer_file}")
+            #     needs_save_buffer = False
             if global_step % args.update_frequency == 0:
                 if global_step > 0:
                     critic_updates = args.critic_updates
@@ -826,8 +735,9 @@ def main(args: Args):
                         qf1_target=qf1_target,
                         qf2_target=qf2_target,
                         q_optimizer=q_optimizer,
-                        device=dev,
-                        lang_agent=lang_agent,
+                        actor=actor,
+                        device=device,
+                        # lang_agent=lang_agent,
                     )
                     _running_qss += 0.01 * (qss - _running_qss)
                     _running_qse += 0.01 * (qf_loss - _running_qse)
@@ -841,8 +751,9 @@ def main(args: Args):
                         actor_optimizer=actor_optimizer,
                         qf1=qf1,
                         qf2=qf2,
-                        lang_agent=lang_agent,
-                        device=dev,
+                        # lang_agent=lang_agent,
+                        actor=actor,
+                        device=device,
                     )
 
                     if args.autotune:  # Check if alpha tuning is enabled
@@ -901,32 +812,37 @@ def main(args: Args):
         if args.autotune:
             save_state["log_alpha"] = log_alpha
             save_state["a_optimizer_state"] = a_optimizer.state_dict()
-        save_checkpoint(save_state, ckpt_path)
+        # save_checkpoint(save_state, ckpt_path)
 
-        if global_step % args.ckpt_interval == 0:
-            save_checkpoint(
-                save_state, ckpt_path.replace(".state", f"__{global_step}.state")
-            )
+        # if global_step % args.ckpt_interval == 0:
+        #     save_checkpoint(
+        #         save_state, ckpt_path.replace(".state", f"__{global_step}.state")
+        #     )
 
-        # Evaluation loop
-        lang_agent.deterministic = True
+        # # Evaluation loop
+        # lang_agent.deterministic = True
 
         if args.eval and global_step % args.eval_interval == 0:
             eval_returns = []
-            eval_obs, _ = eval_envs.reset()
-            eval_obs_vec, eval_obs_text = eval_obs
-            eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
+            # eval_obs, _ = eval_envs.reset()
+            # eval_obs_vec, eval_obs_text = eval_obs
+            eval_obs_vec, _ = eval_envs.reset()
+            eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
             eval_episodes = 0
             while eval_episodes < eval_envs.num_envs:
+                # with torch.no_grad():
+                #     eval_outputs, _ = lang_agent.parallel_pipeline(
+                #         eval_obs_text,
+                #         eval_obs_vec,
+                #     )
+                # eval_actions = [x["action"] for x in eval_outputs]
                 with torch.no_grad():
-                    eval_outputs, _ = lang_agent.parallel_pipeline(
-                        eval_obs_text,
-                        eval_obs_vec,
-                    )
-                eval_actions = [x["action"] for x in eval_outputs]
+                    eval_action_logits = actor(eval_obs_vec)
+                    eval_action_dist = Categorical(logits=eval_action_logits)
+                    eval_actions = eval_action_dist.sample()
+
                 eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
-                eval_obs_vec, eval_next_obs_vec = eval_obs_vec
-                eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
+                eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
                 if "episode" in eval_infos:
                     for i in range(args.num_envs):
                         if eval_infos["_episode"][i]:
@@ -938,7 +854,7 @@ def main(args: Args):
                 "charts/eval_return", np.mean(eval_returns).item(), global_step
             )
 
-        lang_agent.deterministic = False
+        # lang_agent.deterministic = False
 
     envs.close()
     eval_envs.close()
@@ -948,16 +864,7 @@ def main(args: Args):
 if __name__ == "__main__":
     args = tyro.parse(Args)
 
-    args.agent = "rbrl"
-    if not args.thoughts:
-        args.agent += "-no-thoughts"
-    if not args.in_context_learning:
-        args.agent += "-no-in-context"
-    if args.rule_reward_coef != 1.0:
-        args.agent += f"-expl-rew-{args.rule_reward_coef}"
-    if args.optimize_thoughts_only:
-        args.agent += "-oto"
-    
-    args.agent += "--" + args.llm
-
+    # if the min theshold, add to the agent name
+    if args.min_temperature_threshold > 0:
+        args.agent = f"{args.agent}__mintresh_{str(args.min_temperature_threshold).replace('.', '_')}"
     main(args)

@@ -15,7 +15,6 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 import envs as E
-import layers
 
 
 @dataclass
