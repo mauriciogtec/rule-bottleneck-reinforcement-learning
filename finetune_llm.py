@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
-from llm_apis import llama_prompt_from_messages
+# from llm_apis import llama_prompt_from_messages
 
 from accelerate import Accelerator
 from peft import LoraConfig, TaskType
@@ -147,6 +147,8 @@ class Args:
     """the target KL divergence threshold"""
     dropout: float = 0.0
     """the dropout rate"""
+    cot_weight: float = 0.0
+    """The weight to add to the COT tokens"""
 
     rolling_returns_window: int = 64
     """the rolling rewards window"""

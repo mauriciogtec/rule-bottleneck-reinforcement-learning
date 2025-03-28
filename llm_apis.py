@@ -313,8 +313,8 @@ class HUITOpenAI:
 class HFMetaWrapper:
     def __init__(
         self,
-        model: transformers.PreTrainedModel,
-        tokenizer: transformers.PreTrainedTokenizer,
+        model,#: transformers.PreTrainedModel,
+        tokenizer,#: transformers.PreTrainedTokenizer,
     ):
         self.llm = model
         self.tokenizer = tokenizer
@@ -355,6 +355,7 @@ ModelAPIDict = {
     "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo": ChatTogether,
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": ChatTogether,
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": ChatTogether,
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": ChatTogether,
     "meta.llama3-1-8b-instruct-v1:0": HUITMeta,
     "meta.llama3-1-70b-instruct-v1:0": HUITMeta,
     "meta.llama3-2-3b-instruct-v1:0": HUITMeta,
@@ -371,6 +372,7 @@ ValidLLMs = Literal[
     "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "AlistairPullen/llama-3.1-8B-grpo",
     "meta.llama3-1-8b-instruct-v1:0",
     "meta.llama3-1-70b-instruct-v1:0",
     "meta.llama3-2-3b-instruct-v1:0",
@@ -423,9 +425,9 @@ if __name__ == "__main__":
     # result = llm.invoke(messages, max_tokens=10)
     # print(result.content)
 
-    # llm = HUITOpenAI("gpt-4o-mini")
+    llm = HUITOpenAI("gpt-4o-mini")
     # llm = get_llm_api("meta.llama3-2-3b-instruct-v1:0")
-    llm = get_llm_api("meta.llama3-2-11b-instruct-v1:0")
+    # llm = get_llm_api("meta.llama3-2-11b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-3-70b-instruct-v1:0")
     # llm = get_llm_api("meta-llama/Llama-3.2-3B-Instruct-Turbo")
     # llm = HUITMeta("meta.llama3-1-8b-instruct-v1:0")

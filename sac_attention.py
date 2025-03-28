@@ -26,6 +26,7 @@ import buffers
 import envs as E  # registers the gym environments during import
 from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
+from agents import RulesSelectorActorCritic
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -130,9 +131,9 @@ class Args:
     """the dimension of the embeddings"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    rule_reward_coef: float = 1.0
+    rule_reward_coef: float = 0.1
     """the reward coefficient for the rules"""
-    in_context_learning: bool = True
+    in_context_learning: bool = False
     """if toggled, the agent will learn in context"""
     optimize_thoughts_only: bool = False
     """if toggled, the agent will optimize thoughts only, not structured rules"""
@@ -140,7 +141,7 @@ class Args:
     # Options
     rule_type: Literal["rule", "free"] = "rule"
     """the type of the rule"""
-    conversation_history_in_explanation: bool = True
+    conversation_history_in_explanation: bool = False
     """if toggled, the agent will use conversation history in explanation"""
 
     # Buffer collection mode
@@ -166,8 +167,12 @@ def make_env(env_id, seed, max_episode_steps=None):
 
     def thunk():
         env = gym.make(env_id)
-        # if env_id == "HeatAlerts":
-        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
+        if env_id == "HeatAlerts":
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
+            # if eval:
+            #     env.penalty = 0.0  # no penalty during evaluation
+        elif env_id in ("BinPacking", "BinPackingIncremental"):
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)

@@ -155,8 +155,8 @@ def make_env(env_id, seed, max_episode_steps=None, eval=False):
         env = gym.make(env_id)
         if env_id == "HeatAlertsNumeric":
             env.min_temperature_threshold = args.min_temperature_threshold
-            if eval:
-                env.penalty = 0.0  # no penalty during evaluation
+            # if eval:
+            #     env.penalty = 0.0  # no penalty during evaluation
             env = gym.wrappers.TransformReward(env, func=scale_reward)
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
@@ -676,7 +676,7 @@ def main(args: Args):
                 )
 
                 # flush
-                # _ep_buffer["env_rewards"][j].clear()
+                _ep_buffer["env_rewards"][j].clear()
                 # _ep_buffer["sel_rewards_scores"][j].clear()
                 # _ep_buffer["sel_rewards_total"][j].clear()
                 # _ep_buffer["entropy"][j].clear()
