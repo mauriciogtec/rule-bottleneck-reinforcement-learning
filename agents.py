@@ -195,7 +195,7 @@ class BaseAgent:
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=10
+            self.llm, messages, max_tokens=10, temperature=0.0
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -490,7 +490,7 @@ class LLMRulesAgent(BaseAgent):
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=30
+            self.llm, messages, max_tokens=30, temperature=0.0
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -699,7 +699,7 @@ class RulesSelectorActorCritic(BaseAgent):
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=30
+            self.llm, messages, max_tokens=30, temperature=0.0
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
         return outputs["action"]
