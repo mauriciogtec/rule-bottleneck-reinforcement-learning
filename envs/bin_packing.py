@@ -376,11 +376,11 @@ class BinPackingLang(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "You must return an integer between 0 and {self.env.bag_capacity - 1}:\n"
-            "- 0 means open a new bin and place the item there.\n"
-            f"- 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with that many units.\n"
+            "You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
+            "- 'target_level' = 0 means open a new bin and place the item there.\n"
+            f"- 'target_level' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'target_level' many units.\n"
             "Only place items where they will fit. For example, placing a size-3 item into a level-8 bin will overflow.\n"
-            'Return your action as a JSON dict: {"action": <int>}.'
+            'Return your action as a JSON dict: {"target_level": <int>}.'
         )
 
     def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
@@ -388,7 +388,7 @@ class BinPackingLang(LanguageWrapper):
         current_item = obs[-1]
 
         active_bins = [
-            f"{count} bin(s) at fill level {level} (space left: {self.env.bag_capacity - level})"
+            f"{int(count)} bin(s) at fill level {level} (space left: {self.env.bag_capacity - level})"
             for level, count in enumerate(bin_counts)
             if count > 0
         ]
@@ -407,20 +407,20 @@ class BinPackingLang(LanguageWrapper):
     def example_rules(self) -> list[str]:
         example1 = (
             '{"background": "Opening a new bin incurs more waste, especially for small items.", '
-            '"rule": "If the current item is small and there are partially filled bins where it fits, prefer placing it in an existing bin.", '
-            '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
+            '"rule": "If the current item is small and there are partially filled bins where it fits, prefer placing it in an existing bin."}'
+            # '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
         )
 
         example2 = (
             '{"background": "Larger items are harder to fit later on, so bins with exact fit should be prioritized.", '
-            '"rule": "If a bin can exactly fit the current item, choose that bin over others to minimize fragmentation.", '
-            '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
+            '"rule": "If a bin can exactly fit the current item, choose that bin over others to minimize fragmentation."}'
+            # '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
         )
 
         example3 = (
             '{"background": "It is sometimes better to open a new bin if existing bins do not have enough room or would create too much waste.", '
-            '"rule": "If placing an item in an existing bin would leave too much unused space or would overflow, start a new bin.", '
-            '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
+            '"rule": "If placing an item in an existing bin would leave too much unused space or would overflow, start a new bin."}'
+            # '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
         )
 
         return [example1, example2, example3]
@@ -431,32 +431,27 @@ class BinPackingIncrementalLang(LanguageWrapper):
         env = BinPackingIncremental(**kwargs)
         super().__init__(env)
 
-
     @property
     def task_text(self) -> str:
+        freqs = {f"size {k}": f"{int(100 * v):0d}%" for k, v in zip(self.env.item_sizes, self.env.item_probabilities)}
         return (
             "You are tasked with solving the online bin packing problem. Items of varying sizes arrive one at a time, "
             "and your goal is to place each item into a bin such that the total number of bins used is minimized. "
             f"Each bin has a fixed capacity of {self.env.bag_capacity} units. You must decide whether to place the current item into an "
             "existing bin (based on its fill level) or to start a new bin.\n\n"
-            "The reward at each step is the negative of the waste (unused space) created by your decision. "
-            "Trying to place an item into an invalid bin (overflow or nonexistent level) results in a large penalty "
-            "(-100) and ends the episode. The environment ends after a fixed number of steps.\n\n"
-            " This environment uses *incremental waste*: each reward is based only on the immediate change in waste from your last action.\n\n"
-            "Key challenges:\n"
-            "- Items arrive sequentially and randomly, and you do not know what items are coming next.\n"
-            "- Efficient packing requires anticipating future items and preserving flexibility in bin levels.\n"
-            "- Opening too many bins increases total waste, but being too conservative risks overflow.\n"
+            "The reward at each step is the negative of the incremental waste created by your decision. If an item is placed into an existing bin, "
+            "the incremental waste decreases by the size of the item. If it is placed into a new bin, the waste increases by the unused space left in that new bin. "
+            f"The expected item sizes and their frequencies are: {freqs}.\n\n"
         )
 
     @property
     def action_space_text(self) -> str:
         return (
-            "You must return an integer between 0 and {self.env.bag_capacity - 1}:\n"
-            "- 0 means open a new bin and place the item there.\n"
-            f"- 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with that many units.\n"
+            f"You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
+            "- 'target_level' = 0 means open a new bin and place the item there.\n"
+            f"- 'target_level' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'target_level' many units.\n"
             "Only place items where they will fit. For example, placing a size-3 item into a level-8 bin will overflow.\n"
-            'Return your action as a JSON dict: {"action": <int>}.'
+            'Return your action as a JSON dict: {"target_level": <int>}.'
         )
 
     def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
@@ -464,7 +459,7 @@ class BinPackingIncrementalLang(LanguageWrapper):
         current_item = obs[-1]
 
         active_bins = [
-            f"{count} bin(s) at fill level {level} (space left: {self.env.bag_capacity - level})"
+            f"{int(count)} bin(s) at fill level {level} (space left: {self.env.bag_capacity - level})"
             for level, count in enumerate(bin_counts)
             if count > 0
         ]
@@ -482,21 +477,21 @@ class BinPackingIncrementalLang(LanguageWrapper):
     @property
     def example_rules(self) -> list[str]:
         example1 = (
-            '{"background": "Opening a new bin incurs more waste, especially for small items.", '
-            '"rule": "If the current item is small and there are partially filled bins where it fits, prefer placing it in an existing bin.", '
-            '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
+            '{"background": "Opening a new bin is never better if you can fit in a current bin.", '
+            '"rule": "Pick the first target level such that `target_level + item_size` is minimized and it does not exceed the bin capacity."}'
+            # '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
         )
 
         example2 = (
-            '{"background": "Larger items are harder to fit later on, so bins with exact fit should be prioritized.", '
-            '"rule": "If a bin can exactly fit the current item, choose that bin over others to minimize fragmentation.", '
-            '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
+            '{"background": "We want to minimize wasted space. Thefore choose the target level that would reduce wasted space.", '
+            '"rule": "Pick the target level such that `bin_capacity - (target_level + item_size)` is minimized but nonegative."}'
+            # '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
         )
 
         example3 = (
-            '{"background": "It is sometimes better to open a new bin if existing bins do not have enough room or would create too much waste.", '
-            '"rule": "If placing an item in an existing bin would leave too much unused space or would overflow, start a new bin.", '
-            '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
+            '{"background": "It is important to consider the expected probabilities of the upcoming object sizes.", '
+            '"rule": "If an item size is large and it is frequent to observe small sizes, then always open a new bin. This will allow you to fit smaller items later on."}'
+            # '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
         )
 
         return [example1, example2, example3]
@@ -544,12 +539,7 @@ if __name__ == "__main__":
 
 
 if __name__ == "__main__":
-    env_config = {
-        "bag_capacity": 100,
-        "item_sizes": [1, 2, 3, 4, 5, 6, 7, 8, 9],
-        "item_probabilities": [0, 0, 0, 1 / 3, 0, 0, 0, 0, 2 / 3],  # linear waste
-        "time_horizon": 10000,
-    }
+
 
     # Use base environment
     base_env = BinPacking(env_config)

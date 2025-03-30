@@ -13,6 +13,7 @@ from typing import Literal, Optional
 import gymnasium as gym
 import jsonlines
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -26,7 +27,7 @@ import buffers
 import envs as E  # registers the gym environments during import
 from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
-from agents import RulesSelectorActorCritic
+from agents import RulesSelectorActorCriticRAG
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -77,8 +78,6 @@ class Args:
     """total timesteps of the experiments"""
     gamma: float = 0.95
     """the discount factor gamma"""
-    tau: float = 1.0
-    """target smoothing coefficient (default: 1)"""
     batch_size: int = 16
     """the batch size of sample from the reply memory"""
     learning_starts: int = 256
@@ -95,11 +94,13 @@ class Args:
     """the number of updates to the actor per update cycle"""
     critic_updates: int = 4
     """the number of updates to the critic per update cycle"""
-    target_network_frequency: int = 64
+    target_network_frequency: int = 32
     """the frequency of updates for the target networks"""
+    tau: float = 0.5
+    """target smoothing coefficient (default: 1)"""
     alpha: float = 0.1
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
@@ -121,7 +122,7 @@ class Args:
     """if toggled, the agent will use random projection"""
 
     # LLM
-    num_rules: int = 5
+    num_gen_rules: int = 1
     """The number of rules for rule-based LLM-only agent"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
@@ -143,6 +144,8 @@ class Args:
     """the type of the rule"""
     conversation_history_in_explanation: bool = False
     """if toggled, the agent will use conversation history in explanation"""
+    rule_buffer_size: int = 1000
+    """the size of the rule buffer for storing generated rules"""
 
     # Buffer collection mode
     buffer_collection_steps: int = 64
@@ -173,7 +176,8 @@ def make_env(env_id, seed, max_episode_steps=None):
             #     env.penalty = 0.0  # no penalty during evaluation
         elif env_id in ("BinPacking", "BinPackingIncremental"):
             env = gym.wrappers.TransformReward(env, func=scale_reward)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        if env_id not in ("BinPacking", "BinPackingIncremental"):
+            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
@@ -188,7 +192,7 @@ def save_checkpoint(state, checkpoint_path):
 
 def load_checkpoint(checkpoint_path, device):
     if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device)
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
     else:
         logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
         return None
@@ -396,7 +400,6 @@ def main(args: Args):
     run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
-
     # configure logging
     log_file = f"logs/{run_id}.err"
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -442,7 +445,7 @@ def main(args: Args):
             resume='auto',
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
-        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+        # examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -478,7 +481,7 @@ def main(args: Args):
     state_dim = envs.single_observation_space[0].shape[-1]
     rule_dim = args.embed_dim
     hidden_dim = args.hidden_dim
-    num_rules = args.num_rules
+    # num_rules = args.num_rules
     # num_actions = envs.single_action_space.n
 
     actor = CrossAttentionNetwork(
@@ -521,13 +524,13 @@ def main(args: Args):
         q2 = qf2(rules_emb, obs_vec)
         return torch.min(q1, q2)
 
-    lang_agent = RulesSelectorActorCritic(
+    lang_agent = RulesSelectorActorCriticRAG(
         actor=actor,
         task_text=envs.envs[0].metadata["task_text"],
         action_space_text=envs.envs[0].metadata["action_space_text"],
-        num_rules=num_rules,
+        num_gen_rules=args.num_gen_rules,
         llm=chat_model,
-        embededder=embed_model,
+        embedder=embed_model,
         max_rule_combinations=1,
         example_rules=example_rules,
         use_thoughts=args.thoughts,
@@ -554,7 +557,7 @@ def main(args: Args):
     else:
         alpha = args.alpha
 
-    buffer_file = f"buffers/buffer__{args.llm}__{args.env_id}.pkl"
+    buffer_file = f"buffers/buffer__{args.agent}__{args.llm}__{args.env_id}.pkl"
     if args.load_buffer and os.path.exists(buffer_file):
         with open(buffer_file, "rb") as f:
             buffer = pickle.load(f)
@@ -766,8 +769,14 @@ def main(args: Args):
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
             if args.track:
-                examples_table.add_data(global_step, run_id, example)
-                wandb.log({"examples": examples_table})
+                examples_table = pd.DataFrame(
+                    {
+                        "global_step": [global_step],
+                        "run_id": [run_id],
+                        "example": [example]
+                    }
+                )
+                wandb.log({"examples": wandb.Table(dataframe=examples_table)})
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
@@ -929,8 +938,8 @@ def main(args: Args):
                         eval_obs_vec,
                     )
                 eval_actions = [x["action"] for x in eval_outputs]
-                eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
-                eval_obs_vec, eval_next_obs_vec = eval_obs_vec
+                eval_obs, _, _, _,eval_infos = eval_envs.step(eval_actions)
+                eval_obs_vec, eval_obs_text = eval_obs
                 eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(dev)
                 if "episode" in eval_infos:
                     for i in range(args.num_envs):
@@ -953,7 +962,7 @@ def main(args: Args):
 if __name__ == "__main__":
     args = tyro.parse(Args)
 
-    args.agent = "rbrl"
+    args.agent = "rbrl-rag"
     if not args.thoughts:
         args.agent += "-no-thoughts"
     if not args.in_context_learning:

@@ -1,3 +1,4 @@
+from collections import deque
 from functools import partial
 import os
 import re
@@ -37,7 +38,13 @@ def generate_rule_combinations(
 
 def parse_rules(x: str) -> List[str]:
     # 1. Remove the following patters
-    patterns = ["```yaml", "```yml", "```", "```json", "json", ]
+    patterns = [
+        "```yaml",
+        "```yml",
+        "```",
+        "```json",
+        "json",
+    ]
     x = re.sub("|".join(patterns), "", x)
 
     # 2. Remove trailing white space, and collapse new lines
@@ -218,7 +225,6 @@ class BaseAgent:
         ).content
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
-
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         return _gen_explanation(outputs, messages, self.llm)
 
@@ -285,7 +291,6 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     r4 = float("yes" in r4_.lower())
     temp_messages.append({"role": "assistant", "content": r4_})
 
-
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
     # r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
@@ -317,15 +322,16 @@ def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = T
     )
     tmp_messages = messages.copy()
     tmp_messages.append({"role": "user", "content": prompt})
-    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
-    
+    response = invoke_with_retries(
+        llm, tmp_messages, temperature=0.5, max_tokens=256
+    ).content
+
     if save_prompts:
         outputs["thoughts"] = response
         messages.append({"role": "user", "content": prompt})
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
     return response
-    
 
 
 def _gen_explanation(outputs, messages, llm):
@@ -351,10 +357,11 @@ def _gen_rules(
         " For each rule, provide the explanation of why it is important to consider it at the given state."
         " Each rule should be in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
         # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        " {'background' str, 'rule': str, 'state relevance': str}\n\n"
+        # " {'background' str, 'rule': str, 'state relevance': str}\n\n"
+        " {'background' str, 'rule': str}\n\n"
         "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
         "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
-        "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
+        # "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         # "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
         "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
         "- Start each line with the character '```- {\"'.\n"
@@ -433,7 +440,9 @@ def _gen_thoughts_with_in_context_learning(
     )
     tmp_messages = messages.copy()
     tmp_messages.append({"role": "user", "content": prompt})
-    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
+    response = invoke_with_retries(
+        llm, tmp_messages, temperature=0.5, max_tokens=256
+    ).content
 
     if save_prompts:
         outputs["thoughts"] = response
@@ -518,7 +527,7 @@ class RulesSelectorActorCritic(BaseAgent):
         action_space_text: str,
         llm: BaseChatModel,
         embededder: Embeddings,
-        max_rule_combinations: int = 3,
+        max_rule_combinations: int = 1,
         num_rules: int = 5,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
@@ -548,7 +557,7 @@ class RulesSelectorActorCritic(BaseAgent):
         self.deterministic = deterministic
         self.optimize_thoughts_only = optimize_thoughts_only
         if self.optimize_thoughts_only:
-            self.use_thoughts = False # they will be randomly generated
+            self.use_thoughts = False  # they will be randomly generated
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         super().pre_action(outputs, messages)
@@ -572,7 +581,9 @@ class RulesSelectorActorCritic(BaseAgent):
                     )
                 else:
                     rules = [
-                        _gen_thoughts_for_rule_agents(outputs, messages, self.llm, save_prompts=False)
+                        _gen_thoughts_for_rule_agents(
+                            outputs, messages, self.llm, save_prompts=False
+                        )
                         for _ in range(self.num_rules)
                     ]
                     outputs["rules"] = rules
@@ -585,7 +596,7 @@ class RulesSelectorActorCritic(BaseAgent):
                 max_attemps += 1
         if max_attemps == self.max_parse_attempts:
             raise ValueError("Failed to generate rules")
-        
+
         if self.in_context_learning:
             # use the critic to rank the rules
             rules_emb = self.embedder.embed_documents(rules)
@@ -598,13 +609,18 @@ class RulesSelectorActorCritic(BaseAgent):
             queries, keys = rules_emb, state_vector
             if rules_emb.shape[0] > 1:
                 with torch.no_grad():
-                    values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    values = (
+                        self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    )
                     # values = (values - values.mean()) / (values.std() + 1e-6)
-                    values = 0.1 + 0.8 * (values - values.min()) / (values.max() - values.min())
+                    values = 0.1 + 0.8 * (values - values.min()) / (
+                        values.max() - values.min()
+                    )
 
                 # append the the score to each rule
                 scored_rules = [
-                    f"{r} --> {{'score': {v.item():.2f}}}" for r, v in zip(rules, values)
+                    f"{r} --> {{'score': {v.item():.2f}}}"
+                    for r, v in zip(rules, values)
                 ]
                 outputs["scored_rules"] = scored_rules
 
@@ -675,6 +691,324 @@ class RulesSelectorActorCritic(BaseAgent):
         if hasattr(self, "critic") and self.critic is not None:
             value = self.critic(queries, keys)
             outputs["value"] = value.squeeze()
+
+    def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
+        system_prompt = self.system_prompt_with_state(outputs["state_text"])
+        sel_rule = outputs["sel_rule"]
+        return _gen_rule_scores(outputs, messages, self.llm, [sel_rule], system_prompt)
+
+    def post_action(self, outputs, messages):
+        super().post_action(outputs, messages)
+        self.gen_rule_scores(outputs, messages)
+
+    def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
+        # get actions
+        action_prompt = (
+            f"Below is/are a priorization rule/rules to make an optimal decision in the current state:\n\n"
+            f"{outputs['sel_rule']}\n\n"
+            "\n\n"
+            "Now, choose the optimal action given the current problem state and this/these priorization rule/rules. "
+            "Your answer must consist exclusively of one of the following actions:"
+            f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+        )
+        messages.append({"role": "user", "content": action_prompt})
+
+        outputs["action"] = invoke_with_retries(
+            self.llm, messages, max_tokens=30, temperature=0.0
+        ).content
+        messages.append({"role": "assistant", "content": outputs["action"]})
+        return outputs["action"]
+
+    def get_action_and_value_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+        sel_idxs: Optional[torch.Tensor] = None,
+    ):
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        dist = torch.distributions.Categorical(logits=logits)
+        if sel_idxs is None:
+            sel_idxs = dist.sample()
+        entropy = dist.entropy()
+        log_prob = dist.log_prob(sel_idxs)
+
+        values = self.critic(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
+
+        return sel_idxs, log_prob, entropy, values
+
+    def get_policy_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.distributions.Categorical:
+        if state_vector.dim() == 2:
+            state_vector = state_vector.unsqueeze(1)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        if logits.is_nested:
+            # pad them with a negative number
+            logits = torch.nested.to_padded_tensor(logits, -100.0)
+
+        dist = torch.distributions.Categorical(logits=logits)
+
+        return dist
+
+    def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
+        return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+
+
+class RulesSelectorActorCriticRAG(BaseAgent):
+    """The rule-based agent generates a set of rules based on the environment state."""
+
+    def __init__(
+        self,
+        actor: layers.CrossAttentionNetwork,
+        task_text: str,
+        action_space_text: str,
+        llm: BaseChatModel,
+        embedder: Embeddings,
+        max_rule_combinations: int = 1,
+        num_gen_rules: int = 1,
+        store_size: int = 1000,
+        num_store_queries: int = 50,
+        example_rules: Optional[str] = None,
+        max_parse_attempts: int = 3,
+        verbose: bool = False,
+        critic: Optional[layers.CrossAttentionNetwork] = None,
+        deterministic: bool = False,
+        use_thoughts: bool = True,
+        in_context_learning: bool = False,
+        optimize_thoughts_only: bool = False,
+    ):
+        super().__init__(
+            task_text=task_text,
+            action_space_text=action_space_text,
+            llm=llm,
+            use_thoughts=use_thoughts,
+        )
+
+        self.in_context_learning = in_context_learning
+        self.actor = actor
+        self.critic = critic
+        self.max_rule_combinations = max_rule_combinations
+        self.embedder = embedder
+        self.num_store_queries = num_store_queries  # number of rules to select from
+        self.num_gen_rules = num_gen_rules  # number of rules to generate
+        self.example_rules = example_rules
+        self.max_parse_attempts = max_parse_attempts
+        self.verbose = verbose
+        self.deterministic = deterministic
+        self.optimize_thoughts_only = optimize_thoughts_only
+        self.rule_store = deque(maxlen=store_size)
+        if self.optimize_thoughts_only:
+            self.use_thoughts = False  # they will be randomly generated
+
+    def similarity_search(self, query: torch.Tensor) -> list[dict]:
+        """
+        Perform vector similarity search over a store of embeddings.
+
+        Each store entry is a dictionary with the keys:
+        - "key": the vector (torch.Tensor)
+        - "metadata": additional data associated with the vector.
+
+        Parameters:
+        - query (torch.Tensor): The query vector.
+
+        Returns:
+        - list[dict]: The top_k items from the store with the highest similarity.
+        """
+
+        if len(self.rule_store) == 0:
+            return []
+
+        # Convert the stored vectors to a single torch tensor.
+        vectors = torch.stack(
+            [
+                (
+                    item["key"]
+                    if isinstance(item["key"], torch.Tensor)
+                    else torch.tensor(item["key"])
+                )
+                for item in self.rule_store
+            ]
+        )
+
+        # Normalize the query and stored vectors.
+        query_norm = query / torch.norm(query)
+        vectors_norm = vectors / torch.norm(vectors, dim=1, keepdim=True)
+        # Compute cosine similarity as dot product.
+        scores = torch.matmul(vectors_norm, query_norm)
+        # Higher score means higher similarity.
+        top_indices = torch.argsort(scores, descending=True)[
+            : (self.num_store_queries - 1)
+        ]
+        # Return the top_k results from the store.
+        return [self.rule_store[i] for i in top_indices.tolist()]
+
+    def pre_action(self, outputs: Dict, messages: List[Dict]):
+        super().pre_action(outputs, messages)
+        self.gen_rules(outputs, messages)
+
+    def gen_rules(self, outputs: dict, messages: list[dict]) -> List[str]:
+        """Wrapper for generating rules that includes combinations of and embeddings for rules.
+        First, generates combinations of rules, next it filters using an RL selector
+        """
+        max_attemps = 0
+        while max_attemps < self.max_parse_attempts:
+            try:
+                if not self.optimize_thoughts_only:
+                    rules = _gen_rules(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_gen_rules,
+                        self.example_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    rules = [
+                        _gen_thoughts_for_rule_agents(
+                            outputs, messages, self.llm, save_prompts=False
+                        )
+                        for _ in range(self.num_gen_rules)
+                    ]
+                    outputs["rules"] = rules
+                # check that we have at least one rule to select from
+                if isinstance(rules, list) and len(rules) > 0:
+                    break
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error: {e}")
+                max_attemps += 1
+        if max_attemps == self.max_parse_attempts:
+            raise ValueError("Failed to generate rules")
+
+        if self.in_context_learning:
+            # use the critic to rank the rules
+            rules_emb = self.embedder.embed_documents(rules)
+            dev = next(self.actor.parameters()).device
+            rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(dev)
+            state_vector = outputs["state_vector"]
+            if state_vector.dim() == 1:
+                state_vector = state_vector.unsqueeze(0)
+
+            queries, keys = rules_emb, state_vector
+            if rules_emb.shape[0] > 1:
+                with torch.no_grad():
+                    values = (
+                        self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    )
+                    # values = (values - values.mean()) / (values.std() + 1e-6)
+                    values = 0.1 + 0.8 * (values - values.min()) / (
+                        values.max() - values.min()
+                    )
+
+                # append the the score to each rule
+                scored_rules = [
+                    f"{r} --> {{'score': {v.item():.2f}}}"
+                    for r, v in zip(rules, values)
+                ]
+                outputs["scored_rules"] = scored_rules
+
+                # sort the rules by the critic values
+                ix = np.argsort(values)[::-1]
+                scored_rules = [scored_rules[i] for i in ix]
+
+                if not self.optimize_thoughts_only:
+                    new_rules = _gen_rules_with_in_context_learning(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_rules,
+                        scored_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    # here we save the prompt/answerbecause we will use them to optimize the thoughts
+                    new_rules = [
+                        _gen_thoughts_with_in_context_learning(
+                            outputs, messages, self.llm, scored_rules, save_prompts=True
+                        )
+                        for _ in range(self.num_rules)
+                    ]
+                rules = new_rules
+
+        outputs["rules"] = rules
+
+        # get the rules and state embeddings
+        device = next(self.actor.parameters()).device
+        rules_emb = self.embedder.embed_documents(rules)
+        rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(device)
+        outputs["rules_emb"] = rules_emb
+
+        # new here!! --- Need to retrieve rules from database
+        # we will save the state as the document and the rules and their embeddings as the metadata
+        retrieved = self.similarity_search(outputs["state_vector"])
+        if len(retrieved) > 0:
+            # we have some retrieved rules
+            retrieved_rules = [item["metadata"]["rules"] for item in retrieved]
+            retrieved_rule_embs = [item["metadata"]["rule_embs"] for item in retrieved]
+
+            # concatenate the new rules with the retrieved ones
+            rules += retrieved_rules
+            rules_emb = torch.cat(
+                [rules_emb, torch.stack(retrieved_rule_embs)],
+            )
+
+        # get the rule scores
+        state_vector = outputs["state_vector"]
+        if state_vector.dim() == 1:
+            state_vector = state_vector.unsqueeze(0)
+
+        queries, keys = rules_emb, state_vector
+        with torch.no_grad():
+            logits = self.actor(queries, keys)
+
+        dist = torch.distributions.Categorical(logits=logits)
+        if not self.deterministic:
+            sel_idx = dist.sample()
+        else:
+            sel_idx = torch.argmax(logits)
+
+        entropy = dist.entropy()
+
+        # get the selected rule
+        sel_rule = rules[sel_idx]
+
+        outputs["logits"] = logits
+        outputs["sel_logprob"] = dist.log_prob(sel_idx)
+        outputs["sel_idx"] = sel_idx
+        outputs["sel_rule"] = sel_rule
+        outputs["entropy"] = entropy
+
+        if hasattr(self, "critic") and self.critic is not None:
+            value = self.critic(queries, keys)
+            outputs["value"] = value.squeeze()
+
+        # store the state vector and the selected rule in the rule store
+        for j in range(self.num_gen_rules):
+            rule_entry = {
+                "key": outputs["state_vector"],
+                "metadata": {
+                    "rules": outputs["rules"][j],
+                    "rule_embs": rules_emb[j],
+                    "state_text": outputs["state_text"],
+                },
+            }
+            self.rule_store.append(rule_entry)
+
+        # updat ethe output rules to include all the rules
+        outputs["rules"] = rules
+        outputs["rules_emb"] = rules_emb
+
 
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])

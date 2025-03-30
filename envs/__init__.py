@@ -29,8 +29,10 @@ HeatAlerts = partial(
     top_k_fips=10,
 )
 BuySellSimple = partial(BuySellSimpleLang)
-BinPacking = partial(BinPackingLang)
-BinPackingIncremental = partial(BinPackingIncrementalLang)
+BinPacking = partial(BinPackingLang, env_config=dict(time_horizon=16))
+BinPackingIncremental = partial(
+    BinPackingIncrementalLang, env_config=dict(time_horizon=16)
+)
 
 UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz", time_discount=0.95)
 MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discount=0.95)
@@ -46,8 +48,10 @@ HeatAlertsNumeric = partial(
     top_k_fips=10,
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
-BinPackingNumeric = partial(BinPackingNumeric)
-BinPackingIncrementalNumeric = partial(BinPackingIncrementalNumeric)
+BinPackingNumeric = partial(BinPackingNumeric, env_config=dict(time_horizon=16))
+BinPackingIncrementalNumeric = partial(
+    BinPackingIncrementalNumeric, env_config=dict(time_horizon=16)
+)
 
 
 kwargs = {"disable_env_checker": True}
