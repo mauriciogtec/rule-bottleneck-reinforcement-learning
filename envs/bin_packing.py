@@ -29,9 +29,12 @@ class BinPacking(gym.Env):
     def __init__(self, env_config={}):
         config_defaults = {
             "bag_capacity": 9,
-            "item_sizes": [2, 3],
-            "item_probabilities": [0.8, 0.2],
-            "time_horizon": 1000,
+            # "item_sizes": [2, 3],
+            # "item_probabilities": [0.8, 0.2],
+            "item_sizes": [2, 3, 5],
+            "item_probabilities": [0.7, 0.2, 0.1],
+            # "time_horizon": 1000,
+            "time_horizon": 32,
         }
 
         for key, val in config_defaults.items():
