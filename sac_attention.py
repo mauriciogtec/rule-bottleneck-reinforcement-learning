@@ -13,6 +13,7 @@ from typing import Literal, Optional
 import gymnasium as gym
 import jsonlines
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -442,7 +443,8 @@ def main(args: Args):
             resume='auto',
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
-        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+        # examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+        example_records = []
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -766,8 +768,16 @@ def main(args: Args):
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
             if args.track:
-                examples_table.add_data(global_step, run_id, example)
-                wandb.log({"examples": examples_table})
+                # examples_table.add_data(global_step, run_id, example)
+                example_records.append(
+                    {
+                        "global_step": global_step,
+                        "run_id": run_id,
+                        "example": example,
+                    }
+                )
+                examples_df = pd.DataFrame(example_records, columns=["global_step", "run_id", "example"])
+                wandb.log({"examples": wandb.Table(dataframe=examples_df)})
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
