@@ -116,7 +116,7 @@ class BaseAgent:
             }
             # messages collects the conversation between the user and the LLM
             # in the format required by the openai API
-            messages = [{"role": "system", "content": initial_prompt}]
+            messages = [{"role": "user", "content": initial_prompt}]
 
             # Pre-action step (e.g., stores thoughts in the outputs)
             self.pre_action(outputs, messages)
@@ -181,9 +181,11 @@ class BaseAgent:
 
     def system_prompt_with_state(self, state_text: str) -> str:
         return (
-            f"### Task\n\n {self.task_text}"
+            f"You are a decision making agent tasked with choosing an optimal action to understand the problem."
+            " You will be given the task context, problem state, and possible action."
+            f"\n\n### Problem\n\n {self.task_text}"
+            f"\n\n### Current state of the  problem\n\n{state_text}"
             f"\n\n### Possible actions\n\n{self.action_space_text}"
-            f"\n\n### Current state of the decision problem\n\n{state_text}"
         )
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
@@ -214,10 +216,18 @@ class BaseAgent:
         self.gen_explanation(outputs, messages)
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
+        # prompt = (
+        #     "First, reason about what elements should be considered when choosing the optimal action."
+        #     " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
+        #     " of each action in the current state."
+        # )
         prompt = (
-            "First, reason about what elements should be considered when choosing the optimal action."
-            " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
-            " of each action in the current state."
+            "Now, let's take it step by step. First, reason about what elements should be"
+            " considered when choosing the optimal action. Your thoughts must consist short thoughts,"
+            " each of a most 6 words. Thoughts may content (1) important observations about the current state of the problem,",
+            " (2) elements to prioritize in decision making according the reward/cost (3) reasoning about the how each action"
+            " could affect the future state of the system; (4) expectations about the future state of the system over all."
+            " Do not make more than 10 thoughts since less thoughts are preferred as long as they suffice to make an optimal choice."
         )
         messages.append({"role": "user", "content": prompt})
         outputs["thoughts"] = invoke_with_retries(
@@ -226,10 +236,33 @@ class BaseAgent:
         messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
-        return _gen_explanation(outputs, messages, self.llm)
+        """Generate explanation and update message list"""
+
+        explanation_prompt = ""
+
+        if self.use_thoughts:
+            explanation_prompt += (
+                f"### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
+
+        explanation_prompt += (
+            f"### Selected Action\n\n"
+            "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
+            f"{outputs['action']}\n\n"
+            f"### Task\n\nNow, explain why you chose the optimal action."
+            " Your response should be a short paragraph with 1-3 sentences explaining the reasoning behind your choice."
+         )
+        
+        tmp_messages = [{"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}]
+        outputs["explanation"] = invoke_with_retries(
+            self.llm, tmp_messages, temperature=0.5, max_tokens=200
+        ).content
+        # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
 NoThoughtsAgent = partial(BaseAgent, use_thoughts=False)
+
 
 
 def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
@@ -334,19 +367,43 @@ def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = T
     return response
 
 
-def _gen_explanation(outputs, messages, llm):
-    """Generate explanation and update message list"""
-    explanation_prompt = (
-        f"You chose action {outputs['action']} in the current problem state. "
-        "Explain why you chose the optimal action based on the conversation. "
-        "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
-    )
 
-    messages.append({"role": "user", "content": explanation_prompt})
+def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
+
+    explanation_prompt = ""
+
+    if use_thoughts:
+        explanation_prompt += (
+            f"### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    # add rules
+    if "sel_rule" in outputs:
+        explanation_prompt += (
+            f"\n\n### Selected rule\n\n"
+            f"Given your previous reasoning, you selected the following rule to make a decision\n:{outputs['sel_rule']}\n\n"
+        )
+    else:
+        explanation_prompt += (
+            f"\n\n### Selected rules\n\n"
+            f"Given your previous reasoning, you selected the following rules to make a decision\n:{outputs['rules']}\n\n"
+        )
+
+
+    explanation_prompt += (
+        f"### Selected Action\n\n"
+        "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
+        f"{outputs['action']}\n\n"
+        f"### Task\n\nNow, explain why you chose the optimal action."
+        " Your response should be a short paragraph with 1-3 sentences explaining the reasoning behind your choice."
+    )
+    
+    tmp_messages = [{"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}]
     outputs["explanation"] = invoke_with_retries(
-        llm, messages, temperature=0.5, max_tokens=200
+        llm, tmp_messages, temperature=0.5, max_tokens=200
     ).content
-    messages.append({"role": "assistant", "content": outputs["explanation"]})
+    # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
 def _gen_rules(
@@ -512,6 +569,10 @@ class LLMRulesAgent(BaseAgent):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
         rules = outputs["rules"]
         return _gen_rule_scores(outputs, messages, self.llm, rules, system_prompt)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 LLMRulesAgentNoThoughts = partial(LLMRulesAgent, use_thoughts=False)
@@ -763,6 +824,10 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
         return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 class RulesSelectorActorCriticRAG(BaseAgent):
@@ -1081,6 +1146,10 @@ class RulesSelectorActorCriticRAG(BaseAgent):
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
         return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 class LLMFineTuningAgent(BaseAgent):
