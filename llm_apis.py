@@ -270,15 +270,16 @@ class HUITOpenAI:
         **kwargs: Any,
     ) -> NamedTuple:
         # 1. Construct the payload
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-            }
-        )
+        payload_dict = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if not self.model.startswith("o3"):
+            payload_dict["max_tokens"] = max_tokens
+            payload_dict["temperature"] = temperature
+            payload_dict["top_p"] = top_p
+
+        payload = json.dumps(payload_dict)
 
         headers = {
             "Content-Type": "application/json",
@@ -447,7 +448,7 @@ if __name__ == "__main__":
     # print(result.content)
 
     # llm = HUITOpenAI("gpt-4o-mini-huit")
-    llm = HUITOpenAI("o1-mini")
+    llm = HUITOpenAI("o3-mini-huit")
     # llm = get_llm_api("meta.llama3-2-3b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-2-11b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-3-70b-instruct-v1:0")
