@@ -58,6 +58,8 @@ class Args:
     """the logging frequency of the examples"""
     resume: bool = False
     """if toggled, tries to resume training from the latest checkpoint"""
+    reinit: bool = False
+    """if toggled, reinitializes the wandb run"""
     ckpt_interval: int = 200
     """the saving interval of the model"""
     overwrite_ckpt: bool = False
@@ -70,7 +72,7 @@ class Args:
     """the number of parallel game environments"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
-    max_episode_steps: Optional[int] = 16
+    max_episode_steps: Optional[int] = 32
     """the maximum number of steps per episode"""
 
     # Algorithm
@@ -96,7 +98,7 @@ class Args:
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 32
     """the frequency of updates for the target networks"""
-    tau: float = 0.5
+    tau: float = 0.25
     """target smoothing coefficient (default: 1)"""
     alpha: float = 0.1
     """Entropy regularization coefficient."""
@@ -163,26 +165,31 @@ class Args:
     # Torch compile
     compile_torch: bool = False  # needs fix
 
-
 def make_env(env_id, seed, max_episode_steps=None):
-    def scale_reward(r):
-        return r / max_episode_steps
+    # def scale_reward(r):
+    #     return r / max_episode_steps
 
     def thunk():
         env = gym.make(env_id)
         if env_id == "HeatAlerts":
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
+            pass
+            # env = gym.wrappers.TransformReward(env, func=scale_reward)
             # if eval:
             #     env.penalty = 0.0  # no penalty during evaluation
         elif env_id in ("BinPacking", "BinPackingIncremental"):
+            def scale_reward(r):
+                return r / 100.0
             env = gym.wrappers.TransformReward(env, func=scale_reward)
+        
         if env_id not in ("BinPacking", "BinPackingIncremental"):
             env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
 
     return thunk
+
 
 
 def save_checkpoint(state, checkpoint_path):
@@ -398,6 +405,7 @@ def update_alpha(
 
 def main(args: Args):
     run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
+    run_id = run_id.replace("/Llama", "-llama")
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
     # configure logging
@@ -443,6 +451,7 @@ def main(args: Args):
             monitor_gym=True,
             save_code=False,
             resume='auto',
+            reinit=args.reinit,
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
         # examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
@@ -798,7 +807,7 @@ def main(args: Args):
                 best_model_epoch = global_step
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        autoreset = np.logical_or(trunc, dones)
+        autoreset = torch.logical_or(torch.FloatTensor(trunc).to(dev), dones)
         obs_vec, obs_text = next_obs_vec, next_obs_text
         rules = next_rules
         rules_emb = next_rules_emb
