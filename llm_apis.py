@@ -305,6 +305,7 @@ class HUITOpenAI:
 
         # 3. Parse the response
         result_json = response.json()
+        # print(result_json)
         content = result_json["choices"][0]["message"]["content"]
 
         return Reponse(content=content)
@@ -324,7 +325,7 @@ class HFMetaWrapper:
         self,
         messages: List[Dict[Literal["role", "content"], str]],
         max_tokens: int = 100,
-        temperature: float = 1.0,
+        temperature: float = 0.0,
         top_p: float = 0.9,
         **kwargs: Any,
     ) -> NamedTuple:
@@ -364,6 +365,9 @@ ModelAPIDict = {
     "mistral.mistral-large-2407-v1:0": HUITMistral,
     "gpt-4o-mini-huit": HUITOpenAI,
     "gpt-4o-mini": ChatOpenAI,
+    "o3-mini-huit": HUITOpenAI,
+    "nbd22/Llama-3.1-8B-Instruct-GRPO-gsm8k-ft-lora": HFMetaWrapper,
+    "AlistairPullen/llama-3.1-8B-grpo": HFMetaWrapper,
 }
 
 ValidLLMs = Literal[
@@ -372,6 +376,7 @@ ValidLLMs = Literal[
     "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "nbd22/Llama-3.1-8B-Instruct-GRPO-gsm8k-ft-lora",
     "AlistairPullen/llama-3.1-8B-grpo",
     "meta.llama3-1-8b-instruct-v1:0",
     "meta.llama3-1-70b-instruct-v1:0",
@@ -381,6 +386,7 @@ ValidLLMs = Literal[
     "mistral.mistral-large-2407-v1:0",
     "gpt-4o-mini-huit",
     "gpt-4o-mini",
+    "o3-mini-huit",
 ]
 
 
@@ -410,7 +416,22 @@ def invoke_with_retries(
 
 
 def get_llm_api(model: ValidLLMs) -> Any:
-    return ModelAPIDict[model](model=model)
+    api = ModelAPIDict.get(model)
+    if api is None:
+        raise ValueError(f"Model {model} not supported.")
+    elif api is HFMetaWrapper:
+        llm = transformers.AutoModelForCausalLM.from_pretrained(model)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model)
+
+        # prepare model so that there are no gradients
+        llm.eval()
+        for param in llm.parameters():
+            param.requires_grad = False
+
+        llm = api(model=llm, tokenizer=tokenizer)
+        return llm
+    else:
+        return api(model=model)
 
 
 if __name__ == "__main__":
@@ -425,7 +446,8 @@ if __name__ == "__main__":
     # result = llm.invoke(messages, max_tokens=10)
     # print(result.content)
 
-    llm = HUITOpenAI("gpt-4o-mini")
+    # llm = HUITOpenAI("gpt-4o-mini-huit")
+    llm = HUITOpenAI("o1-mini")
     # llm = get_llm_api("meta.llama3-2-3b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-2-11b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-3-70b-instruct-v1:0")
