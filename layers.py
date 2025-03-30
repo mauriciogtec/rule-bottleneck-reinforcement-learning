@@ -223,7 +223,7 @@ class CrossAttentionNetwork(nn.Module):
                 )
             )
 
-        self.linear = nn.Linear(hidden_dim, 1)
+        self.linear = nn.Linear(hidden_dim, 1, bias=True)
 
     def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
         if self.normalize_inputs:

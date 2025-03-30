@@ -255,7 +255,7 @@ def _gen_thoughts(outputs, messages, llm, save_prompts: bool = True):
         " Thoughts must contain: 1) observations about the current state of the problem;",
         " 2) observations about the reward/cost; 3) how each action will affect the future state of the system;"
         " 4) other believes about the future state of the system."
-        " Do not make more than 10 thoughts and each thought should be at most 6 words."
+        " Do not make more than 5 thoughts and each thought should be at most 6 words."
     )
     system_prompt = outputs["initial_prompt"]    
     tmp_messages = [{"role": "user", "content": system_prompt + f"\n\n###Thoughts task\n\np{thoughts_prompt}"}]
@@ -416,7 +416,7 @@ def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
 
 
 def _gen_rules(
-    outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True
+    outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True, 
 ):
     
     rules_prompt = outputs["initial_prompt"] 
@@ -426,32 +426,45 @@ def _gen_rules(
             f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
         )
 
+    if num_rules > 1:
+        rules_prompt += (
+            f"\n\n### Rule generation task\n\n"
+            f"Now, suggest a set of {num_rules} potential rules that could be useful to make an optimal decision in the current state."
+        )
+    else:
+        rules_prompt += (
+            f"\n\n### Rule generation task\n\n"
+            f"Now, suggest one rule that is useful to make an optimal decision in the current state."
+        )
+
     rules_prompt += (
-        f"Now, suggest {num_rules} standalone rules that are useful that yield the optimal decision when applied to the current state. "
-        " For each rule, first provide the background motivation."
-        " Each rule and its background must explicitly consider the sequential dependency of the problem, i.e.,"
-        " how current actions affect future states and depend on expecations of the future."
-        " Provide each rule in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
+        " Provide one line per rule in the following JSON schema:\n\n"
         # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        # " {'background' str, 'rule': str, 'state relevance': str}\n\n"
-        " {'background' str, 'rule': str}\n\n"
-        "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
-        "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
+        # " {'background' <str>, 'rule': <str>, 'state relevance': <str>}\n\n"
+        " {'background' <str>, 'rule': <str>}\n\n"
+        # " - {'rule': str, 'background': str}\n\n"
+        "- The 'background' should be a rationale to determine an optimal action explicitly reasoning about future"
+        " the sequential nature of the problem and how each action would allow maximizing cumulative reward/minimizing cost."
+        " It must consist of up to 4 sentences of at most 6 words each.\n"
+        "- The rule should describe an explicit recipe to determine the optimal action as a function of the current problem state\n"
+        "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
+        " However, the rule must allow to determine the optimal action in the current state.\n"
         # "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         # "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
         # "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
-        "- Start each JSON rule/line with the characters '```- {\"'.\n"
     )
 
-    if example_rules is not None:
-        rules_prompt += f"\n\n### Example rules\n\n{example_rules}\n\n"
+    if num_rules > 1:
+        rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
+    
+    rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
+    
 
-    # tmp_messages = messages.copy()
-    # tmp_messages.append({"role": "user", "content": rules_prompt})
     tmp_messages = [{"role": "user", "content": rules_prompt}]
     response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
     rules = parse_rules(response)
     outputs["rules"] = rules
+    outputs["rules_str"] = response
 
     # send second call using the OpenAI API
     if save_prompts:
@@ -525,7 +538,7 @@ def _gen_thoughts_with_in_context_learning(
         " Thoughts must content (1) observations about the current state of the problem,",
         " (2) observations about the reward/cost (3) reasoning about the how each action"
         " will affect the future state of the system; (4) other believes about the future state of the system."
-        " Do not make more than 10 thoughts and each thought should be at most 6 words.\n\n"
+        " Do not make more than 5 thoughts and each thought should be at most 6 words.\n\n"
         f"Below are examples of answers ranked by their **quality score** in [0,1]. Your goal is to propose thoughts with high quality scores.\n\n"
         f"### Example answers\n\n{scored_thoughts}\n\n"
     )
