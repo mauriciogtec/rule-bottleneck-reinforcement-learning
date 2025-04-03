@@ -196,7 +196,7 @@ def save_checkpoint(state, checkpoint_path):
 
 def load_checkpoint(checkpoint_path, device):
     if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device)
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
     else:
         logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
         return None
