@@ -624,9 +624,15 @@ def main(args: Args):
 
     # expand state space with the rules, i.e., internal states
     with torch.no_grad():
-        outputs, messages = lang_agent.parallel_pipeline(
-            obs_text, obs_vec, pre_action_only=True
-        )
+        if args.parallel_pipeline:
+            outputs, messages = lang_agent.parallel_pipeline(
+                obs_text, obs_vec, pre_action_only=True
+            )
+        else:
+            outputs, messages = lang_agent.pipeline(
+                obs_text, obs_vec, pre_action_only=True
+            )
+
     rules = [x["rules"] for x in outputs]
     rules_emb = [x["rules_emb"] for x in outputs]
     sel_idxs = [x["sel_idx"] for x in outputs]
@@ -976,12 +982,12 @@ if __name__ == "__main__":
     if not args.thoughts:
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
-        args.agent += "-no-in-context"
+        args.agent += "-no-cl"
     if args.rule_reward_coef != 1.0:
         args.agent += f"-expl-rew-{args.rule_reward_coef}"
     if args.optimize_thoughts_only:
         args.agent += "-oto"
     
-    args.agent += "--" + args.llm
+    args.agent += "--" + args.llm[:20]
 
     main(args)
