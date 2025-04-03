@@ -115,13 +115,13 @@ class Args:
     # PPO specific arguments
     env_id: str = "Uganda"
     """the id of the environment"""
-    total_timesteps: int = 10000
+    total_timesteps: int = 5000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 32
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -139,7 +139,7 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
+    ent_coef: float = 0.0
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -153,6 +153,8 @@ class Args:
     """the dropout rate"""
     cot_coef: float = 0.3
     """The weight to add to the COT tokens"""
+    prompt_coef: float = 0.01
+    """The weight to add to the prompt tokens"""
 
     rolling_returns_window: int = 64
     """the rolling rewards window"""
@@ -165,7 +167,7 @@ class Args:
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "float16"
     """The dtype to use for training"""
-    gradient_accumulation_steps: int = 16
+    gradient_accumulation_steps: int = 32
     """The number of gradient accumulation steps"""
     minibatch_size: int = 1
     """The minibatch size"""
@@ -176,7 +178,7 @@ class Args:
     reinit: bool = False
     """if toggled, the wandb run will be reinitialized"""
 
-    max_chunk_size: int = 256
+    max_chunk_size: int = 2000
     """the maximum chunk size for the model"""
 
     max_episode_steps: int = 32
@@ -210,6 +212,19 @@ def collate_samples(x: List[List]):
         return nested_tensor(x)
 
 
+def find_subsequence(sequence: torch.Tensor, subseq: List[int]) -> Optional[int]:
+    """
+    Searches for the first occurrence of subseq (a list of ints) within sequence (a 1D tensor).
+    Returns the starting index if found, else returns None.
+    """
+    seq_list = sequence.tolist()
+    subseq_len = len(subseq)
+    for i in range(len(seq_list) - subseq_len + 1):
+        if seq_list[i:i+subseq_len] == subseq:
+            return i
+    return None
+
+
 def to_token_data_loader(
     messages: List[List[dict]],
     tokenizer: AutoTokenizer,
@@ -240,7 +255,7 @@ def to_token_data_loader(
         batch_size=minibatch_size,
         shuffle=False,
         collate_fn=collator,
-        num_workers=min(len(prompts), os.cpu_count() - 1),
+        num_workers=0,
     )
 
     return accelerator.prepare(loader)
@@ -342,31 +357,44 @@ def generate_with_model(
     # _sequences = []
     _input_ids = []
     _values = []
-    _envs = []
+    _env_orderings = []
     _output_ids = []
     # _ref_logprobs = []
     with torch.no_grad():
         for batch in loader:
+ 
+
             genout = accelerator.unwrap_model(model).generate(
+            # genout = model.generate(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 return_dict_in_generate=True,
-                output_logits=True,
-                output_hidden_states=True,
+                # output_logits=True,
+                # output_hidden_states=False,
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
-            last_hidden_states = [x[-1][:, -1] for x in genout.hidden_states]
-            last_hidden_states = torch.stack(last_hidden_states, dim=1)
-            value = (
-                accelerator.unwrap_model(model).v_head(last_hidden_states).squeeze(-1)
+            # value = torch.stack([value[..., n_i, 0] for n_i in batch["input_len"]])  # only last
+            # logits = torch.stack(genout.logits, dim=1)
+            # num_new_tokens = logits.shape[1]
+            lens = [x.shape[0] for x in batch["input_ids"]]
+            new_tokens = genout.sequences[:, lens[0]:]
+
+            combined_tokens = torch.cat([batch["input_ids"], new_tokens], dim=1)
+            combined_attn_mask = torch.cat([batch["attention_mask"], torch.ones_like(new_tokens)], dim=1)
+            outputs =  model.pretrained_model(
+                combined_tokens,
+                attention_mask=combined_attn_mask,
+                return_dict=True,
+                output_hidden_states=True,
             )
-            logits = torch.stack(genout.logits, dim=1)
-            num_new_tokens = logits.shape[1]
-            new_tokens = genout.sequences[:, -num_new_tokens:]
-            logprobs = F.log_softmax(logits, dim=-1)
-            sel_logprobs = logprobs.gather(-1, new_tokens.unsqueeze(-1)).squeeze(-1)
+            last_layer_hidden = outputs.hidden_states[-1]
+            hidden_states = last_layer_hidden[:, lens[0] - 1]
+            value = model.v_head(hidden_states).squeeze(-1)
+
+            logprobs = F.log_softmax(outputs.logits, dim=-1)    
+            sel_logprobs = logprobs.gather(-1, genout.sequences.unsqueeze(-1)).squeeze(-1)
             # _logits.append(accelerator.gather(logits))
             _logprobs.append(accelerator.gather(sel_logprobs))
             # _hidden_states.append(accelerator.gather(genout.hidden_states))
@@ -375,18 +403,18 @@ def generate_with_model(
             _output_ids.append(accelerator.gather(new_tokens))
 
             _values.append(accelerator.gather(value)) # only the last one
-            _envs.append(
-                accelerator.gather(torch.tensor(batch["env_num"], device=logits.device))
+            _env_orderings.append(
+                accelerator.gather(torch.tensor(batch["env_num"], device=logprobs.device))
             )
 
-    for i, envs in enumerate(_envs):
-        for j, env in enumerate(envs):
+    for i, env_ordering in enumerate(_env_orderings):
+        for j, env in enumerate(env_ordering):
             new_text = tokenizer.decode(_output_ids[i][j], skip_special_tokens=True)
 
             result["input_tokens"][int(env)] = _input_ids[i][j]
             result["output_tokens"][int(env)] = _output_ids[i][j]
             result["logprobs"][int(env)] = _logprobs[i][j]
-            result["values"][int(env)] = _values[i][j][-1]
+            result["values"][int(env)] = _values[i][j]
             result["generated_text"][int(env)] = new_text
             # result["kl_reward"][int(env)] = _logprobs[i][j] - _ref_logprobs[i][j]
 
@@ -509,9 +537,9 @@ def main(args: Args):
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=1,
-        lora_alpha=4,
+        lora_alpha=1,
         target_modules="all-linear",
-        lora_dropout=0.05,
+        lora_dropout=0.0,
         bias="none",
     )
 
@@ -522,7 +550,7 @@ def main(args: Args):
         torch_dtype=dtype,
         low_cpu_mem_usage=True,
         use_cache=True,
-        cache_dir=f"{os.environ['HOME']}/.hf",
+        cache_dir=f"{os.environ.get('SCRATCH_DIR', 'HOME')}/.hf",
     )
     # ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
     #     args.llm,
@@ -540,7 +568,7 @@ def main(args: Args):
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
                 use_cache=True,
-                cache_dir=f"{os.environ['HOME']}/.hf",
+                cache_dir=f"{os.environ.get('SCRATCH_DIR', 'HOME')}/.hf",
             )
             model = PeftModel.from_pretrained(model, model_path)
             model = AutoModelForCausalLMWithValueHead.from_pretrained(
@@ -548,7 +576,7 @@ def main(args: Args):
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
                 use_cache=True,
-                cache_dir=f"{os.environ['HOME']}/.hf",
+                cache_dir=f"{os.environ.get('SCRATCH_DIR', 'HOME')}/.hf",
             )
 
     print_trainable_parameters(model)
@@ -565,6 +593,7 @@ def main(args: Args):
         llm=model,
         tokenizer=tokenizer,
     )
+    action_indicator_tokens = tokenizer.encode("[action]", add_special_tokens=False, return_tensors="pt").squeeze(0).to(dev)
 
     # Optimizer (8 bit variant)
     optimizer = PagedAdamW8bit(
@@ -577,9 +606,9 @@ def main(args: Args):
         gradient_accumulation_steps=args.gradient_accumulation_steps
     )
 
-    model, optimizer, tokenizer = accelerator.prepare(
-        model, optimizer, tokenizer
-    )
+    # model, optimizer, tokenizer = accelerator.prepare(
+    #     model, optimizer, tokenizer
+    # )
 
     global_step = 0
     start_time = time.time()
@@ -628,7 +657,6 @@ def main(args: Args):
         b_reward = [[] for _ in range(args.num_envs)]
         b_advantage = [[] for _ in range(args.num_envs)]
         b_returns = [[] for _ in range(args.num_envs)]
-        b_cot_coefs = [[] for _ in range(args.num_envs)]
 
         for step in tqdm(
             range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
@@ -670,24 +698,11 @@ def main(args: Args):
                 env_actions.append(action)
 
             # Step the environment
-            next_obs, env_rewards, dones, truncations, infos = envs.step(env_actions)
+            next_obs, env_rewards, next_dones, truncations, infos = envs.step(env_actions)
             _, next_state_text = next_obs
 
             for j in range(args.num_envs):
                 if not autoreset[j]:
-                    # # CRITICAL! ===
-                    # # We need to do a bit of surgery
-                    # # Add <|eot_id|> token at the end of the thought
-                    # # The value does not change, the logprob of the eot token should be 0
-                    # b_out_tok_j = F.pad(results["output_tokens"][j], (0, 1), value=tokenizer.eos_token_id)
-                    # b_value_j = F.pad(results["values"][j], (0, 1), value=results["values"][j][-1])
-                    # b_logprobs_j = args.cot_coef * F.pad(results["logprobs"][j], (0, 1), value=-0.001)
-
-                    # b_value[j].append(b_value_j)
-                    # b_output_tokens[j].append(b_out_tok_j)
-                    # b_logprob[j].append(b_logprobs_j)
-                    # b_reward[j].append(b_reward_j)
-
                     b_input_tokens[j].append(results["input_tokens"][j])
                     b_value[j].append(results["values"][j])
                     b_output_tokens[j].append(results["output_tokens"][j])
@@ -699,22 +714,11 @@ def main(args: Args):
                     # b_done_j[-1] = float(dones[j])
                     b_done[j].append(torch.tensor(dones[j], dtype=torch.float32).to(dev))
 
-                    b_cot_coef_j = torch.full(results["output_tokens"][j].shape, args.cot_coef)
                     
                     # find the split where the action starts to make the cot coefficient
-                    act_tokens = tokenizer.encode("[action]", add_special_tokens=False, return_tensors="pt").squeeze(0).to(dev)
-                    out_tokens = b_output_tokens[j][-1]  # get the last output tokens
-                    b_cot_coef_j = torch.ones(out_tokens.shape)
-                    found_act_token = False
-                    for k in range(len(out_tokens)- len(act_tokens)):
-                        if not found_act_token:
-                            # check match
-                            if torch.equal(out_tokens[k:k + len(act_tokens)], act_tokens):
-                                break
-                            else:
-                                b_cot_coef_j[k] = args.cot_coef 
-
-                    b_cot_coefs[j].append(b_cot_coef_j)
+                    # act_tokens = tokenizer.encode("[action]", add_special_tokens=False, return_tensors="pt").squeeze(0).to(dev)
+                    # out_tokens = b_output_tokens[j][-1]  # get the last output tokens
+   
 
             # add the transition to the buffer
             for j in range(args.num_envs):
@@ -766,6 +770,7 @@ def main(args: Args):
             autoreset = np.logical_or(dones, truncations)
             obs = next_obs
             state_text = next_state_text
+            dones = next_dones
 
             # save best model
             total_reward = np.mean(_rolling_returns)
@@ -775,6 +780,7 @@ def main(args: Args):
             ):
                 best_total_reward = total_reward
                 # best_model = model.state_dict()
+                
         #
         if iter % args.save_interval == 0 or iter == num_iterations:
             ckpt = {
@@ -793,18 +799,17 @@ def main(args: Args):
         loader = to_token_data_loader(
             messages, tokenizer, accelerator, minibatch_size, collator
         )
-        next_values = []
-        with torch.no_grad():
-            for batch in loader:
-                _, _, value = model(
-                    batch["input_ids"], attention_mask=batch["attention_mask"]
-                )
-                next_values.extend(accelerator.gather(value))
 
-        next_values = torch.stack(
-            [x[-1] for x in next_values]
-        )  # keep only the last value token
-        next_dones = torch.tensor(dones, dtype=dtype).to(dev)
+        results_next = generate_with_model(
+            model,
+            loader,
+            tokenizer,
+            accelerator,
+            max_new_tokens=256,
+        )
+
+        next_values = results_next["values"]
+        next_dones = torch.tensor(next_dones, dtype=dtype).to(dev)
 
         # We now need to perform a batch expansion step .
         # It is as follows
@@ -871,7 +876,7 @@ def main(args: Args):
         b_reward = list(itertools.chain(*b_reward))
         b_advantage = list(itertools.chain(*b_advantage))
         b_returns = list(itertools.chain(*b_returns))
-        b_cot_coefs = list(itertools.chain(*b_cot_coefs))
+        # b_cot_coefs = list(itertools.chain(*b_cot_coefs))
 
         def _fill_zeros(x, idx):
             out = torch.zeros_like(idx, dtype=x.dtype).to(x.device)
@@ -883,29 +888,38 @@ def main(args: Args):
         for j in range(len(b_value)):
             input_ids = torch.cat([b_input_tokens[j], b_output_tokens[j]])[:-1]
             labels = torch.cat([b_input_tokens[j], b_output_tokens[j]])[1:]
-            prompt_mask = torch.ones_like(input_ids)
+
+            prompt_mask = torch.ones_like(input_ids)  * args.cot_coef
             # the -1 below is to collapse all the prompt tokens to one state
-            prompt_mask[: (len(b_input_tokens[j]) - 1)] = 0
-            logprob = _fill_zeros(b_logprob[j], prompt_mask)
+            prompt_mask[: (len(b_input_tokens[j]) - 1)] = args.prompt_coef
+
+            # now find the action token
+            action_ix = find_subsequence(input_ids, action_indicator_tokens)
+            if action_ix is not None:
+                prompt_mask[action_ix - 1:] = 1.0
+
+            # logprob = _fill_zeros(b_logprob[j], prompt_mask)
             # done = _fill_zeros(b_done[j], prompt_mask)
             # reward = _fill_zeros(b_reward[j], prompt_mask)
             # advantage = _fill_zeros(b_advantage[j], prompt_mask)
             # returns = _fill_zeros(b_returns[j], prompt_mask)
             # value = _fill_zeros(b_value[j], prompt_mask)
-            cot_coef = _fill_zeros(b_cot_coefs[j], prompt_mask)
-
+            # cot_coef = torch.cat([torch.full_like(b_input_tokens[j], 0.01), b_cot_coefs[j]])
+# 
             dset.append(
                 {
                     "input_ids": input_ids,
                     "labels": labels,
                     "attention_mask": torch.ones_like(input_ids),
-                    "value": b_value[j],
-                    "logprob": logprob,
-                    "done": b_done[j],
-                    "reward": b_reward[j],
-                    "advantage": b_advantage[j],
-                    "returns": b_returns[j],
-                    "cot_coef": cot_coef,
+                    "prompt_mask": prompt_mask,
+                    "value": torch.stack(b_value[j:(j+1)]),
+                    "logprob": b_logprob[j].float(),
+                    "done": torch.stack(b_done[j:(j+1)]),
+                    "reward": torch.stack(b_reward[j:(j+1)]),
+                    "advantage": torch.stack(b_advantage[j:(j+1)]),
+                    "returns": torch.stack(b_returns[j:(j+1)]),
+                    "prompt_length": torch.LongTensor([len(b_input_tokens[j])]).to(dev),
+                    # "cot_coef": cot_coef,
                 }
             )
 
@@ -932,38 +946,41 @@ def main(args: Args):
                 S = args.max_chunk_size
                 num_chunks = 1 + (num_tokens - 1) // S
                 for c in range(num_chunks):
-                    mb = np.arange(c * S, min((c + 1) * S, num_tokens))
+                    start, end = c * S, min((c + 1) * S, num_tokens)
                     # cat input/output tokens and evaluate
-                    mb_input_ids = batch["input_ids"][:, mb]
-                    mb_labels = batch["labels"][:, mb]
-                    mb_attention_mask = batch["attention_mask"][:, mb]
-                    mb_advantages = torch.tensor(batch["advantage"]).to(dev)
-                    mb_values = torch.tensor(batch["value"]).to(dev)
-                    mb_returns = torch.tensor(batch["returns"]).to(dev)
-                    mb_cot_coef = torch.tensor(batch["cot_coef"][:, mb]).to(dev)
-                    mb_logprob = batch["logprob"][:, mb]
+                    mb_input_ids = batch["input_ids"][:, start:end]
+                    mb_labels = batch["labels"][:, start:end]
 
-                    if mb_attention_mask.sum() == 0:
-                        continue
+                    mb_advantages = batch["advantage"].squeeze(-1)
+                    mb_values = batch["value"].squeeze(-1)
+                    mb_returns = batch["returns"].squeeze(-1)
 
-                    new_logits, _, new_value = model(
-                        mb_input_ids,
-                        attention_mask=mb_attention_mask,
-                    )
-                    new_value = new_value[:, -1]
+                    mb_logprob = batch["logprob"][:, start:end]
+                    mb_prompt_mask = batch["prompt_mask"][:, start:end]
+                    mb_attention_mask = batch["attention_mask"][:, start:end]
+                    mb_prompt_length = batch["prompt_length"].squeeze(-1)
+
+                    # if mb_attention_mask.sum() == 0:
+                    #     continue
+
+                    # new_logits, _, new_value = model(
+                    #     mb_input_ids,
+                    #     # attention_mask=mb_attention_mask,
+                    # )
+                    outputs = model.pretrained_model(mb_input_ids, attention_mask=mb_attention_mask, output_hidden_states=True, return_dict=True)
+                    hidden_states = torch.cat([outputs.hidden_states[-1][:, n_j - 1] for n_j in mb_prompt_length])
+                    new_value = model.v_head(hidden_states).squeeze(-1)
 
                     gather_ixs = mb_labels.unsqueeze(-1)
+                    new_logprob = F.log_softmax(outputs.logits, dim=-1)
+                    new_logprob = new_logprob.gather(-1, gather_ixs).squeeze(-1)
 
-                    dist = torch.distributions.Categorical(logits=new_logits)
-                    new_entropy = dist.entropy()
-                    new_logprob = F.log_softmax(new_logits, dim=-1)
-
-                    # for simplicity
-                    new_logprob = (mb_cot_coef * mb_attention_mask * new_logprob.gather(-1, gather_ixs).squeeze(-1)).sum(-1)
-                    mb_logprob = (mb_cot_coef * mb_attention_mask * mb_logprob).sum(-1)
+                    new_logprob = (mb_prompt_mask * new_logprob).sum(-1)
+                    mb_logprob = (mb_prompt_mask * mb_logprob).sum(-1)
 
                     logratio = new_logprob - mb_logprob
-                    ratio = logratio.exp()
+                    ratio = logratio.clip(-5, 5).exp()
+
 
                     with torch.no_grad():
                         # calculate approx_kl http://joschu.net/blog/kl-approx.html
@@ -1002,7 +1019,7 @@ def main(args: Args):
                             mb_attention_mask * (new_value - mb_returns) ** 2
                         )
 
-                    entropy_loss = torch.mean(new_entropy)
+                    entropy_loss = torch.mean(new_logprob.clip(-1, 0))
                     # kl = (new_logprob - ref_logprob).mean()
                     loss = (
                         pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef

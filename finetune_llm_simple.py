@@ -708,7 +708,7 @@ def main(args: Args):
                     b_done_j[-1] = float(dones[j])
                     b_done[j].append(b_done_j)
 
-                    b_cot_coef_j = torch.full(results["output_tokens"][j].shape, args.cot_coef)
+                    b_cot_coef_j = torch.full(results["cot_coef"][j].shape, args.cot_coef)
                     
                     # find the split where the action starts to make the cot coefficient
                     act_tokens = tokenizer.encode("[action]", add_special_tokens=False, return_tensors="pt").squeeze(0).to(dev)
