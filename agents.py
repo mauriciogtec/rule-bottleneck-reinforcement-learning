@@ -1,3 +1,4 @@
+from collections import deque
 from functools import partial
 import os
 import re
@@ -37,7 +38,13 @@ def generate_rule_combinations(
 
 def parse_rules(x: str) -> List[str]:
     # 1. Remove the following patters
-    patterns = ["```yaml", "```yml", "```", "```json", "json", ]
+    patterns = [
+        "```yaml",
+        "```yml",
+        "```",
+        "```json",
+        "json",
+    ]
     x = re.sub("|".join(patterns), "", x)
 
     # 2. Remove trailing white space, and collapse new lines
@@ -109,7 +116,7 @@ class BaseAgent:
             }
             # messages collects the conversation between the user and the LLM
             # in the format required by the openai API
-            messages = [{"role": "system", "content": initial_prompt}]
+            messages = [{"role": "user", "content": initial_prompt}]
 
             # Pre-action step (e.g., stores thoughts in the outputs)
             self.pre_action(outputs, messages)
@@ -174,9 +181,12 @@ class BaseAgent:
 
     def system_prompt_with_state(self, state_text: str) -> str:
         return (
-            f"### Task\n\n {self.task_text}"
+            f"You are an agent tasked solving a sequential decision making problem."
+            " You will be given the task context, problem state, and possible actions."
+            " Your goal is to choose the optimal action to maximize the future cumulative reward."
+            f"\n\n### Problem\n\n{self.task_text}"
+            f"\n\n### Current state of the  problem\n\n{state_text}"
             f"\n\n### Possible actions\n\n{self.action_space_text}"
-            f"\n\n### Current state of the decision problem\n\n{state_text}"
         )
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
@@ -195,7 +205,7 @@ class BaseAgent:
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=10
+            self.llm, messages, max_tokens=10, temperature=0.0
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -207,23 +217,39 @@ class BaseAgent:
         self.gen_explanation(outputs, messages)
 
     def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
-        prompt = (
-            "First, reason about what elements should be considered when choosing the optimal action."
-            " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
-            " of each action in the current state."
-        )
-        messages.append({"role": "user", "content": prompt})
-        outputs["thoughts"] = invoke_with_retries(
-            self.llm, messages, temperature=0.5, max_tokens=256
-        ).content
-        messages.append({"role": "assistant", "content": outputs["thoughts"]})
-
+        return _gen_thoughts(outputs, messages, self.llm)
 
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
-        return _gen_explanation(outputs, messages, self.llm)
+        """Generate explanation and update message list"""
+        _gen_explanation(outputs, messages, self.llm)
+        # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
 NoThoughtsAgent = partial(BaseAgent, use_thoughts=False)
+
+
+def _gen_thoughts(outputs, messages, llm, save_prompts: bool = True):
+    thoughts_prompt = (
+        "Now, let's take it step by step. First, reason about what elements should be"
+        " considered when choosing the optimal action considering that actios affect the future state of the system."
+        " Thoughts must contain: 1) observations about the current state of the problem;",
+        " 2) observations about the reward/cost; 3) how each action will affect the future state of the system;"
+        " 4) other believes about the future state of the system."
+        " Do not make more than 5 thoughts and each thought should be at most 6 words."
+    )
+    system_prompt = outputs["initial_prompt"]    
+    tmp_messages = [{"role": "user", "content": system_prompt + f"\n\n###Thoughts task\n\np{thoughts_prompt}"}]
+    thoughts = invoke_with_retries(
+        llm, tmp_messages, temperature=0.5, max_tokens=256
+    ).content
+    if save_prompts:
+        # messages.append({"role": "user", "content": prompt})
+        # messages.append({"role": "assistant", "content": outputs["thoughts"]})
+        # save the prompt and response
+        # messages.append({"role": "user", "content": outputs["initial_prompt"] + prompt})
+        outputs["thoughts"] = thoughts
+    # messages.append({"role": "assistant", "content": outputs["thoughts"]})
+    return thoughts
 
 
 def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
@@ -285,7 +311,6 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     r4 = float("yes" in r4_.lower())
     temp_messages.append({"role": "assistant", "content": r4_})
 
-
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
     # r5_ = invoke_with_retries(self.llm, temp_messages, max_tokens=2).content
@@ -302,78 +327,171 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
 
 
-def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = True):
-    # prompt = (
-    #     "First, reason about what elements should be considered when choosing the optimal action"
-    #     " in the given task of the decision making agent."
-    #     " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
-    #     " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
-    #     " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
-    # )
-    prompt = (
-        "First, reason about what elements should be considered when choosing the optimal action."
-        " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
-        " of each action in the current state."
+# def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = True):
+#     # prompt = (
+#     #     "First, reason about what elements should be considered when choosing the optimal action"
+#     #     " in the given task of the decision making agent."
+#     #     " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+#     #     " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
+#     #     " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+#     # )
+#     prompt = (
+#         "First, reason about what elements should be considered when choosing the optimal action."
+#         " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
+#         " of each action in the current state."
+#     )
+#     tmp_messages = messages.copy()
+#     tmp_messages.append({"role": "user", "content": prompt})
+#     response = invoke_with_retries(
+#         llm, tmp_messages, temperature=0.5, max_tokens=256
+#     ).content
+
+#     if save_prompts:
+#         outputs["thoughts"] = response
+#         messages.append({"role": "user", "content": prompt})
+#         messages.append({"role": "assistant", "content": outputs["thoughts"]})
+
+#     return response
+
+def _gen_explanation(outputs, messages, llm, use_thoughts=True):
+    explanation_prompt = ""
+
+    if use_thoughts:
+        explanation_prompt += (
+            f"### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    explanation_prompt += (
+        f"### Selected Action\n\n"
+        "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
+        f"{outputs['action']}\n\n"
+        f"### Explanation Task\n\n"
+        "Explain how you chose the optimal action."
+        " Your response should be a short paragraph."
+        " Your explanation is meant for a human audience which cannot see the previous reasoning, so it must be self-contained."
+        " Do not guess. Answer solely based on the problem state and and previous reasoning about expectations of each action, sequential dependence, and reasoning about future reward/cost, ."
+        " Follow the template:"
+        " In the current state, I observed <state>. "
+        " Then, I reasoned that <thoughts>."
+        " I concluded that <action> is the optimal action.\n"
+        " - For the state and thoughts, include only the facts of the state that you used later to make a decision\n"
+        # " - For the thoughts, include expectations of each action, reasoning about future reward/cost, include only the most important thoughts. \n"
+        " - In both cases, use sentences with less than six words and no more than 3 sentences.\n"
     )
-    tmp_messages = messages.copy()
-    tmp_messages.append({"role": "user", "content": prompt})
-    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
-    
-    if save_prompts:
-        outputs["thoughts"] = response
-        messages.append({"role": "user", "content": prompt})
-        messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
-    return response
-    
-
-
-def _gen_explanation(outputs, messages, llm):
-    """Generate explanation and update message list"""
-    explanation_prompt = (
-        f"You chose action {outputs['action']} in the current problem state. "
-        "Explain why you chose the optimal action based on the conversation. "
-        "Your response should be a short paragraph with 1-3 sentences that explain the reasoning behind your choice."
-    )
-
-    messages.append({"role": "user", "content": explanation_prompt})
+    tmp_messages = [
+        {"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}
+    ]
     outputs["explanation"] = invoke_with_retries(
-        llm, messages, temperature=0.5, max_tokens=200
+        llm, tmp_messages, temperature=0.0, max_tokens=200
     ).content
-    messages.append({"role": "assistant", "content": outputs["explanation"]})
+
+def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
+
+    explanation_prompt = outputs["initial_prompt"] + "\n\n"
+
+    if use_thoughts:
+        explanation_prompt += (
+            f"### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    # add rules
+    if "sel_rule" in outputs:
+        explanation_prompt += (
+            f"\n\n### Selected rule\n\n"
+            f"Given your previous reasoning, you selected the following rule to make a decision\n:{outputs['sel_rule']}\n\n"
+        )
+    else:
+        explanation_prompt += (
+            f"\n\n### Selected rule\n\n"
+            f"Given your previous reasoning, you selected the following rules to make a decision\n:{outputs['rules']}\n\n"
+        )
+
+    explanation_prompt += (
+        f"### Selected Action\n\n"
+        "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
+        f"{outputs['action']}\n\n"
+        f"### Explanation Task\n\n"
+        "Explain how you chose the optimal action."
+        " Your response should be a short paragraph."
+        " Your explanation is meant for a human audience which cannot see the previous reasoning, so it must be self-contained."
+        " Do not guess. Answer solely based on the problem state and and previous reasoning about expectations of each action, sequential dependence, and reasoning about future reward/cost, ."
+        " Follow the template:"
+        " In the current state, I observed <state>. "
+        " Then, I reasoned that <rule motivation in concise natural language>."
+        " I applied the rule stating that <rule recipe>."
+        " Applying this rule to current state, I concluded that <action> is the optimal action.\n"
+        " - For the state, include only the facts of the state that you used later to make a decision\n"
+        # " - For the thoughts, include expectations of each action, reasoning about future reward/cost, include only the most important thoughts. \n"
+        " - In both cases, use sentences with less than six words and no more than 3 sentences.\n"
+    )
+
+    tmp_messages = [{"role": "user", "content": explanation_prompt}]
+    outputs["explanation"] = invoke_with_retries(
+        llm, tmp_messages, temperature=0.0, max_tokens=200
+    ).content
+    # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
 def _gen_rules(
-    outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True
+    outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True, 
 ):
-    rules_prompt = (
-        f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
-        " For each rule, provide the explanation of why it is important to consider it at the given state."
-        " Each rule should be in machine-readable JSON Lines format. Each line should follow the following schema:\n\n"
+    
+    rules_prompt = outputs["initial_prompt"] 
+    if "thoughts" in outputs:
+        rules_prompt += (
+            f"\n\n### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    if num_rules > 1:
+        rules_prompt += (
+            f"\n\n### Rule generation task\n\n"
+            f"Now, suggest a set of {num_rules} potential rules that could be useful to make an optimal decision in the current state."
+        )
+    else:
+        rules_prompt += (
+            f"\n\n### Rule generation task\n\n"
+            f"Now, suggest one rule that is useful to make an optimal decision in the current state."
+        )
+
+    rules_prompt += (
+        " Provide one line per rule in the following JSON schema:\n\n"
         # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        " {'background' str, 'rule': str, 'state relevance': str}\n\n"
-        "- The 'background' should a brief introduction and motivation to the focus of the rule.\n"
-        "- The 'rule' should be a statement of the form '[do/select/prioritize] [if/when/condition]' where the condition must be relevant to the current state.\n"
-        "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
+        # " {'background' <str>, 'rule': <str>, 'state relevance': <str>}\n\n"
+        " {'background' <str>, 'rule': <str>}\n\n"
+        # " - {'rule': str, 'background': str}\n\n"
+        "- The 'background' should be a rationale to determine an optimal action explicitly reasoning about future"
+        " the sequential nature of the problem and how each action would allow maximizing cumulative reward/minimizing cost."
+        " It must consist of up to 4 sentences of at most 6 words each.\n"
+        "- The rule should describe an explicit recipe to determine the optimal action as a function of the current problem state\n"
+        "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
+        " However, the rule must allow to determine the optimal action in the current state.\n"
+        # "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
         # "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
-        "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
-        "- Start each line with the character '```- {\"'.\n"
+        # "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
     )
 
-    if example_rules is not None:
-        rules_prompt += f"\n\n### Example rules\n\n{example_rules}\n\n"
+    if num_rules > 1:
+        rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
+    
+    rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
+    
 
-    tmp_messages = messages.copy()
-    tmp_messages.append({"role": "user", "content": rules_prompt})
+    tmp_messages = [{"role": "user", "content": rules_prompt}]
     response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
     rules = parse_rules(response)
     outputs["rules"] = rules
+    outputs["rules_str"] = response
 
     # send second call using the OpenAI API
     if save_prompts:
-        messages.append({"role": "user", "content": rules_prompt})
+        # messages.append({"role": "user", "content": rules_prompt})
         rules_str = "\n".join(outputs["rules"])
-        messages.append({"role": "assistant", "content": rules_str})
+        # messages.append({"role": "assistant", "content": rules_str})
+        # outputs["rules"] = rules_str
 
     return rules
 
@@ -386,7 +504,15 @@ def _gen_rules_with_in_context_learning(
     scored_rules: str,
     save_prompts: bool = True,
 ):
-    rules_prompt = (
+    rules_prompt = outputs["initial_prompt"]
+
+    if "thoughts" in outputs:
+        rules_prompt += (
+            f"\n\n### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    rules_prompt += (
         f"Now, suggest {num_rules} rules that could be useful to make an optimal decision in the current state. "
         f"You will be given examples of rules ranked by their **fitness score** in [0,1]. Your goal is to propose only rules "
         " with high fitness scores.\n"
@@ -403,17 +529,18 @@ def _gen_rules_with_in_context_learning(
         f"### Scored rules\n\n{scored_rules}\n\n"
     )
 
-    tmp_messages = messages.copy()
-    tmp_messages.append({"role": "user", "content": rules_prompt})
+
+    tmp_messages = [{"role": "user", "content": rules_prompt}]
     response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
     rules = parse_rules(response)
     outputs["rules"] = rules
 
     # send second call using the OpenAI API
     if save_prompts:
-        messages.append({"role": "user", "content": rules_prompt})
+        # messages.append({"role": "user", "content": rules_prompt})
         rules_str = "\n".join(outputs["rules"])
-        messages.append({"role": "assistant", "content": rules_str})
+        # messages.append({"role": "assistant", "content": rules_str})
+        # outputs["rules"] = rules_str
 
     return rules
 
@@ -425,20 +552,26 @@ def _gen_thoughts_with_in_context_learning(
     scored_thoughts: str,
     save_prompts: bool = True,
 ):
-    prompt = (
-        "Now, reason about what elements should be considered when choosing the optimal action."
-        " Your response should consist of a single short paragraph that reflects on the consequences, benefits, and drawbacks"
-        " of each action in the current state."
-        f"Below are examples of answers ranked by their **quality score** in [0,1]. ## Example answers\n\n{scored_thoughts}\n\n"
+    thoughts_prompt = (
+        "Now, let's take it step by step. First, reason about what elements should be"
+        " considered when choosing the optimal action considering that actios affect the future state of the system."
+        " Thoughts must content (1) observations about the current state of the problem,",
+        " (2) observations about the reward/cost (3) reasoning about the how each action"
+        " will affect the future state of the system; (4) other believes about the future state of the system."
+        " Do not make more than 5 thoughts and each thought should be at most 6 words.\n\n"
+        f"Below are examples of answers ranked by their **quality score** in [0,1]. Your goal is to propose thoughts with high quality scores.\n\n"
+        f"### Example answers\n\n{scored_thoughts}\n\n"
     )
-    tmp_messages = messages.copy()
-    tmp_messages.append({"role": "user", "content": prompt})
-    response = invoke_with_retries(llm, tmp_messages, temperature=0.5, max_tokens=256).content
+    # tmp_messages = messages.copy()
+    tmp_messages = [{"role": "user", "content": thoughts_prompt + "### Thoughts task\n\n"}]
+    response = invoke_with_retries(
+        llm, tmp_messages, temperature=0.5, max_tokens=256
+    ).content
 
     if save_prompts:
         outputs["thoughts"] = response
-        messages.append({"role": "user", "content": prompt})
-        messages.append({"role": "assistant", "content": outputs["thoughts"]})
+        # messages.append({"role": "user", "content": prompt})
+        # messages.append({"role": "assistant", "content": outputs["thoughts"]})
 
     return response
 
@@ -476,21 +609,35 @@ class LLMRulesAgent(BaseAgent):
         super().post_action(outputs, messages)
         self.gen_rule_scores(outputs, messages)
 
-    def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
-        return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    # def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
+    #     return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
 
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
-        action_prompt = (
-            "Now, choose the optimal action given the current problem state and the chosen priorization rules. "
-            "Your answer must consist exclusively of one of the following actions:"
+        action_prompt = outputs["initial_prompt"] + "\n\n"
+
+        if "thoughts" in outputs:
+            action_prompt += (
+                f"### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
+        
+        action_prompt += (
+            f"\n\n### Selected rules\n\n"
+            f"Given your previous reasoning, you selected the following rules to make a decision\n:{outputs['rules']}\n\n"
+        )
+
+        action_prompt += (
+            "### Action selection task\n\n"
+            "Now, choose the optimal action given the selected rules and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
-        messages.append({"role": "user", "content": action_prompt})
+        # messages.append({"role": "user", "content": action_prompt})
 
+        tmp_messages = [{"role": "user", "content": action_prompt}]
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=30
+            self.llm, tmp_messages, max_tokens=30, temperature=0.0
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -503,6 +650,10 @@ class LLMRulesAgent(BaseAgent):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
         rules = outputs["rules"]
         return _gen_rule_scores(outputs, messages, self.llm, rules, system_prompt)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 LLMRulesAgentNoThoughts = partial(LLMRulesAgent, use_thoughts=False)
@@ -518,7 +669,7 @@ class RulesSelectorActorCritic(BaseAgent):
         action_space_text: str,
         llm: BaseChatModel,
         embededder: Embeddings,
-        max_rule_combinations: int = 3,
+        max_rule_combinations: int = 1,
         num_rules: int = 5,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
@@ -548,7 +699,7 @@ class RulesSelectorActorCritic(BaseAgent):
         self.deterministic = deterministic
         self.optimize_thoughts_only = optimize_thoughts_only
         if self.optimize_thoughts_only:
-            self.use_thoughts = False # they will be randomly generated
+            self.use_thoughts = False  # they will be randomly generated
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         super().pre_action(outputs, messages)
@@ -572,7 +723,9 @@ class RulesSelectorActorCritic(BaseAgent):
                     )
                 else:
                     rules = [
-                        _gen_thoughts_for_rule_agents(outputs, messages, self.llm, save_prompts=False)
+                        _gen_thoughts(
+                            outputs, messages, self.llm, save_prompts=False
+                        )
                         for _ in range(self.num_rules)
                     ]
                     outputs["rules"] = rules
@@ -585,7 +738,7 @@ class RulesSelectorActorCritic(BaseAgent):
                 max_attemps += 1
         if max_attemps == self.max_parse_attempts:
             raise ValueError("Failed to generate rules")
-        
+
         if self.in_context_learning:
             # use the critic to rank the rules
             rules_emb = self.embedder.embed_documents(rules)
@@ -598,13 +751,18 @@ class RulesSelectorActorCritic(BaseAgent):
             queries, keys = rules_emb, state_vector
             if rules_emb.shape[0] > 1:
                 with torch.no_grad():
-                    values = self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    values = (
+                        self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    )
                     # values = (values - values.mean()) / (values.std() + 1e-6)
-                    values = 0.1 + 0.8 * (values - values.min()) / (values.max() - values.min())
+                    values = 0.1 + 0.8 * (values - values.min()) / (
+                        values.max() - values.min()
+                    )
 
                 # append the the score to each rule
                 scored_rules = [
-                    f"{r} --> {{'score': {v.item():.2f}}}" for r, v in zip(rules, values)
+                    f"{r} --> {{'score': {v.item():.2f}}}"
+                    for r, v in zip(rules, values)
                 ]
                 outputs["scored_rules"] = scored_rules
 
@@ -687,21 +845,45 @@ class RulesSelectorActorCritic(BaseAgent):
 
     def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
         # get actions
-        action_prompt = (
-            f"Below is/are a priorization rule/rules to make an optimal decision in the current state:\n\n"
-            f"{outputs['sel_rule']}\n\n"
-            "\n\n"
-            "Now, choose the optimal action given the current problem state and this/these priorization rule/rules. "
-            "Your answer must consist exclusively of one of the following actions:"
+        # action_prompt = (
+        #     f"Below is/are a priorization rule/rules to make an optimal decision in the current state:\n\n"
+        #     f"{outputs['sel_rule']}\n\n"
+        #     "\n\n"
+        #     "Now, choose the optimal action given the current problem state and this/these priorization rule/rules. "
+        #     "Your answer must consist exclusively of one of the following actions:"
+        #     f"\n\n### Possible actions:\n\n{self.action_space_text}"
+        #     "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+        # )
+        # messages.append({"role": "user", "content": action_prompt})
+        # get actions
+        action_prompt = outputs["initial_prompt"] + "\n\n"
+
+        if "thoughts" in outputs:
+            action_prompt += (
+                f"### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
+        action_prompt += (
+            f"\n\n### Selected rule\n\n"
+            f"Given your previous reasoning, you selected the following rule to make a decision\n:{outputs['sel_rule']}\n\n"
+        )
+
+        action_prompt += (
+            "### Action selection task\n\n"
+            "Now, choose the optimal action given the selected rule and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
         )
-        messages.append({"role": "user", "content": action_prompt})
+        # messages.append({"role": "user", "content": action_prompt})
+
+        tmp_messages = [{"role": "user", "content": action_prompt}]
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=30
+            self.llm, tmp_messages, max_tokens=30, temperature=0.0
         ).content
-        messages.append({"role": "assistant", "content": outputs["action"]})
+
+        # messages.append({"role": "assistant", "content": outputs["action"]})
+
         return outputs["action"]
 
     def get_action_and_value_from_embeddings(
@@ -745,8 +927,350 @@ class RulesSelectorActorCritic(BaseAgent):
 
         return dist
 
-    def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
-        return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    # def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
+    #     return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        if self.optimize_thoughts_only:
+            _gen_explanation(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        else:
+            _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+
+
+class RulesSelectorActorCriticRAG(BaseAgent):
+    """The rule-based agent generates a set of rules based on the environment state."""
+
+    def __init__(
+        self,
+        actor: layers.CrossAttentionNetwork,
+        task_text: str,
+        action_space_text: str,
+        llm: BaseChatModel,
+        embedder: Embeddings,
+        max_rule_combinations: int = 1,
+        num_gen_rules: int = 1,
+        store_size: int = 1000,
+        num_store_queries: int = 50,
+        example_rules: Optional[str] = None,
+        max_parse_attempts: int = 3,
+        verbose: bool = False,
+        critic: Optional[layers.CrossAttentionNetwork] = None,
+        deterministic: bool = False,
+        use_thoughts: bool = True,
+        in_context_learning: bool = False,
+        optimize_thoughts_only: bool = False,
+    ):
+        super().__init__(
+            task_text=task_text,
+            action_space_text=action_space_text,
+            llm=llm,
+            use_thoughts=use_thoughts,
+        )
+
+        self.in_context_learning = in_context_learning
+        self.actor = actor
+        self.critic = critic
+        self.max_rule_combinations = max_rule_combinations
+        self.embedder = embedder
+        self.num_store_queries = num_store_queries  # number of rules to select from
+        self.num_gen_rules = num_gen_rules  # number of rules to generate
+        self.example_rules = example_rules
+        self.max_parse_attempts = max_parse_attempts
+        self.verbose = verbose
+        self.deterministic = deterministic
+        self.optimize_thoughts_only = optimize_thoughts_only
+        self.rule_store = deque(maxlen=store_size)
+        if self.optimize_thoughts_only:
+            self.use_thoughts = False  # they will be randomly generated
+
+    def similarity_search(self, query: torch.Tensor) -> list[dict]:
+        """
+        Perform vector similarity search over a store of embeddings.
+
+        Each store entry is a dictionary with the keys:
+        - "key": the vector (torch.Tensor)
+        - "metadata": additional data associated with the vector.
+
+        Parameters:
+        - query (torch.Tensor): The query vector.
+
+        Returns:
+        - list[dict]: The top_k items from the store with the highest similarity.
+        """
+
+        if len(self.rule_store) == 0:
+            return []
+
+        # Convert the stored vectors to a single torch tensor.
+        vectors = torch.stack(
+            [
+                (
+                    item["key"]
+                    if isinstance(item["key"], torch.Tensor)
+                    else torch.tensor(item["key"])
+                )
+                for item in self.rule_store
+            ]
+        )
+
+        # Normalize the query and stored vectors.
+        query_norm = query / torch.norm(query)
+        vectors_norm = vectors / torch.norm(vectors, dim=1, keepdim=True)
+        # Compute cosine similarity as dot product.
+        scores = torch.matmul(vectors_norm, query_norm)
+        # Higher score means higher similarity.
+        top_indices = torch.argsort(scores, descending=True)[
+            : (self.num_store_queries - 1)
+        ]
+        # Return the top_k results from the store.
+        return [self.rule_store[i] for i in top_indices.tolist()]
+
+    def pre_action(self, outputs: Dict, messages: List[Dict]):
+        super().pre_action(outputs, messages)
+        self.gen_rules(outputs, messages)
+
+    def gen_rules(self, outputs: dict, messages: list[dict]) -> List[str]:
+        """Wrapper for generating rules that includes combinations of and embeddings for rules.
+        First, generates combinations of rules, next it filters using an RL selector
+        """
+        max_attemps = 0
+        while max_attemps < self.max_parse_attempts:
+            try:
+                if not self.optimize_thoughts_only:
+                    rules = _gen_rules(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_gen_rules,
+                        self.example_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    rules = [
+                        _gen_thoughts(
+                            outputs, messages, self.llm, save_prompts=False
+                        )
+                        for _ in range(self.num_gen_rules)
+                    ]
+                    outputs["rules"] = rules
+                # check that we have at least one rule to select from
+                if isinstance(rules, list) and len(rules) > 0:
+                    break
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error: {e}")
+                max_attemps += 1
+        if max_attemps == self.max_parse_attempts:
+            raise ValueError("Failed to generate rules")
+
+        if self.in_context_learning:
+            # use the critic to rank the rules
+            rules_emb = self.embedder.embed_documents(rules)
+            dev = next(self.actor.parameters()).device
+            rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(dev)
+            state_vector = outputs["state_vector"]
+            if state_vector.dim() == 1:
+                state_vector = state_vector.unsqueeze(0)
+
+            queries, keys = rules_emb, state_vector
+            if rules_emb.shape[0] > 1:
+                with torch.no_grad():
+                    values = (
+                        self.critic(queries, keys).squeeze(0).cpu().detach().numpy()
+                    )
+                    # values = (values - values.mean()) / (values.std() + 1e-6)
+                    values = 0.1 + 0.8 * (values - values.min()) / (
+                        values.max() - values.min()
+                    )
+
+                # append the the score to each rule
+                scored_rules = [
+                    f"{r} --> {{'score': {v.item():.2f}}}"
+                    for r, v in zip(rules, values)
+                ]
+                outputs["scored_rules"] = scored_rules
+
+                # sort the rules by the critic values
+                ix = np.argsort(values)[::-1]
+                scored_rules = [scored_rules[i] for i in ix]
+
+                if not self.optimize_thoughts_only:
+                    new_rules = _gen_rules_with_in_context_learning(
+                        outputs,
+                        messages,
+                        self.llm,
+                        self.num_rules,
+                        scored_rules,
+                        save_prompts=False,
+                    )
+                else:
+                    # here we save the prompt/answerbecause we will use them to optimize the thoughts
+                    new_rules = [
+                        _gen_thoughts_with_in_context_learning(
+                            outputs, messages, self.llm, scored_rules, save_prompts=True
+                        )
+                        for _ in range(self.num_rules)
+                    ]
+                rules = new_rules
+
+        outputs["rules"] = rules
+
+        # get the rules and state embeddings
+        device = next(self.actor.parameters()).device
+        rules_emb = self.embedder.embed_documents(rules)
+        rules_emb = torch.tensor(rules_emb, dtype=torch.float32).to(device)
+        outputs["rules_emb"] = rules_emb
+
+        # new here!! --- Need to retrieve rules from database
+        # we will save the state as the document and the rules and their embeddings as the metadata
+        retrieved = self.similarity_search(outputs["state_vector"])
+        if len(retrieved) > 0:
+            # we have some retrieved rules
+            retrieved_rules = [item["metadata"]["rules"] for item in retrieved]
+            retrieved_rule_embs = [item["metadata"]["rule_embs"] for item in retrieved]
+
+            # concatenate the new rules with the retrieved ones
+            rules += retrieved_rules
+            rules_emb = torch.cat(
+                [rules_emb, torch.stack(retrieved_rule_embs)],
+            )
+
+        # get the rule scores
+        state_vector = outputs["state_vector"]
+        if state_vector.dim() == 1:
+            state_vector = state_vector.unsqueeze(0)
+
+        queries, keys = rules_emb, state_vector
+        with torch.no_grad():
+            logits = self.actor(queries, keys)
+
+        dist = torch.distributions.Categorical(logits=logits)
+        if not self.deterministic:
+            sel_idx = dist.sample()
+        else:
+            sel_idx = torch.argmax(logits)
+
+        entropy = dist.entropy()
+
+        # get the selected rule
+        sel_rule = rules[sel_idx]
+
+        outputs["logits"] = logits
+        outputs["sel_logprob"] = dist.log_prob(sel_idx)
+        outputs["sel_idx"] = sel_idx
+        outputs["sel_rule"] = sel_rule
+        outputs["entropy"] = entropy
+
+        if hasattr(self, "critic") and self.critic is not None:
+            value = self.critic(queries, keys)
+            outputs["value"] = value.squeeze()
+
+        # store the state vector and the selected rule in the rule store
+        for j in range(self.num_gen_rules):
+            rule_entry = {
+                "key": outputs["state_vector"],
+                "metadata": {
+                    "rules": outputs["rules"][j],
+                    "rule_embs": rules_emb[j],
+                    "state_text": outputs["state_text"],
+                },
+            }
+            self.rule_store.append(rule_entry)
+
+        # updat ethe output rules to include all the rules
+        outputs["rules"] = rules
+        outputs["rules_emb"] = rules_emb
+
+
+    def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
+        system_prompt = self.system_prompt_with_state(outputs["state_text"])
+        sel_rule = outputs["sel_rule"]
+        return _gen_rule_scores(outputs, messages, self.llm, [sel_rule], system_prompt)
+
+    def post_action(self, outputs, messages):
+        super().post_action(outputs, messages)
+        self.gen_rule_scores(outputs, messages)
+
+    def get_action(self, outputs: Dict, messages: List[Dict]) -> ActType:
+        action_prompt = outputs["initial_prompt"] + "\n\n"
+
+        if "thoughts" in outputs:
+            action_prompt += (
+                f"### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
+        action_prompt += (
+            f"\n\n### Selected rule\n\n"
+            f"Given your previous reasoning, you selected the following rule to make a decision\n:{outputs['sel_rule']}\n\n"
+        )
+
+        action_prompt += (
+            "### Action selection task\n\n"
+            "Now, choose the optimal action given the selected rule and the current problem state. "
+            f"\n\n### Possible actions:\n\n{self.action_space_text}"
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+        )
+        # messages.append({"role": "user", "content": action_prompt})
+
+        tmp_messages = [{"role": "user", "content": action_prompt}]
+
+        outputs["action"] = invoke_with_retries(
+            self.llm, tmp_messages, max_tokens=30, temperature=0.0
+        ).content
+
+        return outputs["action"]
+
+    def get_action_and_value_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+        sel_idxs: Optional[torch.Tensor] = None,
+    ):
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        dist = torch.distributions.Categorical(logits=logits)
+        if sel_idxs is None:
+            sel_idxs = dist.sample()
+        entropy = dist.entropy()
+        log_prob = dist.log_prob(sel_idxs)
+
+        values = self.critic(
+            state_vector.unsqueeze(1), rules_emb, key_padding_mask=rules_padding_mask
+        )
+
+        return sel_idxs, log_prob, entropy, values
+
+    def get_policy_from_embeddings(
+        self,
+        state_vector: torch.Tensor,
+        rules_emb: torch.Tensor,
+        rules_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.distributions.Categorical:
+        if state_vector.dim() == 2:
+            state_vector = state_vector.unsqueeze(1)
+        queries, keys = rules_emb, state_vector
+        logits = self.actor(queries, keys, key_padding_mask=rules_padding_mask)
+
+        if logits.is_nested:
+            # pad them with a negative number
+            logits = torch.nested.to_padded_tensor(logits, -100.0)
+
+        dist = torch.distributions.Categorical(logits=logits)
+
+        return dist
+
+    # def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
+    #     return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
+    
+    def gen_explanation(self, outputs: Dict, messages: List[Dict]):
+        """Generate explanation and update message list"""
+        if self.optimize_thoughts_only:
+            _gen_explanation(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        else:
+            _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 class LLMFineTuningAgent(BaseAgent):

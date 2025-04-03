@@ -34,6 +34,7 @@ class HeatAlertsLang(LanguageWrapper):
             " The goal is to issue warnings when they are most effective with a budget on the possible number of warnings."
             " The protective effect of warnings only last for a day or two."
             " However, warning fatigue is possible when warnings are issued in a row."
+            " The challenge is to balance the need for immediate warnings with the potential for fatigue and future heatwaves."
         )
 
     @property
@@ -42,28 +43,41 @@ class HeatAlertsLang(LanguageWrapper):
             "A single integer value representing the decision:\n"
             "1 = issue a warning\n"
             "0 = do not issue a warning\n"
-            "Warning can only be issued if the 'Remaining number of warnings/budget' is positive. Respone in JSON format. For example: {'action': 1}"
+            "Warning can only be issued if the 'Remaining number of warnings/budget' is positive. Respond in JSON format. Example: {'action': 1}"
         )
 
     @property
     def example_rules(self) -> List[str]:
         example1 = (
-            '{"background": "Warnings are more effective when heat is less expected.", '
-            '"rule": "If it is early/late in the summer and the heat index is high and unexpected.", '
-            '"state relevance": "The current heat index is 95 F. It is late in the summer. There are alerts remaining. It has been chill lately."}'
+            '{"background": "Heat is more dangerous when unexpected. Heat is unexpected early in summer. Alert fatigue decreases effectiveness. Alerts might be needed in the future.", '
+            '"rule": "Issue an alert if it is early in the summer, extreme heat is expected soon, no more than 3 alerts last week, no worst heatwaves expected, there is enough budget for late summer."}'
+            # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
         example2 = (
-            '{"background": "Repeated warnings can lead to warning fatigue", '
-            '"rule": "If there have been 3 or more warnings in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
-            '"state relevance": "There have been 3 warnings in the last 7 days and the current heat index is 98 F, which is below the threshold"}'
+            '{"background": "Heat is dangeroud late in summer. Alert fatigue decreases effectiveness. Temperature will decrease after summer. Future alerts are less needed.", '
+            '"rule": "Issue an alert it is late in the summer, extreme heat is expected, no more than 3 alerts last week."}'
+            # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
         example3 = (
-            '{"background": "Heat warnings are more effective during weekends when people are more likely to be outdoors", '
-            '"rule": "If it is a weekend and the heat index is above 90 F, issue an warnings", '
-            '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold"}'
+            '{"background": "Alerts cannot be issued if the remaining budget is zero.", '
+            '"rule": "If the remaining budget is zero, do not issue an alert."}'
+            # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
+
+
+        # example2 = (
+        #     '{"background": "Repeated warnings can lead to warning fatigue", '
+        #     '"rule": "If extreme heat is expected later in the summer, and there have been 3 or more warnings in the last 7 days, do not issue an alert unless the heat index is above 102 F", '
+        #     '"state relevance": "There have been 3 warnings in the last 7 days and the current heat index is 98 F, which is below the threshold"}'
+        # )
+
+        # example3 = (
+        #     '{"background": "Heat warnings are more effective during weekends when people are more likely to be outdoors", '
+        #     '"rule": "If it is a weekend and the heat index is above 90 F, issue an warning, unless you expect extreme heat in the incoming weak. Require a higher threshold such as 95 if there are few alerts aleft and you expect extreme heat later in the summer.", '
+        #     '"state relevance": "It is a weekend today and the current heat index is 92 F, which is above the threshold"}'
+        # )
 
         return [example1, example2, example3]
 

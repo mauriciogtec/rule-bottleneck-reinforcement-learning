@@ -104,12 +104,14 @@ def make_env(env_id, seed, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
         if env_id == "HeatAlertsNumeric":
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
+            pass
+            # env = gym.wrappers.TransformReward(env, func=scale_reward)
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
-        elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        # elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
+        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
+        if env_id not in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
+            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env

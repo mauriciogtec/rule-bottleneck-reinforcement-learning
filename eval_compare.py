@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import random
@@ -40,7 +41,7 @@ valid_agent_lst = [
 
 def load_checkpoint(checkpoint_path, device):
     if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device)
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
     else:
         logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
         return None
@@ -49,7 +50,9 @@ def load_checkpoint(checkpoint_path, device):
 @dataclass
 class Args:
     rbrl_checkpoint: str
-    """the path to the rule-based RL checkpoint"""
+    """the path to the rule-bottleneck RL checkpoint"""
+    tbrl_checkpoint: str
+    """the path to the thought-bottleneck RL checkpoint"""
 
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
@@ -79,7 +82,6 @@ class Args:
     agent_list: Optional[List[str]] = None  # to be filled
     """the list of agents to use"""
 
-
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
 
@@ -108,14 +110,15 @@ def set_seed(seed: int):
 
 
 def make_env(env_id, seed, max_episode_steps=None):
-    def scale_reward(r):
-        return r / max_episode_steps
+    # def scale_reward(r):
+    #     return r / max_episode_steps
 
     def thunk():
         env = gym.make(env_id)
-        if env_id == "HeatAlerts":
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        # if env_id == "HeatAlerts":
+        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
+        if env_id not in ["BinPacking", "BinPackingIncremental"]:
+            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
@@ -245,7 +248,7 @@ def main(args: Args):
                 action_space_text=env.metadata["action_space_text"],
                 llm=chat_model,
             )
-        elif agent.startswith("rbrl"):
+        elif agent.startswith("rbrl") or agent.startswith("tbrl"):
             checkpoint = load_checkpoint(args.rbrl_checkpoint, "cpu")
             # logging.info(
             #     f"Resuming training from checkpoint at step {checkpoint['global_step']}."
@@ -272,6 +275,7 @@ def main(args: Args):
                 llm=chat_model,
                 embededder=embed_model,
                 use_thoughts="no-thoughts" not in agent,
+                optimize_thoughts_only=agent.startswith("tbrl"),
                 critic=critic,
             )
             lang_agent.deterministic = True
@@ -308,6 +312,9 @@ def main(args: Args):
         "rule_expl",
         "summary",
         "full_prompt",
+        "state_numeric",
+        "rules_numeric",
+        "sel_rule_idx",
     ]
     with tqdm(total=args.num_episodes) as pbar:
         while total_episodes < args.num_episodes:
@@ -325,7 +332,7 @@ def main(args: Args):
 
                 thoughts = outputs.get("thoughts", "N/A")
                 if "rules" in outputs:
-                    rules_str = "\n".join(outputs["rules"])
+                    # rules_str = "\n".join(outputs["rules"])
                     rules_scores = [
                         f"{k}: {v}" for k, v in outputs["sel_reward_scores_raw"].items()
                     ]
@@ -335,9 +342,13 @@ def main(args: Args):
                     else:
                         rule_prob_str = "N/A"
                 else:
-                    rules_str = "N/A"
+                    # rules_str = "N/A"
                     rules_scores_str = "N/A"
                     rule_prob_str = "N/A"
+
+                rules_str = outputs.get("rules", [])
+                rules_emb = outputs.get("rules_emb", [])
+                sel_rule_idx = outputs.get("sel_idx", -1)
 
                 # Store actions for this agent
                 parsed_action = env.metadata["action_parser"](outputs["action"])
@@ -376,7 +387,7 @@ def main(args: Args):
                     )
 
                 examples_per_agent[agent] = example
-    
+
                 if args.track:
                     records.append(
                         (
@@ -385,13 +396,16 @@ def main(args: Args):
                             next_state_text,
                             agent,
                             str(parsed_action),
-                            outputs['explanation'],
+                            outputs["explanation"],
                             thoughts,
-                            rules_str,
+                            json.dumps(rules_str),
                             rule_prob_str,
                             rules_scores_str,
                             example,
                             outputs["initial_prompt"],
+                            json.dumps([float(x) for x in next_state_vec.numpy()]),
+                            json.dumps([x.numpy().tolist() for x in rules_emb]),
+                            int(sel_rule_idx),
                         )
                     )
 
@@ -424,6 +438,7 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
 
     # make agent list
-    args.agent_list = ["base_agent", "no_thoughts_agent", "llm_rules_agent",  "rbrl", "rbrl-no-thoughts"]
+    # args.agent_list = ["base_agent", "no_thoughts_agent", "llm_rules_agent",  "rbrl", "rbrl-no-thoughts"]
+    args.agent_list = ["base_agent", "tbrl", "rbrl"]
 
     main(args)

@@ -7,8 +7,8 @@ from envs.buy_sell import BuySellSimple, BuySellSimpleLang
 from envs.heat_alerts import HeatAlertsLang
 from envs.vital_signs import VitalSignsSimple, VitalSignsSimpleLang
 from envs.bin_packing import (
-    BinPacking,
-    BinPackingIncremental,
+    BinPacking as BinPackingNumeric,
+    BinPackingIncremental as BinPackingIncrementalNumeric,
     BinPackingLang,
     BinPackingIncrementalLang,
 )
@@ -22,15 +22,16 @@ HeatAlerts = partial(
     HeatAlertsLang,
     budget=10,
     sample_budget=False,
-    effectiveness_type="data",
+    effectiveness_type="synthetic",
     reward_type="saved",
     random_starts=True,
-    penalty=0.1,
+    penalty=1.0,
     top_k_fips=10,
+    min_heat_qi=0.0,
 )
 BuySellSimple = partial(BuySellSimpleLang)
-BinPackingLang = partial(BinPackingLang)
-BinPackingIncrementalLang = partial(BinPackingIncrementalLang)
+BinPacking = partial(BinPackingLang)
+BinPackingIncremental = partial(BinPackingIncrementalLang)
 
 UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz", time_discount=0.95)
 MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discount=0.95)
@@ -39,15 +40,16 @@ HeatAlertsNumeric = partial(
     HeatAlertEnv,
     budget=10,
     sample_budget=False,
-    effectiveness_type="data",
+    effectiveness_type="synthetic",
     reward_type="saved",
     random_starts=True,
-    penalty=0.1,
+    penalty=1.0,
     top_k_fips=10,
+    min_heat_qi=0.0,
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
-BinPackingNumeric = partial(BinPacking)
-BinPackingIncrementalNumeric = partial(BinPackingIncremental)
+BinPackingNumeric = partial(BinPackingNumeric)
+BinPackingIncrementalNumeric = partial(BinPackingIncrementalNumeric)
 
 
 kwargs = {"disable_env_checker": True}
@@ -56,8 +58,8 @@ register(id="Uganda", entry_point="envs:Uganda", **kwargs)
 register(id="MimicIII", entry_point="envs:MimicIII", **kwargs)
 register(id="MimicIV", entry_point="envs:MimicIV", **kwargs)
 register(id="BuySellSimple", entry_point="envs:BuySellSimple", **kwargs)
-register(id="BinPacking", entry_point="envs:BinPackingLang", **kwargs)
-register(id="BinPackingIncremental", entry_point="envs:BinPackingIncrementalLang", **kwargs)
+register(id="BinPacking", entry_point="envs:BinPacking", **kwargs)
+register(id="BinPackingIncremental", entry_point="envs:BinPackingIncremental", **kwargs)
 register(
     id="HeatAlerts",
     entry_point="envs:HeatAlerts",

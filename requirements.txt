@@ -14,5 +14,5 @@ tyro
 trl
 jsonlines
 wandb
-scikit-learn
+sklearn
 # git+https://github.com/NSAPH-Projects/weather2alert@dev

@@ -13,6 +13,7 @@ from typing import Literal, Optional
 import gymnasium as gym
 import jsonlines
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -26,6 +27,7 @@ import buffers
 import envs as E  # registers the gym environments during import
 from layers import CrossAttentionNetwork
 from llm_apis import ValidLLMs, get_llm_api
+from agents import RulesSelectorActorCritic
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -56,6 +58,8 @@ class Args:
     """the logging frequency of the examples"""
     resume: bool = False
     """if toggled, tries to resume training from the latest checkpoint"""
+    reinit: bool = False
+    """if toggled, reinitializes the wandb run"""
     ckpt_interval: int = 200
     """the saving interval of the model"""
     overwrite_ckpt: bool = False
@@ -68,7 +72,7 @@ class Args:
     """the number of parallel game environments"""
     parallel_pipeline: bool = True
     """if toggled, the pipeline will be parallelized"""
-    max_episode_steps: Optional[int] = 16
+    max_episode_steps: Optional[int] = 32
     """the maximum number of steps per episode"""
 
     # Algorithm
@@ -130,9 +134,9 @@ class Args:
     """the dimension of the embeddings"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    rule_reward_coef: float = 1.0
+    rule_reward_coef: float = 0.1
     """the reward coefficient for the rules"""
-    in_context_learning: bool = True
+    in_context_learning: bool = False
     """if toggled, the agent will learn in context"""
     optimize_thoughts_only: bool = False
     """if toggled, the agent will optimize thoughts only, not structured rules"""
@@ -140,7 +144,7 @@ class Args:
     # Options
     rule_type: Literal["rule", "free"] = "rule"
     """the type of the rule"""
-    conversation_history_in_explanation: bool = True
+    conversation_history_in_explanation: bool = False
     """if toggled, the agent will use conversation history in explanation"""
 
     # Buffer collection mode
@@ -161,14 +165,23 @@ class Args:
 
 
 def make_env(env_id, seed, max_episode_steps=None):
-    def scale_reward(r):
-        return r / max_episode_steps
+    # def scale_reward(r):
+    #     return r / max_episode_steps
 
     def thunk():
         env = gym.make(env_id)
         # if env_id == "HeatAlerts":
+        #     pass
+        #     # env = gym.wrappers.TransformReward(env, func=scale_reward)
+        #     # if eval:
+        #     #     env.penalty = 0.0  # no penalty during evaluation
+        # elif env_id in ("BinPacking", "BinPackingIncremental"):
+        #     def scale_reward(r):
+        #         return r / 100.0
         #     env = gym.wrappers.TransformReward(env, func=scale_reward)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        
+        if env_id not in ("BinPacking", "BinPackingIncremental"):
+            env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
@@ -183,7 +196,7 @@ def save_checkpoint(state, checkpoint_path):
 
 def load_checkpoint(checkpoint_path, device):
     if os.path.exists(checkpoint_path):
-        return torch.load(checkpoint_path, map_location=device)
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
     else:
         logging.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
         return None
@@ -389,6 +402,7 @@ def update_alpha(
 
 def main(args: Args):
     run_id = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
+    run_id = run_id.replace("/Llama", "-llama")
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
 
@@ -435,9 +449,11 @@ def main(args: Args):
             monitor_gym=True,
             save_code=False,
             resume='auto',
+            reinit=args.reinit,
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
-        examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+        # examples_table = wandb.Table(columns=["global_step", "run_id", "example"])
+        example_records = []
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -549,7 +565,7 @@ def main(args: Args):
     else:
         alpha = args.alpha
 
-    buffer_file = f"buffers/buffer_{args.llm}.pkl"
+    buffer_file = f"buffers/buffer__{args.llm}__{args.env_id}.pkl"
     if args.load_buffer and os.path.exists(buffer_file):
         with open(buffer_file, "rb") as f:
             buffer = pickle.load(f)
@@ -608,9 +624,15 @@ def main(args: Args):
 
     # expand state space with the rules, i.e., internal states
     with torch.no_grad():
-        outputs, messages = lang_agent.parallel_pipeline(
-            obs_text, obs_vec, pre_action_only=True
-        )
+        if args.parallel_pipeline:
+            outputs, messages = lang_agent.parallel_pipeline(
+                obs_text, obs_vec, pre_action_only=True
+            )
+        else:
+            outputs, messages = lang_agent.pipeline(
+                obs_text, obs_vec, pre_action_only=True
+            )
+
     rules = [x["rules"] for x in outputs]
     rules_emb = [x["rules_emb"] for x in outputs]
     sel_idxs = [x["sel_idx"] for x in outputs]
@@ -761,8 +783,16 @@ def main(args: Args):
             writer.add_text("text/examples", example, global_step)
             writer.add_text("llm_prompts/conversation", conversation, global_step)
             if args.track:
-                examples_table.add_data(global_step, run_id, example)
-                wandb.log({"examples": examples_table})
+                # examples_table.add_data(global_step, run_id, example)
+                example_records.append(
+                    {
+                        "global_step": global_step,
+                        "run_id": run_id,
+                        "example": example,
+                    }
+                )
+                examples_df = pd.DataFrame(example_records, columns=["global_step", "run_id", "example"])
+                wandb.log({"examples": wandb.Table(dataframe=examples_df)})
 
             # log the conversation and example in jsonl
             jsonl_logger.write(
@@ -784,7 +814,7 @@ def main(args: Args):
                 best_model_epoch = global_step
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        autoreset = np.logical_or(autoreset, dones)
+        autoreset = torch.logical_or(torch.FloatTensor(trunc).to(dev), dones)
         obs_vec, obs_text = next_obs_vec, next_obs_text
         rules = next_rules
         rules_emb = next_rules_emb
@@ -952,12 +982,12 @@ if __name__ == "__main__":
     if not args.thoughts:
         args.agent += "-no-thoughts"
     if not args.in_context_learning:
-        args.agent += "-no-in-context"
+        args.agent += "-no-cl"
     if args.rule_reward_coef != 1.0:
         args.agent += f"-expl-rew-{args.rule_reward_coef}"
     if args.optimize_thoughts_only:
         args.agent += "-oto"
     
-    args.agent += "--" + args.llm
+    args.agent += "--" + args.llm[:20]
 
     main(args)

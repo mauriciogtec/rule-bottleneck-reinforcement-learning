@@ -9,6 +9,7 @@ import re
 import shutil
 import os
 import random
+import pandas as pd
 import tyro
 import time
 from collections import defaultdict, deque, namedtuple
@@ -108,6 +109,8 @@ class Args:
     """the interval to log examples"""
     save_interval: int = 1
     """the interval to save the model"""
+    reinforce_level: Literal["token", "action"] = "action"
+    """the level of reinforcement for the language model, either at token or action level"""
 
     # PPO specific arguments
     env_id: str = "Uganda"
@@ -116,7 +119,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 2
+    num_envs: int = 1
     """the number of parallel game environments"""
     num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
@@ -130,7 +133,7 @@ class Args:
     # """the number of mini-batches"""
     update_epochs: int = 4
     """the K epochs to update the policy"""
-    norm_adv: bool = True
+    norm_adv: bool = False
     """Toggles advantages normalization"""
     clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
@@ -158,7 +161,7 @@ class Args:
     """the language model to use"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    llm: str = "meta-llama/Llama-3.1-8B-Instruct"
+    llm: str = "meta-llama/Llama-3.2-3B-Instruct"
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "float16"
     """The dtype to use for training"""
@@ -173,7 +176,7 @@ class Args:
     reinit: bool = False
     """if toggled, the wandb run will be reinitialized"""
 
-    max_chunk_size: int = 1024
+    max_chunk_size: int = 256
     """the maximum chunk size for the model"""
 
     max_episode_steps: int = 32
@@ -412,19 +415,19 @@ def print_trainable_parameters(model):
     )
 
 
-THOUGHT_PROMPT = (
-    "First, reason about what elements should be considered when choosing the optimal action"
-    " in the given task of the decision making agent."
-    " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
-    " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
-    " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
-)
+# PROMPT = (
+#     "First, reason about what elements should be considered when choosing the optimal action"
+#     " in the given task of the decision making agent."
+#     " Your response should consist of a single paragraph that reflects on the consequences, benefits, and drawbacks"
+#     " of each action in the current state. Conclude the paragraph with a reflection of how they inform the design"
+#     " of the priorization rules, and the different types of priorization rules that could be applied to the given scenario."
+# )
 
-ACTION_PROMPT = (
-    "Now, choose the optimal action given the current problem state. "
-    "Do not provide additional information or context for your answer, only the action. "
-    f"\n\n### Possible actions:\n\n"
-)
+# ACTION_PROMPT = (
+#     "Now, choose the optimal action given the current problem state. "
+#     "Do not provide additional information or context for your answer, only the action. "
+#     f"\n\n### Possible actions:\n\n"
+# )
 
 
 def make_env(env_id, seed, max_episode_steps=None):
@@ -445,16 +448,13 @@ def make_env(env_id, seed, max_episode_steps=None):
 
 def main(args: Args):
     run_id = run_name = f"{args.agent}__{args.env_id}__{args.exp_name}__{args.seed}"
+    run_id = run_id.replace("/", "_")[:25]
+
 
     ckpt_path = f"checkpoints/{run_name}.state"
     ckpt_path = ckpt_path.replace("meta-llama/Llama", "llama")
     model_path = ckpt_path.replace(".state", "/").replace("meta-llama/Llama", "llama")
-    text_logs_path = f"text_logs/{run_name}.jsonl"
-    json_logger_mode = "w" if not args.resume else "a"
-    os.makedirs(os.path.dirname(text_logs_path), exist_ok=True)
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
-    jsonl_logger = jsonlines.open(text_logs_path, mode=json_logger_mode)
-
     set_seed(args.seed)
     envs = gym.vector.SyncVectorEnv(
         [
@@ -467,7 +467,21 @@ def main(args: Args):
 
     dev = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    run_id = f"ppo_attention_{args.env_id}__{args.exp_name}__{args.seed}"
+    action_prompt = (
+        "Now, let's take it step by step. First, reason about what elements should be"
+        " considered when choosing the optimal action. Your thoughts must consist short thoughts,"
+        " each of a most 6 words. Thoughts may content (1) important observations about the current state of the problem,"
+        " (2) elements to prioritize in decision making according the reward/cost (3) reasoning about the how each action"
+        " could affect the future state of the system; (4) expectations about the future state of the system over all."
+        " Do not make more than 10 thoughts since less thoughts are preferred as long as they suffice to make an optimal choice."
+        " Finally, return the chosen action indicated by the token [action] followed by the action in JSON."
+        " The available actions are described below:\n\n"
+        f"### Action description\n{envs.metadata['action_space_text']}"
+    )
+
+
+    run_id = f"{args.agent}_{args.env_id}__{args.exp_name}__{args.seed}"
+    run_id = run_id.replace("/", "_")    
     # run_name = run_id if args.resume else f"{run_id}_{int(time.time())}"
     run_name = run_id
 
@@ -607,6 +621,7 @@ def main(args: Args):
     autoreset = np.zeros(args.num_envs, dtype=bool)
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
     _rolling_returns = deque(maxlen=args.rolling_returns_window)
+    examples = []
 
     for iter in range(iter_start, num_iterations + 1):
         if args.anneal_lr:
@@ -622,6 +637,7 @@ def main(args: Args):
         b_reward = [[] for _ in range(args.num_envs)]
         b_advantage = [[] for _ in range(args.num_envs)]
         b_returns = [[] for _ in range(args.num_envs)]
+        b_cot_coefs = [[] for _ in range(args.num_envs)]
 
         for step in tqdm(
             range(args.num_steps), desc=f"Iter: {iter},  Gathering trajectories"
@@ -639,14 +655,13 @@ def main(args: Args):
                 for (p, s) in zip(init_prompts, state_text)
             ]
            
-
-            # Add the rule generation prompt            for m in messages:
-                messages = [[{"role": "user", "content": p + THOUGHT_PROMPT}] for p in outputs]
+            messages = [[{"role": "user", "content": p['initial_prompt'] + action_prompt}] for p in outputs]
 
             # Tokenize each input state and concert torch dataset
             loader = to_token_data_loader(
                 messages, tokenizer, accelerator, minibatch_size, collator
             )
+
             results = generate_with_model(
                 model,
                 loader,
@@ -656,77 +671,11 @@ def main(args: Args):
                 ref_model=ref_model,
             )
 
-            thoughts = []
-            for j in range(args.num_envs):
-                thoughts.append(results["generated_text"][j])
-
-            for j in range(args.num_envs):
-                if not autoreset[j]:
-                    # CRITICAL! ===
-                    # We need to do a bit of surgery
-                    # Add <|eot_id|> token at the end of the thought
-                    # The value does not change, the prob of the eot token should be 1, equiv log prob 0
-                    # Reward is 0
-                    b_output_tokens_j = F.pad(
-                        results["output_tokens"][j],
-                        (0, 1),
-                        value=tokenizer.eos_token_id,
-                    )
-                    b_value_j = F.pad(
-                        results["values"][j], (0, 1), value=results["values"][j][-1]
-                    )
-                    b_logprobs_j = args.cot_coef * F.pad(results["logprobs"][j], (0, 1), value=-0.001)
-                    b_reward_j = F.pad(results["kl_reward"][j], (0, 1), value=0.0)
-
-                    # torch.cat([results["output_tokens"][j], torch.LongTensor([tokenizer.eos_token_id]).to(dev)])
-                    # b_value_j = torch.cat([results["values"][j], results["values"][j][-1:]])
-                    # b_logprobs_j = args.cot_weight * torch.cat([results["logprobs"][j], torch.FloatTensor([-0.01]).to(dev)])
-                    # b_reward_j = torch.cat([results["kl_reward"][j], torch.FloatTensor([0.0]).to(dev)])
-
-                    # b_value[j].append(results["values"][j])
-                    b_input_tokens[j].append(results["input_tokens"][j])
-                    # b_output_tokens[j].append(results["output_tokens"][j])
-                    # b_logprob[j].append(results["logprobs"][j])
-                    # b_reward[j].append(results["kl_reward"][j])
-
-                    b_value[j].append(b_value_j)
-                    b_output_tokens[j].append(b_output_tokens_j)
-                    b_logprob[j].append(b_logprobs_j)
-                    b_reward[j].append(b_reward_j)
-
-                    training_done = torch.zeros_like(b_value[j][-1])
-                    # training_done[0] = torch.tensor(dones[j], dtype=torch.float).to(dev)
-                    b_done[j].append(training_done)
-                    messages[j].append(
-                        {"role": "assistant", "content": results["generated_text"][j]}
-                    )
-                thoughts.append(results["generated_text"][j])
-
-            for i, gen_text in enumerate(results["generated_text"]):
-                messages[i].append({"role": "assistant", "content": gen_text})
-
-            # 2. Get the action
-            act_space_text = envs.metadata["action_space_text"]
-            for m in messages:
-                m.append({"role": "user", "content": ACTION_PROMPT + act_space_text})
-                # m.append({"role": "assistant", "content": "{"})
-
-            loader = to_token_data_loader(
-                messages, tokenizer, accelerator, minibatch_size, collator
-            )
-            results = generate_with_model(
-                model,
-                loader,
-                tokenizer,
-                accelerator,
-                max_new_tokens=10,
-                ref_model=ref_model,
-            )
-
             # parse actions
             env_actions = []
             for j in range(args.num_envs):
-                action = envs.metadata["action_parser"](results["generated_text"][j])
+                action_text = results["generated_text"][j].split("[action]")[-1].strip()
+                action = envs.metadata["action_parser"](action_text)
                 env_actions.append(action)
 
             # Step the environment
@@ -735,47 +684,46 @@ def main(args: Args):
 
             for j in range(args.num_envs):
                 if not autoreset[j]:
-                    ### Critical! Only append input tokens continuing from the last thought
-                    # Also append <|eot_id|> token and, as before, no reward, same value, high prob
-                    len_prev_tokens = len(b_input_tokens[j][-1])
-                    new_input_tokens = results["input_tokens"][j][len_prev_tokens:]
-                    new_values = results["values"][j][len_prev_tokens:]
-                    new_values = F.pad(
-                        new_values, (0, 1), value=results["values"][j][-1]
-                    )
-                    # new_values = torch.cat([new_values, new_values[-1:]])
-                    new_logprobs = results["logprobs"][j][len_prev_tokens:]
-                    new_logprobs = F.pad(new_logprobs, (0, 1), value=-0.01)
-                    # new_logprobs = torch.cat([new_logprobs, torch.FloatTensor([-0.01]).to(dev)])
-                    new_rewards = results["kl_reward"][j][len_prev_tokens:]
-                    new_rewards = F.pad(new_rewards, (0, 1), value=0.0)
-                    # new_rewards = torch.cat([new_rewards, torch.FloatTensor([0.0]).to(dev)])
-                    output_tokens = torch.cat(
-                        [
-                            results["output_tokens"][j],
-                            torch.LongTensor([tokenizer.eos_token_id]).to(dev),
-                        ]
-                    )
+                    # # CRITICAL! ===
+                    # # We need to do a bit of surgery
+                    # # Add <|eot_id|> token at the end of the thought
+                    # # The value does not change, the logprob of the eot token should be 0
+                    # b_out_tok_j = F.pad(results["output_tokens"][j], (0, 1), value=tokenizer.eos_token_id)
+                    # b_value_j = F.pad(results["values"][j], (0, 1), value=results["values"][j][-1])
+                    # b_logprobs_j = args.cot_coef * F.pad(results["logprobs"][j], (0, 1), value=-0.001)
 
-                    # b_value[j].append(results["values"][j])
-                    # b_input_tokens[j].append(results["input_tokens"][j])
-                    # boutput_tokens[j].append(results["output_tokens"][j])
-                    # b_logprob[j].append(results["logprobs"][j])
-                    b_value[j].append(new_values)
-                    b_input_tokens[j].append(new_input_tokens)
-                    b_logprob[j].append(new_logprobs)
-                    b_output_tokens[j].append(output_tokens)
+                    # b_value[j].append(b_value_j)
+                    # b_output_tokens[j].append(b_out_tok_j)
+                    # b_logprob[j].append(b_logprobs_j)
+                    # b_reward[j].append(b_reward_j)
 
-                    training_rewards = torch.zeros_like(b_value[j][-1])
-                    training_rewards[-1] = env_rewards[j]
-                    training_rewards = training_rewards + new_rewards
-                    b_reward[j].append(training_rewards)
-                    b_done_j = torch.zeros_like(b_value[j][-1])
-                    b_done_j[-1] = torch.tensor(dones[j], dtype=torch.float).to(dev)
+                    b_input_tokens[j].append(results["input_tokens"][j])
+                    b_value[j].append(results["values"][j])
+                    b_output_tokens[j].append(results["output_tokens"][j])
+                    b_logprob[j].append(results["logprobs"][j])
+                    b_rew_j = args.kl_coef * results["kl_reward"][j]
+                    b_rew_j[-1] = b_rew_j[-1] + env_rewards[j]  # set the last reward to the env reward
+                    b_reward[j].append(b_rew_j)
+                    b_done_j = torch.zeros_like(results["logprobs"][j])
+                    b_done_j[-1] = float(dones[j])
                     b_done[j].append(b_done_j)
-                    # messages[j].append(
-                    #     {"role": "assistant", "content": results["generated_text"][j]}
-                    # )
+
+                    b_cot_coef_j = torch.full(results["cot_coef"][j].shape, args.cot_coef)
+                    
+                    # find the split where the action starts to make the cot coefficient
+                    act_tokens = tokenizer.encode("[action]", add_special_tokens=False, return_tensors="pt").squeeze(0).to(dev)
+                    out_tokens = b_output_tokens[j][-1]  # get the last output tokens
+                    b_cot_coef_j = torch.ones(out_tokens.shape)
+                    found_act_token = False
+                    for k in range(len(out_tokens)- len(act_tokens)):
+                        if not found_act_token:
+                            # check match
+                            if torch.equal(out_tokens[k:k + len(act_tokens)], act_tokens):
+                                break
+                            else:
+                                b_cot_coef_j[k] = args.cot_coef 
+
+                    b_cot_coefs[j].append(b_cot_coef_j)
 
             # add the transition to the buffer
             for j in range(args.num_envs):
@@ -814,34 +762,14 @@ def main(args: Args):
 
             if step == 0 or step % args.log_examples_interval == 0:
                 example = (
-                    f"{outputs[0]['initial_prompt']}\n"
-                    f"### Thoughts\n{thoughts[0]}\n"
-                    f"### Environment Action\n{env_actions[0]}\n"
+                    f"{outputs[0]['initial_prompt'] + action_prompt}\n"
+                    f"### Response\n{results['generated_text'][0]}\n"
+                    f"### Reward\n{env_rewards[0]:.4f}\n"
                 )
-
-                conversation = "\n".join(
-                    [f"\n\n## {x['role']}\n\n{x['content']}" for x in messages[0]]
-                )
+                examples.append({"global_step": global_step, "example": example})
+                df = pd.DataFrame(examples, columns=["global_step", "example"])
                 writer.add_text("text/examples", example, global_step)
-                writer.add_text("llm_prompts/conversation", conversation, global_step)
-
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": messages[0],
-                    }
-                )
-
-                # log the conversation and example in jsonl
-                jsonl_logger.write(
-                    {
-                        "global_step": global_step,
-                        "example": example,
-                        "conversation": conversation,
-                    }
-                )
+                wandb.log({"text/examples": wandb.Table(dataframe=df)}, step=global_step)
 
             # advance
             autoreset = np.logical_or(dones, truncations)
@@ -950,6 +878,7 @@ def main(args: Args):
         b_reward = list(itertools.chain(*b_reward))
         b_advantage = list(itertools.chain(*b_advantage))
         b_returns = list(itertools.chain(*b_returns))
+        b_cot_coefs = list(itertools.chain(*b_cot_coefs))
 
         def _fill_zeros(x, idx):
             out = torch.zeros_like(idx, dtype=x.dtype).to(x.device)
@@ -970,6 +899,7 @@ def main(args: Args):
             advantage = _fill_zeros(b_advantage[j], prompt_mask)
             returns = _fill_zeros(b_returns[j], prompt_mask)
             value = _fill_zeros(b_value[j], prompt_mask)
+            cot_coef = _fill_zeros(b_cot_coefs[j], prompt_mask)
 
             dset.append(
                 {
@@ -982,6 +912,7 @@ def main(args: Args):
                     "reward": reward,
                     "advantage": advantage,
                     "returns": returns,
+                    "cot_coef": cot_coef,
                 }
             )
 
@@ -1013,10 +944,11 @@ def main(args: Args):
                     mb_input_ids = batch["input_ids"][:, mb]
                     mb_labels = batch["labels"][:, mb]
                     mb_attention_mask = batch["attention_mask"][:, mb]
-                    mb_logprob = batch["logprob"][:, mb]
                     mb_advantages = batch["advantage"][:, mb]
                     mb_values = batch["value"][:, mb]
                     mb_returns = batch["returns"][:, mb]
+                    mb_cot_coef = batch["cot_coef"][:, mb]
+                    mb_logprob = batch["logprob"][:, mb]
 
                     if mb_attention_mask.sum() == 0:
                         continue
@@ -1031,7 +963,10 @@ def main(args: Args):
                     dist = torch.distributions.Categorical(logits=new_logits)
                     new_entropy = dist.entropy()
                     new_logprob = F.log_softmax(new_logits, dim=-1)
+
+                    # for simplicity
                     new_logprob = new_logprob.gather(-1, gather_ixs).squeeze(-1)
+                    mb_logprob = mb_logprob
 
                     logratio = new_logprob - mb_logprob
                     ratio = logratio.exp()
@@ -1055,7 +990,7 @@ def main(args: Args):
                         ratio, 1 - args.clip_coef, 1 + args.clip_coef
                     )
                     pg_loss = torch.max(pg_loss1, pg_loss2)
-                    pg_loss = torch.mean(mb_attention_mask * pg_loss)
+                    pg_loss = torch.mean(mb_attention_mask * pg_loss * mb_cot_coef)
 
                     # Value loss
                     if args.clip_vloss:
@@ -1067,13 +1002,13 @@ def main(args: Args):
                         )
                         v_loss_clipped = (v_clipped - mb_values) ** 2
                         v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                        v_loss = 0.5 * torch.mean(mb_attention_mask * v_loss_max)
+                        v_loss = 0.5 * torch.mean(mb_attention_mask * v_loss_max * mb_cot_coef)
                     else:
                         v_loss = 0.5 * torch.mean(
-                            mb_attention_mask * (new_value - mb_returns) ** 2
+                            mb_attention_mask * (new_value - mb_returns) ** 2 * mb_cot_coef
                         )
 
-                    entropy_loss = torch.mean(mb_attention_mask * new_entropy)
+                    entropy_loss = torch.mean(mb_attention_mask * new_entropy * mb_cot_coef)
                     # kl = (new_logprob - ref_logprob).mean()
                     loss = (
                         pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
