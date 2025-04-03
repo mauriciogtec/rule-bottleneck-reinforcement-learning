@@ -67,7 +67,7 @@ class Args:
     """total timesteps of the experiments"""
     gamma: float = 0.95
     """the discount factor gamma"""
-    tau: float = 1.0
+    tau: float = 0.25
     """target smoothing coefficient (default: 1)"""
     batch_size: int = 16
     """the batch size of sample from the reply memory"""
@@ -81,20 +81,22 @@ class Args:
     """the frequency of training updates"""
     warmup_updates: int = 1
     """the number of warmup updates to the value function on the first iteration."""
-    actor_updates: int = 4
+    actor_updates: int = 1
     """the number of updates to the actor per update cycle"""
-    critic_updates: int = 4
+    critic_updates: int = 1
     """the number of updates to the critic per update cycle"""
     target_network_frequency: int = 64
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
     """Entropy regularization coefficient."""
-    autotune: bool = False
+    autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
     dropout: float = 0.05
     """the dropout rate"""
+    reinit: bool = False
+    """if toggled, the experiment will be reinitialized"""
 
     # Eval
     eval: bool = True
@@ -425,6 +427,7 @@ def main(args: Args):
             name=run_name,
             id=run_name,
             resume='auto',
+            reinit=args.reinit,
             monitor_gym=True,
             save_code=True,
         )
@@ -694,7 +697,7 @@ def main(args: Args):
                 best_model_epoch = global_step
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        autoreset = np.logical_or(autoreset, dones)
+        autoreset = np.logical_or(trunc, dones)
         # obs_vec, obs_text = next_obs_vec, next_obs_text
         # rules = next_rules
         # rules_emb = next_rules_emb
