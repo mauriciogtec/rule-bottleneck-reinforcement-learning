@@ -351,6 +351,70 @@ class HFMetaWrapper:
         return Reponse(content=content)
 
 
+class HUITEmbeddings:
+    """
+    Custom embeddings model for a HUIT AWS Bendrock endpoint.
+    **Only for internal use at Harvard.
+    """
+
+    def __init__(
+        self,
+        model: str = "mistral.mistral-large-2407-v1:0",
+        max_attempts: int = 3,
+        wait_time_between_attempts: int = 60,
+    ):
+        self.metadata = {}
+        self.metadata["endpoint_url"] = (
+            "https://go.apis.huit.harvard.edu/ais-openai-direct/v1/embeddings"
+        )
+        self.metadata["api_key"] = os.getenv("HUIT_AI_API_KEY")
+        self.max_attempts = max_attempts
+        self.wait_time_between_attempts = wait_time_between_attempts
+        self.model = model
+
+    def invoke(self, input) -> NamedTuple:
+        # 1. Construct the payload
+        payload = json.dumps(
+            {
+                "contentType": "application/json",
+                "accept": "application/json",
+                "body": {
+                    "model": self.model,
+                    "input": input,
+                },
+            }
+        )
+
+        # 3. Send the request
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.metadata["api_key"],
+        }
+
+        attempts = 0
+        while True:
+            attempts += 1
+            if attempts > self.max_attempts:
+                raise RuntimeError("Failed to get a response from the endpoint.")
+            try:
+                response = requests.post(
+                    self.metadata["endpoint_url"],
+                    headers=headers,
+                    data=payload,
+                )
+                response.raise_for_status()
+                break
+            except requests.exceptions.HTTPError as e:
+                warnings.warn(f"Attempt {attempts} failed: {e}")
+                time.sleep(self.wait_time_between_attempts)
+
+        # 4. Parse the response
+        result_json = response.json()
+        content = result_json["choices"][0]["message"]["content"]
+
+        return Reponse(content=content)
+
+
 ModelAPIDict = {
     "google/gemma-2b-it": ChatTogether,
     "meta-llama/Llama-3.2-3B-Instruct-Turbo": ChatTogether,
@@ -448,11 +512,15 @@ if __name__ == "__main__":
     # print(result.content)
 
     # llm = HUITOpenAI("gpt-4o-mini-huit")
-    llm = HUITOpenAI("o3-mini-huit")
+    # llm = HUITOpenAI("o3-mini-huit")
     # llm = get_llm_api("meta.llama3-2-3b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-2-11b-instruct-v1:0")
     # llm = get_llm_api("meta.llama3-3-70b-instruct-v1:0")
     # llm = get_llm_api("meta-llama/Llama-3.2-3B-Instruct-Turbo")
     # llm = HUITMeta("meta.llama3-1-8b-instruct-v1:0")
-    result = llm.invoke(messages, max_tokens=10)
+    # result = llm.invoke(messages, max_tokens=10)
+
+    embedder = HUITEmbeddings("text-embedding-3-large")
+    input = "Hello"
+    result = embedder.invoke(input)
     print(result.content)
