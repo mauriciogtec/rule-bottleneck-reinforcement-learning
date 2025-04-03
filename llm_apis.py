@@ -403,10 +403,10 @@ def invoke_with_retries(
 ):
     attempts = 0
     while True:
-        attempts += 1
         if attempts > max_attempts:
             raise RuntimeError("Failed to get a response from the endpoint.")
         try:
+            attempts += 1
             result = model.invoke(
                 messages, *args, temperature=temperature, max_tokens=max_tokens, **kwargs
             )
