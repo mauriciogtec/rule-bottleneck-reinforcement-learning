@@ -221,27 +221,7 @@ class BaseAgent:
 
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
-
-        explanation_prompt = ""
-
-        if self.use_thoughts:
-            explanation_prompt += (
-                f"### Thoughts\n\n"
-                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
-            )
-
-        explanation_prompt += (
-            f"### Selected Action\n\n"
-            "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
-            f"{outputs['action']}\n\n"
-            f"### Task\n\nNow, explain why you chose the optimal action."
-            " Your response should be a short paragraph with 1-3 sentences explaining the reasoning behind your choice."
-         )
-        
-        tmp_messages = [{"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}]
-        outputs["explanation"] = invoke_with_retries(
-            self.llm, tmp_messages, temperature=0.5, max_tokens=200
-        ).content
+        _gen_explanation(outputs, messages, self.llm)
         # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
 
@@ -373,7 +353,39 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
 
 #     return response
 
+def _gen_explanation(outputs, messages, llm, use_thoughts=True):
+    explanation_prompt = ""
 
+    if use_thoughts:
+        explanation_prompt += (
+            f"### Thoughts\n\n"
+            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+        )
+
+    explanation_prompt += (
+        f"### Selected Action\n\n"
+        "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
+        f"{outputs['action']}\n\n"
+        f"### Explanation Task\n\n"
+        "Explain how you chose the optimal action."
+        " Your response should be a short paragraph."
+        " Your explanation is meant for a human audience which cannot see the previous reasoning, so it must be self-contained."
+        " Do not guess. Answer solely based on the problem state and and previous reasoning about expectations of each action, sequential dependence, and reasoning about future reward/cost, ."
+        " Follow the template:"
+        " In the current state, I observed <state>. "
+        " Then, I reasoned that <thoughts>."
+        " I concluded that <action> is the optimal action.\n"
+        " - For the state and thoughts, include only the facts of the state that you used later to make a decision\n"
+        # " - For the thoughts, include expectations of each action, reasoning about future reward/cost, include only the most important thoughts. \n"
+        " - In both cases, use sentences with less than six words and no more than 3 sentences.\n"
+    )
+
+    tmp_messages = [
+        {"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}
+    ]
+    outputs["explanation"] = invoke_with_retries(
+        llm, tmp_messages, temperature=0.0, max_tokens=200
+    ).content
 
 def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
 
@@ -393,24 +405,32 @@ def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
         )
     else:
         explanation_prompt += (
-            f"\n\n### Selected rules\n\n"
+            f"\n\n### Selected rule\n\n"
             f"Given your previous reasoning, you selected the following rules to make a decision\n:{outputs['rules']}\n\n"
         )
-
 
     explanation_prompt += (
         f"### Selected Action\n\n"
         "Given the problem state and your previous reasoning, you selected action(s) to make a decision\n:"
         f"{outputs['action']}\n\n"
-        f"### Task\n\nNow, explain why you chose the optimal action *based on the rules*."
-        " Your response should be a short paragraph with 1-3 sentences explaining the reasoning behind your choice."
-        " Do not guess, simply explain how the rule was used to make the decision."
-        " Your explanation must be self-contained, so it must include all the information needed to understand the reasoning."
+        f"### Explanation Task\n\n"
+        "Explain how you chose the optimal action."
+        " Your response should be a short paragraph."
+        " Your explanation is meant for a human audience which cannot see the previous reasoning, so it must be self-contained."
+        " Do not guess. Answer solely based on the problem state and and previous reasoning about expectations of each action, sequential dependence, and reasoning about future reward/cost, ."
+        " Follow the template:"
+        " In the current state, I observed <state>. "
+        " Then, I reasoned that <rule motivation in concise natural language>."
+        " I applied the rule stating that <rule recipe>."
+        " Applying this rule to current state, I concluded that <action> is the optimal action.\n"
+        " - For the state, include only the facts of the state that you used later to make a decision\n"
+        # " - For the thoughts, include expectations of each action, reasoning about future reward/cost, include only the most important thoughts. \n"
+        " - In both cases, use sentences with less than six words and no more than 3 sentences.\n"
     )
-    
+
     tmp_messages = [{"role": "user", "content": explanation_prompt}]
     outputs["explanation"] = invoke_with_retries(
-        llm, tmp_messages, temperature=0.5, max_tokens=200
+        llm, tmp_messages, temperature=0.0, max_tokens=200
     ).content
     # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
@@ -912,7 +932,10 @@ class RulesSelectorActorCritic(BaseAgent):
     
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
-        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        if self.optimize_thoughts_only:
+            _gen_explanation(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        else:
+            _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 class RulesSelectorActorCriticRAG(BaseAgent):
@@ -1244,7 +1267,10 @@ class RulesSelectorActorCriticRAG(BaseAgent):
     
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
-        _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        if self.optimize_thoughts_only:
+            _gen_explanation(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
+        else:
+            _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
 
 
 class LLMFineTuningAgent(BaseAgent):
