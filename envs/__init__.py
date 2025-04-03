@@ -25,8 +25,9 @@ HeatAlerts = partial(
     effectiveness_type="synthetic",
     reward_type="saved",
     random_starts=True,
-    penalty=0.1,
+    penalty=1.0,
     top_k_fips=10,
+    min_heat_qi=0.0,
 )
 BuySellSimple = partial(BuySellSimpleLang)
 BinPacking = partial(BinPackingLang)
@@ -42,8 +43,9 @@ HeatAlertsNumeric = partial(
     effectiveness_type="synthetic",
     reward_type="saved",
     random_starts=True,
-    penalty=0.1,
+    penalty=1.0,
     top_k_fips=10,
+    min_heat_qi=0.0,
 )
 BuySellSimpleNumeric = partial(BuySellSimple)
 BinPackingNumeric = partial(BinPackingNumeric)
