@@ -173,6 +173,7 @@ class CrossAttentionNetwork(nn.Module):
         num_attention_blocks: int = 1,
         normalize_inputs: bool = True,
         initial_proj: bool = True,
+        num_outputs: int = 1,
         proj_type: Literal["linear", "random"] = "random",
     ):
         super().__init__()
@@ -223,7 +224,7 @@ class CrossAttentionNetwork(nn.Module):
                 )
             )
 
-        self.linear = nn.Linear(hidden_dim, 1, bias=True)
+        self.linear = nn.Linear(hidden_dim, num_outputs, bias=True)
 
     def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
         if self.normalize_inputs:
