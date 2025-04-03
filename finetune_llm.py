@@ -158,7 +158,7 @@ class Args:
     """the language model to use"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    llm: str = "meta-llama/Llama-3.2-3B-Instruct"
+    llm: str = "meta-llama/Llama-3.1-8B-Instruct"
     """The model to finetune"""
     train_dtype: Literal["float16", "bfloat16"] = "float16"
     """The dtype to use for training"""
@@ -640,8 +640,7 @@ def main(args: Args):
             ]
            
 
-            # Add the rule generation prompt
-            for m in messages:
+            # Add the rule generation prompt            for m in messages:
                 messages = [[{"role": "user", "content": p + THOUGHT_PROMPT}] for p in outputs]
 
             # Tokenize each input state and concert torch dataset
