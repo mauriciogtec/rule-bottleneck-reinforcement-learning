@@ -15,4 +15,5 @@ trl
 jsonlines
 wandb
 sklearn
+minigrid
 # git+https://github.com/NSAPH-Projects/weather2alert@dev
