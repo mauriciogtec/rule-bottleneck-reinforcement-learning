@@ -951,7 +951,7 @@ class RulesSelectorActorCriticRAG(BaseAgent):
         max_rule_combinations: int = 1,
         num_gen_rules: int = 1,
         store_size: int = 1000,
-        num_store_queries: int = 50,
+        num_store_queries: int = 20,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,

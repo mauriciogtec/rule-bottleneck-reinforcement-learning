@@ -598,7 +598,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
             # "- Always choose a free device if available\n"
             # "- If no free device is available, then choose device i whose current patient is at least risk or"
             # " would benefit less from wearing the device."
-            " Format your answer as a JSON as in the following examples: {'device': 0}, {'device': 3}."
+            " Format your answer as a JSON, for example: {'device': 0}."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -659,22 +659,20 @@ class VitalSignsSimpleLang(LanguageWrapper):
     @property
     def example_rules(self) -> List[str]:
         rule_1 = (
-            '{"background": "If a device is free, no patient is receiving the benefit.",'
-            ' "rule": "If device i is free, assign it to the new patient.",'
-            ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
+            '{"background": "Free devices are unused wasted resources. Selecting a free device keeps patients safe.",'
+            ' "rule": "Select the first free device."} *Note: you should always have one rule related to free devices.*'
+            # ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
         )
 
         rule_2 = (
-            '{"background": "Patients with high volatility in their vital signs are at higher risk of abnormal vital signs even if their last observed signs are normal",'
-            ' "rule": "When there are no free devices, reallocate the devices of patients with low volatility and normal vital signs."n'
-            ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
+            '{"background": "Selecting a free device keeps patients safe. Abnormal vital signs need keep device. High volatility vital signs, higher risk.",'
+            ' "rule": "Select the first free device. If none free, choose with one normal vital signs. If none, choose with no volatility history. Never select device with patient at risk."}'
+            # ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
         )
 
         rule_3 = (
-            '{"background": "Patients with abnormal vital signs will benefit from continued use of the device",'
-            ' "rule": "Prioritize reallocating the devices of patients with normal vital signs over those with abnormal vital signs",'
-            ' "state relevance": "The patient wearing device #2 is at risk because it has low SPO2 (85%), so Device ID should *not* be reallocated. Patients wearing devices 0, 1, 3, 4 are not at risk, so they are candidate actions."}'
-
+            '{"background": "Free devices are always the best choice. Mean and variance variance can help identify risk.",'
+            ' "rule": "Select the first free device. If none free, choose i = argmin_i max_j (meand_ij + stdd_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}'
         )
         return [rule_1, rule_2, rule_3]
 

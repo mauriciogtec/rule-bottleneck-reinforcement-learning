@@ -601,6 +601,7 @@ def main(args: Args):
         best_model = checkpoint["best_model"]
         best_model_epoch = checkpoint["best_model_epoch"]
         buffer = checkpoint["buffer"]
+        lang_agent.rule_store.extend(checkpoint["rule_store"])
         logging.info(f"Resumed training from checkpoint at step {starting_step}.")
 
     logging.info(f"Starting buffer size: {buffer.size()}")
@@ -920,6 +921,7 @@ def main(args: Args):
             "best_model": best_model,
             "best_model_epoch": best_model_epoch,
             "buffer": buffer,
+            "rule_store": list(lang_agent.rule_store),
         }
         if args.autotune:
             save_state["log_alpha"] = log_alpha
