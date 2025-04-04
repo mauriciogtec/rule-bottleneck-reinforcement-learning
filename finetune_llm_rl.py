@@ -1019,7 +1019,7 @@ def main(args: Args):
                             mb_attention_mask * (new_value - mb_returns) ** 2
                         )
 
-                    entropy_loss = torch.mean(new_logprob.clip(-1, 0))
+                    entropy_loss = - torch.mean(new_logprob.clip(-1, 0))
                     # kl = (new_logprob - ref_logprob).mean()
                     loss = (
                         pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef

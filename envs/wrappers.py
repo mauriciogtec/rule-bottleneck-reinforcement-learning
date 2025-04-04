@@ -8,6 +8,9 @@ from typing import Any, Dict, Literal, Optional
 import gymnasium as gym
 from gymnasium import Env, Wrapper, spaces
 
+from langchain_core.embeddings import Embeddings
+import numpy as np
+
 
 class LanguageWrapper(Wrapper, ABC):
     """
@@ -30,24 +33,26 @@ class LanguageWrapper(Wrapper, ABC):
         obs_type: Literal["text", "original", "both"] = "both",
         max_text_length: int = 2048,
         parse_action: bool = True,
-        # embeddings_model: Optional[Embeddings] = None,
-        # embeddings_dim: int = 768,
+        embeddings_model: Optional[Embeddings] = None,
+        embeddings_dim: int = 768,
     ) -> None:
         super().__init__(env)
-        # self.embeddings_model = embeddings_model
+        self.embeddings_model = embeddings_model
 
-        # if self.embeddings_model is not None:
-        #     # update obs space
-        #     self.env.observation_space = spaces.Box(
-        #         low=-np.inf, high=np.inf, shape=(embeddings_dim,)
-        #     )
+        if self.embeddings_model is not None:
+            current_observation_space = spaces.Box(
+                low=-np.inf, high=np.inf, shape=(embeddings_dim,)
+            )
+        else:
+            current_observation_space = env.observation_space
+
         self.obs_type = obs_type
 
         if self.obs_type == "text":
             self.env.observation_space = spaces.Text(max_length=max_text_length)
         elif self.obs_type == "both":
             self.env.observation_space = spaces.Tuple(
-                (self.env.observation_space, spaces.Text(max_length=2048))
+                (current_observation_space, spaces.Text(max_length=2048))
             )
 
         self.metadata["task_text"] = self.task_text
@@ -125,9 +130,9 @@ class LanguageWrapper(Wrapper, ABC):
 
         # info["obs_text"] = desc
 
-        # if self.embeddings_model is not None:
-        #     obs = self.embeddings_model.embed_query(desc)
-        #     obs = np.array(obs, dtype=np.float32)
+        if self.embeddings_model is not None:
+            obs = self.embeddings_model.embed_query(obs_text)
+            obs = np.array(obs, dtype=np.float32)
 
         # self.env.metadata["last_obs"] = obs
         # self.env.metadata["last_info"] = info
@@ -162,7 +167,7 @@ class LanguageWrapper(Wrapper, ABC):
         self.env.metadata["obs_original"] = info["obs_original"] = obs_original
         self.env.metadata["obs_text"] = info["obs_text"] = obs_text
 
-        return obs, info
+        return obs, info    
 
     def action_parser(self, s: str) -> int:
         """

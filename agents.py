@@ -478,6 +478,12 @@ def _gen_rules(
         rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
     
     rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
+
+    if example_rules is not None:
+        rules_prompt += (
+            f"\n\n### Example rules\n\n"
+            f"\n\n{example_rules}\n\n"
+        )
     
 
     tmp_messages = [{"role": "user", "content": rules_prompt}]
@@ -951,7 +957,7 @@ class RulesSelectorActorCriticRAG(BaseAgent):
         max_rule_combinations: int = 1,
         num_gen_rules: int = 1,
         store_size: int = 1000,
-        num_store_queries: int = 50,
+        num_store_queries: int = 20,
         example_rules: Optional[str] = None,
         max_parse_attempts: int = 3,
         verbose: bool = False,
