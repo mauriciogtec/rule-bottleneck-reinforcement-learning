@@ -21,7 +21,17 @@ class BaseBabyAILang(LanguageWrapper):
 
     def __init__(self, env_name: str, **kwargs):
         env = gym.make(env_name, **kwargs)
+        current_obs_space = env.observation_space
+        h, w = current_obs_space["image"].shape[0:2]
         env = SymbolicObsWrapper(env)
+        self.observation_space = gym.spaces.Tuple(
+            (
+                gym.spaces.Box(
+                    low=0, high=255, shape=(h * w + 2,), dtype=np.int32
+                ),  # +2 for color and type
+                gym.spaces.Text(max_length=2048),
+            )
+        )
         super().__init__(env)
 
     @property
@@ -188,7 +198,7 @@ class BabyAIGoToLocalLang(BaseBabyAILang):
     """
 
     def __init__(self, **kwargs):
-        super().__init__("BabyAI-GoToLocalS6-v1", **kwargs)
+        super().__init__("BabyAI-GoToLocalS8N7-v0", **kwargs)
 
     @property
     def task_text(self) -> str:
