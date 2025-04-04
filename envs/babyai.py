@@ -24,14 +24,10 @@ class BaseBabyAILang(LanguageWrapper):
         current_obs_space = env.observation_space
         h, w = current_obs_space["image"].shape[0:2]
         env = SymbolicObsWrapper(env)
-        self.observation_space = gym.spaces.Tuple(
-            (
-                gym.spaces.Box(
-                    low=0, high=255, shape=(h * w + 2,), dtype=np.int32
-                ),  # +2 for color and type
-                gym.spaces.Text(max_length=2048),
-            )
-        )
+        env.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=((h - 1) * (w - 1)+ 2,), dtype=np.float32
+        )  # +2 for color and type
+
         super().__init__(env)
 
     @property
@@ -104,12 +100,12 @@ class BaseBabyAILang(LanguageWrapper):
         else:
             description += "  None\n"
 
-        # Unseen areas
-        description += "\nUnseen areas:\n"
-        if unseen_list:
-            description += ", ".join([f"{pos}" for pos in unseen_list]) + "\n"
-        else:
-            description += "  None\n"
+        # # Unseen areas
+        # description += "\nUnseen areas:\n"
+        # if unseen_list:
+        #     description += ", ".join([f"{pos}" for pos in unseen_list]) + "\n"
+        # else:
+        #     description += "  None\n"
 
         # Known walls
         description += "\nKnown walls:\n"
@@ -132,7 +128,9 @@ class BaseBabyAILang(LanguageWrapper):
         if self.parse_action:
             action = self.action_parser(action)
 
-        (obs_original, obs_text), reward, terminated, truncated, info = super().step(action)
+        (obs_original, obs_text), reward, terminated, truncated, info = super().step(
+            action
+        )
         numeric = self.numeric_state(obs_original)
         info["original_obs"] = obs_original
         return (numeric, obs_text), reward, terminated, truncated, info
@@ -240,5 +238,5 @@ if __name__ == "__main__":
     print("Truncated:", truncated)
     print("\nMetadata:")
     print(env.metadata)
-
+ 
     env.close()
