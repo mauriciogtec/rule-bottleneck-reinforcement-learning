@@ -500,12 +500,13 @@ def _gen_rules(
     if num_rules > 1:
         rules_prompt += (
             f"\n\n### Rule generation task\n\n"
-            f"Now, suggest a set of {num_rules} potential rules that could be useful to make an optimal decision in the current state."
+            f"Now, suggest a set of {num_rules} potential rules that could be applied to find the optimal decision in the current state.\n"
+            "There must be diversity among the candidate rules, but all should help finding the optimal decision for the current state.\n"
         )
     else:
         rules_prompt += (
             f"\n\n### Rule generation task\n\n"
-            f"Now, suggest one rule that is useful to make an optimal decision in the current state."
+            f"Now, suggest a rule that can be applied to make optimal decision in the current state."
         )
 
     rules_prompt += (

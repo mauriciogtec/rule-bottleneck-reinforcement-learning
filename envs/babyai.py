@@ -100,15 +100,18 @@ class BaseBabyAILang(LanguageWrapper):
             "3: Pick up object\n"
             "4: Drop object\n"
             "5: Toggle/open door (if applicable)\n\n"
-            "\nExample of action effects:"
-            "- If you are at (2, 3) and you are facing right, then moving action=2 (forward) will take you to (2, 4).\n"
-            "- If you are at (2, 3) and you are facing down, then moving action=2 (forward) will take you to (3, 3).\n"
-            "- If you are at (2, 3) and there is a key at (2, 4) and facing right towards the key, then you can pickup the key with action=3 (pick up object).\n"
-            "- If you are at (2, 3) facing down and you want to move to (2, 4), then you first need to turn left (action=1) and then move forward (action=2).\n"
-            "- If you are at (2, 3) facing left and you want to move to (3, 3), then you first need to turn left (action=0) and then move forward (action=2).\n"
-            "- If you are at (2, 3) facing down and you want to move to (2, 2), then you first need to turn right (action=1) and then move forward (action=2).\n\n"
-            "- If you are at (2, 3) facing right and there is a red ball at (4, 3), then you will win by moving left (action=0) and then forward (action=2) to reach (3, 3) since you will be now facing the red ball.\n"
-            "You cannot go beyond the limits of grid size from 1 to size - 2. For instance, (2, 1) -> (2, 0) is invalid. (4, 3) -> (5, 3) is invalid when grid size is 6x6.\n"
+            "\nEffects of actions:\n"
+            "- Turning left (action 0) will cycle the direction you are facing in the order: left -> down -> right -> up -> left.\n"
+            "- Turning right (action 1) will cycle the direction you are facing in the order: left -> up -> right -> down -> left.\n"
+            "- Moving forward (action 2) depends on the direction you are facing: \n"
+            "    - facing left: (i, j) -> (i, j-1)\n"
+            "    - facing down: (i, j) -> (i+1, j)\n"
+            "    - facing right: (i, j) -> (i, j+1)\n"
+            "    - facing up: (i, j) -> (i-1, j).\n"
+            "- You can pick up an object (action 3) if approach the object and face it (e.g, if you are at (i, j) facing left, you can pick up an object at (i, j-1)).\n"
+            "- You can drop an object (action 4) if you are holding one.\n"
+            "- You can toggle/open a door (action 5) if you are facing it and it is closed.\n"
+            "- To win the game, you need to reach and face the position of the target object specified in the mission.\n"
             "You can only execute one action at a time."
         )
 
@@ -284,9 +287,9 @@ class BabyAIGoToObjLang(BaseBabyAILang):
     @property
     def example_rules(self) -> List[str]:
         return [
-            '{"background": "Red ball is in sight. Path looks clear. No wall in front. Close to target.", "rule": "If red ball seen ahead, move forward."}',
-            '{"background": "Wall blocks path. Can’t move forward. Right side might be clear.", "rule": "If wall ahead, turn right and go."}',
-            '{"background": "Nothing visible ahead. Object is not in view. Grid may hide target.", "rule": "If no target in sight, turn left until seen."}',
+            '{"background": "Turning right twice reverts direction. Plan ahead turning twice.", "rule": "If the target is in the opposite direction, turn right."}',
+            '{"background": "Wall blocks path. Cant move forward. Plan ahead going around it. First need to turn.", "rule": "If wall ahead, but want to go in that direction, turn left first."}',
+            '{"background": "Moving forward depends on direction. Must face and move towards target.", "rule": "If you are facing in the direction of the target, move forward."}',
         ]
 
 
@@ -308,9 +311,9 @@ class BabyAIGoToLocalLang(BaseBabyAILang):
     @property
     def example_rules(self) -> List[str]:
         return [
-            '{"background": "Blue key nearby. No block ahead. Target seems close. Move seems safe.", "rule": "If blue key in view, go forward."}',
-            '{"background": "Door blocks front. Left is open. Try new path. Avoid blocked way.", "rule": "If door ahead, turn left and move."}',
-            '{"background": "No target nearby. Rotate to explore. Room still unexplored.", "rule": "If target unseen, turn until found."}',
+            '{"background": "Turning right twice reverts direction. Plan ahead turning twice.", "rule": "If the target is in the opposite direction, turn right."}',
+            '{"background": "Wall blocks path. Cant move forward. Plan ahead going around it. First need to turn.", "rule": "If wall ahead, but want to go in that direction, turn left first."}',
+            '{"background": "Moving forward depends on direction. Must face and move towards target.", "rule": "If you are facing in the direction of the target, move forward."}',
         ]
 
 
