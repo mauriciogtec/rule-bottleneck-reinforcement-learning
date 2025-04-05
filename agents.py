@@ -1,5 +1,6 @@
 from collections import deque
 from functools import partial
+import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -260,56 +261,106 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # 2) Is the rule relevant to the current state?
     # 3) Is the justification of the rule clear and relates to the task?
 
+    q1 = "Is/are the rule/rules sufficient to exactly predict the action that the system will take in the current problem state?"
+    q2 = "Is the justification of the rule free of hallucinations and relevant to the current state?"
+
+    q3 = "Was/were the rule/rules complete, i.e., sufficient to determine the optimal action/decision that the system took?"
+    q4 = "Was the background motivation for the rule satisfactory without false logic or hallucinations?"
+
     rules = "\n".join(rules)
     rule_scores_prompt = (
-        "To make a decision in the current state, the following rule/rules was/were selected:\n\n"
+        "### Rule evaluation task"
+        "Evaluate the usefulness of the following rule to determine the optimal action:\n\n"
         f"\n\n{rules}\n\n"
-        "You will now be given a question you need to answer with a simple 'yes' or 'no'.\n\n"
+        "You will need to provde a simple answer 'yes' or 'no' to following questions.\n\n"
+        "### Questions\n\n"
+        "1. {q1}\n"
+        "2. {q2}\n"
+        "Answer in JSON format where (no=0, yes=1): For example: {'q1': 0, 'q2': 0}\n\n"
+        ""
     )
-    q1 = "Is/are the rule/rules **alone** sufficient to understand the optimal action/decision that the system should take in current the problem state?"
-    q2 = "Is the condition in the rule/rules actionable and complete in the current problem state (containing sufficient detail about the current problem state without unnecessary information)?"
-    q3 = "Did the selected rule/rules sufficiently help to understand the previous decision without contradictions?"
-    q4 = "Is the justification of the rule satisfactory without false logic or hallucinations?"
-
-    coda = (
-        "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
-        " information or justification. Your response should be a single word.\n\n"
+    post_hoc_prompt = (
+        "### Rule evaluation task\n\n"
+        "Evaluate the compatibility of the following rule with the current state and the selected action.\n\n"
+        f"### Selected action\n\n{outputs['action']}\n\n"
+        f"### Selected rule(s)\n\n{rules}\n\n"
+        "### Questions"
+        "1. {q3}\n"
+        "2. {q4}\n"
+        "Answer in JSON format where (no=0, yes=1). For example: {'q1': 0, 'q2': 0}\n\n"
     )
 
-    # Answer q1
-    temp_messages = messages.copy()
-    msg = rule_scores_prompt + "### Question\n\n" + q1 + coda
-    temp_messages.append({"role": "user", "content": msg})
-    r1_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r1 = float("yes" in r1_.lower())
-    temp_messages.append({"role": "assistant", "content": r1_})
+    # q1 = "Q1. Is/are the rule/rules complete, i.e., sufficient to determine the optimal action/decision that the system will take in current the problem state?"
+    # # q2 = "Q2. Is the ful"
+    # q2 = "Q2. Is the justification of the rule satisfactory without false logic or hallucinations?"
+    # q3 = "Q3. Did the selected rule/rules sufficiently help to understand the previous decision without contradictions?"
 
-    # Answer q2
-    temp_messages = messages.copy()
-    msg = rule_scores_prompt + "### Question\n\n" + q2 + coda
-    temp_messages.append({"role": "user", "content": msg})
-    r2_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r2 = float("yes" in r2_.lower())
-    temp_messages.append({"role": "assistant", "content": r2_})
+    # coda = (
+    #     "\nAnswer the following questions with a simple 'yes' or 'no' without additional"
+    #     " information or justification. Your response should be a single word.\n\n"
+    # )
 
-    # Answer q3
-    temp_messages = messages.copy()
-    msg = rule_scores_prompt + (
-        f"The decision taken in the current problem state was: {outputs['action']}.\n\n"
-        f"### Question\n\n{q3 + coda}"
-    )
-    temp_messages.append({"role": "user", "content": msg})
-    r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r3 = float("yes" in r3_.lower())
-    temp_messages.append({"role": "assistant", "content": r3_})
+    # Answer rules prompt
+    # temp_messages = messages.copy()
+    tmp_messages = [{"role": "user", "content": system_prompt + rule_scores_prompt}]
+    response1 = invoke_with_retries(
+        llm, tmp_messages, max_tokens=20, temperature=0.0
+    ).content
+    # use regex to extract the values
+    try:
+        # extract braces content , e.g., "I choose ```json{'q1': 1, 'q2': 0}```" -> "{'q1': 1, 'q2': 0}"
+        numbers = response1.split('{')[1].split('}')[0]
+        numbers = json.loads("{" + numbers + "}")
+        r1, r2 = [float(numbers[k]) for k in numbers.keys()]
+    except:
+        r1, r2 = 0, 0
 
-    # Answer q4
-    temp_messages = messages.copy()
-    msg = rule_scores_prompt + "### Question\n\n" + q4 + coda
-    temp_messages.append({"role": "user", "content": msg})
-    r4_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
-    r4 = float("yes" in r4_.lower())
-    temp_messages.append({"role": "assistant", "content": r4_})
+    # Answer post hoc prompt
+    tmp_messages = [{"role": "user", "content": system_prompt + post_hoc_prompt}]
+    response2 = invoke_with_retries(
+        llm, tmp_messages, max_tokens=20, temperature=0.0
+    ).content
+    # use regex to extract the values
+    try:
+        # firest find content between braces the parson with json.loads
+        numbers = response2.split("{")[1].split("}")[0]
+        numbers = json.loads("{" + numbers + "}")
+        r3, r4 = [float(numbers[k]) for k in numbers.keys()]
+    except:
+        r3, r4 = 0, 0
+
+    # msg = rule_scores_prompt + "### Question\n\n" + q1 + coda
+    # temp_messages.append({"role": "user", "content": msg})
+    # r1_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    # r1 = float("yes" in r1_.lower())
+    # temp_messages.append({"role": "assistant", "content": r1_})
+
+    # # Answer q2
+    # temp_messages = messages.copy()
+    # msg = rule_scores_prompt + "### Question\n\n" + q2 + coda
+    # temp_messages.append({"role": "user", "content": msg})
+    # r2_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    # r2 = float("yes" in r2_.lower())
+    # temp_messages.append({"role": "assistant", "content": r2_})
+
+    # # Answer q3
+    # temp_messages = messages.copy()
+    # msg = rule_scores_prompt + (
+    #     f"The decision taken in the current problem state was: {outputs['action']}.\n\n"
+    #     f"### Question\n\n{q3 + coda}"
+    # )
+    # temp_messages.append({"role": "user", "content": msg})
+    # r3_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    # r3 = float("yes" in r3_.lower())
+    # temp_messages.append({"role": "assistant", "content": r3_})
+
+    # # Answer q4
+    # temp_messages = messages.copy()
+    # msg = rule_scores_prompt + "### Question\n\n" + q4 + coda
+    # temp_messages.append({"role": "user", "content": msg})
+    # r4_ = invoke_with_retries(llm, temp_messages, max_tokens=2).content
+    # r4 = float("yes" in r4_.lower())
+    # temp_messages.append({"role": "assistant", "content": r4_})
 
     # # Answer q5
     # temp_messages.append({"role": "user", "content": q5 + coda2})
@@ -324,7 +375,7 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # Calculate the reward"]
     outputs["sel_reward"] = float(np.mean([r1, r2, r3, r4]))
     outputs["sel_reward_scores"] = [r1, r2, r3, r4]
-    outputs["sel_reward_scores_raw"] = {q1: r1_, q2: r2_, q3: r3_, q4: r4_}
+    outputs["sel_reward_scores_raw"] = {q1: response1, q2: response1, q3: response2, q4: response2}
 
 
 # def _gen_thoughts_for_rule_agents(outputs, messages, llm, save_prompts: bool = True):
@@ -637,7 +688,8 @@ class LLMRulesAgent(BaseAgent):
             "### Action selection task\n\n"
             "Now, choose the optimal action given the selected rules and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
-            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action.\n"
+            "Answer in JSON format. For example: {'action': 0}."
         )
         # messages.append({"role": "user", "content": action_prompt})
 
@@ -879,6 +931,7 @@ class RulesSelectorActorCritic(BaseAgent):
             "Now, choose the optimal action given the selected rule and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+            "Answer in JSON format. For example: {'action': 0}."
         )
         # messages.append({"role": "user", "content": action_prompt})
 
@@ -935,7 +988,7 @@ class RulesSelectorActorCritic(BaseAgent):
 
     # def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
     #     return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
-    
+
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
         if self.optimize_thoughts_only:
@@ -1188,7 +1241,6 @@ class RulesSelectorActorCriticRAG(BaseAgent):
         outputs["rules"] = rules
         outputs["rules_emb"] = rules_emb
 
-
     def gen_rule_scores(self, outputs: Dict, messages: List[Dict]):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
         sel_rule = outputs["sel_rule"]
@@ -1216,6 +1268,7 @@ class RulesSelectorActorCriticRAG(BaseAgent):
             "Now, choose the optimal action given the selected rule and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action."
+            "Answer in JSON format. For example: {'action': 0}."
         )
         # messages.append({"role": "user", "content": action_prompt})
 
@@ -1270,7 +1323,7 @@ class RulesSelectorActorCriticRAG(BaseAgent):
 
     # def gen_thoughts(self, outputs: Dict, messages: List[Dict]):
     #     return _gen_thoughts_for_rule_agents(outputs, messages, self.llm)
-    
+
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
         if self.optimize_thoughts_only:

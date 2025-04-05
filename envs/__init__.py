@@ -12,7 +12,12 @@ from envs.bin_packing import (
     BinPackingLang,
     BinPackingIncrementalLang,
 )
-from envs.babyai import BabyAIGoToObjLang, BabyAIGoToLocalLang
+from envs.babyai import (
+    BabyAIGoToObjLang,
+    BabyAIGoToLocalLang,
+    BabyAIGoToLocalNumeric,
+    BabyAIGoToObjNumeric,
+)
 
 import gymnasium as gym
 
@@ -53,6 +58,8 @@ HeatAlertsNumeric = partial(
 BuySellSimpleNumeric = partial(BuySellSimple)
 BinPackingNumeric = partial(BinPackingNumeric)
 BinPackingIncrementalNumeric = partial(BinPackingIncrementalNumeric)
+BabyAIGoToLocalNumeric = partial(BabyAIGoToLocalNumeric)
+BabyAIGoToObjNumeric = partial(BabyAIGoToObjNumeric)
 
 
 kwargs = {"disable_env_checker": True}
@@ -88,3 +95,5 @@ register(
     # additional_wrappers=[reward_scaler],
     **kwargs
 )
+register(id="BabyAIGoToObjNumeric", entry_point="envs:BabyAIGoToObjNumeric", **kwargs)
+register(id="BabyAIGoToLocalNumeric", entry_point="envs:BabyAIGoToLocalNumeric", **kwargs)
