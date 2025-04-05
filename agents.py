@@ -261,11 +261,11 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # 2) Is the rule relevant to the current state?
     # 3) Is the justification of the rule clear and relates to the task?
 
-    q1 = "Is/are the rule/rules sufficient to exactly predict the action that the system will take in the current problem state?"
-    q2 = "Is the justification of the rule free of hallucinations and relevant to the current state?"
+    q1 = "Is/are the rule/rules sufficient to predict the exact action that the system will take in the current state?"
+    q2 = "Is the background motivation of the rule hallucinations free and relevant to the current state?"
 
-    q3 = "Was/were the rule/rules complete, i.e., sufficient to determine the optimal action/decision that the system took?"
-    q4 = "Was the background motivation for the rule satisfactory without false logic or hallucinations?"
+    q3 = "Did the rule/rules predicted the optimal action/decision that the system took (answer no=0 if contradiction)?"
+    q4 = "Was the background motivation for the rule hallucinations free and relevant to the current state?"
 
     rules = "\n".join(rules)
     rule_scores_prompt = (
