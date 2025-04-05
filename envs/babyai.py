@@ -329,18 +329,18 @@ if __name__ == "__main__":
     # print(env.metadata)
 
 
-    for i in range(1000):
+    for i in range(20):
         action = env.action_space.sample()
         next_obs, reward, terminated, truncated, info = env.step(action)
-        if reward > 0:
-            print(f"\nStep {i + 1}:")
-            print(f"\nObservation: {obs[1]}")
-            print(f"\nReward: {reward}")
-            print(f"\nAction: {action}")
-            print("\nNext Observation:")
-            print(next_obs[1])
-            print("Reward:", reward)
-            print("Done:",  terminated)
+        # if reward > 0:
+        print(f"\nStep {i + 1}:")
+        print(f"\nObservation: {obs[1]}")
+        print(f"\nReward: {reward}")
+        print(f"\nAction: {action}")
+        print("\nNext Observation:")
+        print(next_obs[1])
+        print("Reward:", reward)
+        print("Done:",  terminated)
         obs = next_obs
         
         if terminated or truncated:
