@@ -179,7 +179,7 @@ def make_env(env_id, seed, max_episode_steps=None):
         #     def scale_reward(r):
         #         return r / 100.0
         #     env = gym.wrappers.TransformReward(env, func=scale_reward)
-        
+
         if env_id not in ("BinPacking", "BinPackingIncremental"):
             env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -259,9 +259,14 @@ def update_critic(
             qf1_next_tgt = torch.nested.to_padded_tensor(qf1_next_tgt, 0.0)
             qf2_next_tgt = torch.nested.to_padded_tensor(qf2_next_tgt, 0.0)
 
+        softmin_weights = torch.nn.functional.softmin(
+            5.0 * torch.stack([qf1_next_tgt, qf2_next_tgt], dim=-1), dim=-1
+        )
         min_qf_next_target = (
-            next_action_probs
-            * (torch.min(qf1_next_tgt, qf2_next_tgt) - alpha * next_state_log_pi)
+            softmin_weights * torch.stack([qf1_next_tgt, qf2_next_tgt], dim=-1)
+        ).sum(dim=-1)
+        min_qf_next_target = (
+            next_action_probs * (min_qf_next_target - alpha * next_state_log_pi)
         ).sum(dim=1)
         next_q_value = rewards + (1 - dones) * gamma * min_qf_next_target
 
@@ -405,7 +410,6 @@ def main(args: Args):
     run_id = run_id.replace("/Llama", "-llama")
     run_name = run_id if args.resume else f"{run_id}__{int(time.time())}"
 
-
     # configure logging
     log_file = f"logs/{run_id}.err"
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -413,10 +417,7 @@ def main(args: Args):
         format="%(asctime)s [%(levelname)s]: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         level=logging.INFO,
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
 
     ckpt_path = f"checkpoints/{run_name}.state"
@@ -437,6 +438,7 @@ def main(args: Args):
 
     if args.track:
         import wandb
+
         # replace : with - to avoid wandb bug
         wandb_run_name = run_name.replace(":", "-")
         wandb.init(
@@ -448,7 +450,7 @@ def main(args: Args):
             id=wandb_run_name,
             monitor_gym=True,
             save_code=False,
-            resume='auto',
+            resume="auto",
             reinit=args.reinit,
             settings=wandb.Settings(init_timeout=1200, _service_wait=600),
         )
@@ -712,14 +714,15 @@ def main(args: Args):
         # accumulate and log the rewards
         for j in range(args.num_envs):
             needs_reset = dones[j] or trunc[j]
-            if not needs_reset:
+            if not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
                 _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 _ep_buffer["entropy"][j].append(entropy[j].item())
                 _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
-            else:
+            
+            if needs_reset:
                 # log the rewards
                 writer.add_scalar(
                     f"charts/episodic_env_rewards",
@@ -791,7 +794,9 @@ def main(args: Args):
                         "example": example,
                     }
                 )
-                examples_df = pd.DataFrame(example_records, columns=["global_step", "run_id", "example"])
+                examples_df = pd.DataFrame(
+                    example_records, columns=["global_step", "run_id", "example"]
+                )
                 wandb.log({"examples": wandb.Table(dataframe=examples_df)})
 
             # log the conversation and example in jsonl
@@ -987,7 +992,7 @@ if __name__ == "__main__":
         args.agent += f"-expl-rew-{args.rule_reward_coef}"
     if args.optimize_thoughts_only:
         args.agent += "-oto"
-    
+
     args.agent += "--" + args.llm[:20]
 
     main(args)

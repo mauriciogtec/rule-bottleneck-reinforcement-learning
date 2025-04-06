@@ -223,7 +223,7 @@ class CrossAttentionNetwork(nn.Module):
                     num_heads=num_heads,
                     dropout=dropout,
                 )
-            ) d
+            )
 
         self.linear = nn.Linear(hidden_dim, num_outputs, bias=True)
 
@@ -235,7 +235,7 @@ class CrossAttentionNetwork(nn.Module):
                     if hasattr(m, "weight") and m.weight is not None:
                         nn.init.xavier_normal_(m.weight)
                 else:
-                    nn.init.truncated_normal_(
+                    nn.init.trunc_normal_(
                         m.weight, mean=0.0, std=0.01
                     )
                 if hasattr(m, "bias") and m.bias is not None:
