@@ -12,6 +12,12 @@ from envs.bin_packing import (
     BinPackingLang,
     BinPackingIncrementalLang,
 )
+from envs.babyai import (
+    BabyAIGoToObjLang,
+    BabyAIGoToLocalLang,
+    BabyAIGoToLocalNumeric,
+    BabyAIGoToObjNumeric,
+)
 
 import gymnasium as gym
 
@@ -32,6 +38,8 @@ HeatAlerts = partial(
 BuySellSimple = partial(BuySellSimpleLang)
 BinPacking = partial(BinPackingLang)
 BinPackingIncremental = partial(BinPackingIncrementalLang)
+BabyAIGoToLocal = partial(BabyAIGoToLocalLang)
+BabyAIGoToObj = partial(BabyAIGoToObjLang)
 
 UgandaNumeric = partial(VitalSignsSimple, "models/uganda.npz", time_discount=0.95)
 MimicIIINumeric = partial(VitalSignsSimple, "models/mimic-iii.npz", time_discount=0.95)
@@ -50,6 +58,8 @@ HeatAlertsNumeric = partial(
 BuySellSimpleNumeric = partial(BuySellSimple)
 BinPackingNumeric = partial(BinPackingNumeric)
 BinPackingIncrementalNumeric = partial(BinPackingIncrementalNumeric)
+BabyAIGoToLocalNumeric = partial(BabyAIGoToLocalNumeric)
+BabyAIGoToObjNumeric = partial(BabyAIGoToObjNumeric)
 
 
 kwargs = {"disable_env_checker": True}
@@ -66,6 +76,8 @@ register(
     # additional_wrappers=[reward_scaler],
     **kwargs
 )
+register(id="BabyAIGoToObj", entry_point="envs:BabyAIGoToObj", **kwargs)
+register(id="BabyAIGoToLocal", entry_point="envs:BabyAIGoToLocal", **kwargs)
 
 register(id="UgandaNumeric", entry_point="envs:UgandaNumeric", **kwargs)
 register(id="MimicIIINumeric", entry_point="envs:MimicIIINumeric", **kwargs)
@@ -83,3 +95,5 @@ register(
     # additional_wrappers=[reward_scaler],
     **kwargs
 )
+register(id="BabyAIGoToObjNumeric", entry_point="envs:BabyAIGoToObjNumeric", **kwargs)
+register(id="BabyAIGoToLocalNumeric", entry_point="envs:BabyAIGoToLocalNumeric", **kwargs)

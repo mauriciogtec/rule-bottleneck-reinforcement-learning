@@ -44,6 +44,7 @@ class CrossAttentionBlock(nn.Module):
         self.activation = torch.nn.functional.silu
         self.self_norm = nn.LayerNorm(hidden_dim)
 
+
     def _create_nested_attention_mask(
         self, shapes, num_heads, max_len, num_keys, is_self_attention=False
     ):
@@ -225,6 +226,21 @@ class CrossAttentionNetwork(nn.Module):
             )
 
         self.linear = nn.Linear(hidden_dim, num_outputs, bias=True)
+
+        # Initialize all weights to typical truncated normal.
+        # But make the last linear layers' weights zero
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                if m != self.linear:
+                    if hasattr(m, "weight") and m.weight is not None:
+                        nn.init.xavier_normal_(m.weight)
+                else:
+                    nn.init.trunc_normal_(
+                        m.weight, mean=0.0, std=0.01
+                    )
+                if hasattr(m, "bias") and m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
 
     def forward(self, queries, keys, attn_mask=None, key_padding_mask=None):
         if self.normalize_inputs:

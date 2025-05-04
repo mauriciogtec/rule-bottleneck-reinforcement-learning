@@ -134,7 +134,7 @@ class Args:
     """the dimension of the embeddings"""
     hidden_dim: int = 16
     """the hidden dimension of the networks"""
-    rule_reward_coef: float = 0.1
+    rule_reward_coef: float = 0.01
     """the reward coefficient for the rules"""
     in_context_learning: bool = False
     """if toggled, the agent will learn in context"""
@@ -170,7 +170,13 @@ def make_env(env_id, seed, max_episode_steps=None):
     #     return r / max_episode_steps
 
     def thunk():
+        from langchain_together import TogetherEmbeddings
+
         env = gym.make(env_id)
+
+        # if env_id.startswith("BabyAI"):
+        #     # embedder = TogetherEmbeddings(model="togethercomputer/m2-bert-80M-8k-retrieval")
+        #     env.embedder = embedder
         # if env_id == "HeatAlerts":
         #     pass
         #     # env = gym.wrappers.TransformReward(env, func=scale_reward)
@@ -708,14 +714,15 @@ def main(args: Args):
         # accumulate and log the rewards
         for j in range(args.num_envs):
             needs_reset = dones[j] or trunc[j]
-            if not needs_reset:
+            if not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
                 _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 _ep_buffer["entropy"][j].append(entropy[j].item())
                 _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
-            else:
+            
+            if needs_reset:
                 # log the rewards
                 writer.add_scalar(
                     f"charts/episodic_env_rewards",

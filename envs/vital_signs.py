@@ -576,13 +576,10 @@ class VitalSignsSimpleLang(LanguageWrapper):
     def task_text(self) -> str:
         return (
             "You are assisting doctors from a hospital in making optimized"
-            " decisions about which patient should receive a vital sign monitor device."
+            " decisions about which device should be given to an incoming patient."
             " The device can help improve the patient's vital signs. "
-            " Your goal is to ensure the optimal allocation of devices, such that patients with a higher"
-            " risk continue wearing a device until their vital signs are within the normal range. Since"
-            " there is a limited number of devices, you will need to decide which patients should stop"
-            " wearing the device to reallocate it to the incoming patients. Incoming patients must"
-            " always receive a device.\n"
+            " Your goal is to ensure the optimal allocation of devices, such that only devices whose current users have low risk are assigned to new patients."
+            " Incoming patients must always receive a device.\n"
             "Cost Function: A cost will be inccoured if the pulse rate exceeds 120, the temperature exceeds 38C, the respiratory rate exceeds 30,"
             " or if the SPO2 rate falls below 90. The cost is calculated as an exponential function of the deviation from these thresholds.\n"
             "Effect of Intervention: The abnormal vital signs of patients wearing a device are reduced towards their normal range with an estimated"
@@ -593,12 +590,12 @@ class VitalSignsSimpleLang(LanguageWrapper):
     def action_space_text(self) -> str:
         return (
             # "Choose the id of the device that will be reallocated to the new incoming patient."
-            "Which device do you pick?"
+            "The action is the device you will give to the new patient?"
             f" Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices)."
             # "- Always choose a free device if available\n"
             # "- If no free device is available, then choose device i whose current patient is at least risk or"
             # " would benefit less from wearing the device."
-            " Format your answer as a JSON, for example: {'device': 0}."
+            # " Format your answer as a JSON, for example: {'device': 0}."
         )
 
     def state_descriptor(self, *_, **__) -> str:
@@ -672,7 +669,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
 
         rule_3 = (
             '{"background": "Free devices are always the best choice. Mean and variance variance can help identify risk.",'
-            ' "rule": "Select the first free device. If none free, choose i = argmin_i max_j (meand_ij + stdd_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}'
+            ' "rule": "Select the first free device. If none free, choose i = argmin_i max_j (mean_ij + std_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}'
         )
         return [rule_1, rule_2, rule_3]
 

@@ -643,14 +643,15 @@ def main(args: Args):
         # accumulate and log the rewards
         for j in range(args.num_envs):
             needs_reset = dones[j] or trunc[j]
-            if not needs_reset:
+            if not autoreset[j]:
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 # _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 # _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
                 _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 # _ep_buffer["entropy"][j].append(entropy[j].item())
                 # _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
-            else:
+            
+            if needs_reset:
                 # log the rewards
                 writer.add_scalar(
                     f"charts/episodic_env_rewards",
