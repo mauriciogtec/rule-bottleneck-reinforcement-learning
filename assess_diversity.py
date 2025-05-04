@@ -712,6 +712,7 @@ def main(args: Args):
         num_rules=args.num_rules,
         llm=chat_model,
         use_thoughts=False,
+        example_rules=example_rules,
     )
 
     num_steps = 100
@@ -726,6 +727,9 @@ def main(args: Args):
 
     # matches2x is similar but uses twice the number of rules, this is to test if more rules lead to more diversity
     matches2x = []
+
+    # rule_action_table_rows will save the rules and actions for each step, this is used to log the rules and actions
+    rule_action_table_rows = []
 
     pbar = tqdm(total=num_steps // args.num_envs, desc="Evaluating")
     for i in range(num_steps // args.num_envs):
@@ -749,8 +753,6 @@ def main(args: Args):
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
 
-        rule_action_table_rows = []
-
         for j in range(num_rules):
             outputs_j = deepcopy(outputs)
             
@@ -772,6 +774,7 @@ def main(args: Args):
             # log the rules and actions fron environment 0
             rule_action_table_rows.append(
                 {
+                    "step": i,
                     "obs": obs[1][0],
                     "rule": str(outputs_j[0]["rules"][0]),
                     "llm_agent_action": rules_actions[0],

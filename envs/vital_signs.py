@@ -657,19 +657,20 @@ class VitalSignsSimpleLang(LanguageWrapper):
     def example_rules(self) -> List[str]:
         rule_1 = (
             '{"background": "Free devices are unused wasted resources. Selecting a free device keeps patients safe.",'
-            ' "rule": "Select the first free device."} *Note: you should always have one rule related to free devices.*'
+            ' "rule": "Select the first free device."} *Note: you should always have one rule related to free devices.}"'
             # ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
         )
 
         rule_2 = (
             '{"background": "Selecting a free device keeps patients safe. Abnormal vital signs need keep device. High volatility vital signs, higher risk.",'
-            ' "rule": "Select the first free device. If none free, choose with one normal vital signs. If none, choose with no volatility history. Never select device with patient at risk."}'
+            ' "rule": "Select the first free device. If none free, choose with one normal vital signs. If none, choose with no volatility history. Never select device with patient at risk.}"}'
             # ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
         )
 
         rule_3 = (
             '{"background": "Free devices are always the best choice. Mean and variance variance can help identify risk.",'
-            ' "rule": "Select the first free device. If none free, choose i = argmin_i max_j (mean_ij + std_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}'
+            ' "rule": "Select the first free device. If none free, choose i = argmin_i mu_j = max_j (mean_ij + std_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}' \
+            # ' "state relevance": No devices are free, and mu_j = [0.5, 0.4, 0.3, 0.2, 0.6] so device #3 is the best most stable patient, so give device #3 to the new patient."}'
         )
         return [rule_1, rule_2, rule_3]
 
