@@ -77,9 +77,9 @@ class Args:
     """the hidden dimension"""
 
     # eval
-    num_eval_episodes: int = 16
+    num_eval_episodes: int = 32
     """the number of steps to run in each eval environment per policy rollout"""
-    eval_interval: int = 1
+    eval_interval: int = 10
     """the evaluation interval"""
     eval_deterministic: bool = True
     """if toggled, the evaluation will be deterministic"""

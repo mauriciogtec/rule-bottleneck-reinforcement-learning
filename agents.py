@@ -206,7 +206,7 @@ class BaseAgent:
         messages.append({"role": "user", "content": action_prompt})
 
         outputs["action"] = invoke_with_retries(
-            self.llm, messages, max_tokens=10, temperature=0.0
+            self.llm, messages, max_tokens=10, temperature=0.2
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -304,7 +304,7 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # temp_messages = messages.copy()
     tmp_messages = [{"role": "user", "content": system_prompt + rule_scores_prompt}]
     response1 = invoke_with_retries(
-        llm, tmp_messages, max_tokens=20, temperature=0.0
+        llm, tmp_messages, max_tokens=20, temperature=0.
     ).content
     # use regex to extract the values
     try:
@@ -318,7 +318,7 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
     # Answer post hoc prompt
     tmp_messages = [{"role": "user", "content": system_prompt + post_hoc_prompt}]
     response2 = invoke_with_retries(
-        llm, tmp_messages, max_tokens=20, temperature=0.0
+        llm, tmp_messages, max_tokens=20, temperature=0.2
     ).content
     # use regex to extract the values
     try:
@@ -435,7 +435,7 @@ def _gen_explanation(outputs, messages, llm, use_thoughts=True):
         {"role": "user", "content": outputs["initial_prompt"] + explanation_prompt}
     ]
     outputs["explanation"] = invoke_with_retries(
-        llm, tmp_messages, temperature=0.0, max_tokens=200
+        llm, tmp_messages, temperature=0.2, max_tokens=200
     ).content
 
 def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
@@ -481,7 +481,7 @@ def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
 
     tmp_messages = [{"role": "user", "content": explanation_prompt}]
     outputs["explanation"] = invoke_with_retries(
-        llm, tmp_messages, temperature=0.0, max_tokens=200
+        llm, tmp_messages, temperature=0.2, max_tokens=200
     ).content
     # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
@@ -501,7 +501,8 @@ def _gen_rules(
         rules_prompt += (
             f"\n\n### Rule generation task\n\n"
             f"Now, suggest a set of {num_rules} potential rules that could be applied to find the optimal decision in the current state.\n"
-            "There must be diversity among the candidate rules, but all should help finding the optimal decision for the current state.\n"
+            "There must be diversity among the candidate rules.\n"
+            "When the optimal action is not fully certain, it is better to suggest diverse rules leading to different actions.\n"
         )
     else:
         rules_prompt += (
@@ -526,8 +527,8 @@ def _gen_rules(
         # "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
     )
 
-    if num_rules > 1:
-        rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
+    # if num_rules > 1:
+    #     rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
     
     rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
 
@@ -539,7 +540,7 @@ def _gen_rules(
     
 
     tmp_messages = [{"role": "user", "content": rules_prompt}]
-    response = invoke_with_retries(llm, tmp_messages, max_tokens=512).content
+    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024, temperature=2.0).content
     rules = parse_rules(response)
     outputs["rules"] = rules
     outputs["rules_str"] = response
@@ -623,7 +624,7 @@ def _gen_thoughts_with_in_context_learning(
     # tmp_messages = messages.copy()
     tmp_messages = [{"role": "user", "content": thoughts_prompt + "### Thoughts task\n\n"}]
     response = invoke_with_retries(
-        llm, tmp_messages, temperature=0.5, max_tokens=256
+        llm, tmp_messages, temperature=0.9, max_tokens=256
     ).content
 
     if save_prompts:
@@ -687,7 +688,7 @@ class LLMRulesAgent(BaseAgent):
 
         action_prompt += (
             "### Action selection task\n\n"
-            "Now, choose the optimal action given the selected rules and the current problem state. "
+            "Now, choose the optimal action based only on the selected rule and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
             "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action.\n"
             "Answer in JSON format. For example: {'action': 0}."
@@ -696,7 +697,7 @@ class LLMRulesAgent(BaseAgent):
 
         tmp_messages = [{"role": "user", "content": action_prompt}]
         outputs["action"] = invoke_with_retries(
-            self.llm, tmp_messages, max_tokens=30, temperature=0.0
+            self.llm, tmp_messages, max_tokens=30, temperature=0.2
         ).content
         messages.append({"role": "assistant", "content": outputs["action"]})
 
@@ -939,7 +940,7 @@ class RulesSelectorActorCritic(BaseAgent):
         tmp_messages = [{"role": "user", "content": action_prompt}]
 
         outputs["action"] = invoke_with_retries(
-            self.llm, tmp_messages, max_tokens=30, temperature=0.0
+            self.llm, tmp_messages, max_tokens=30, temperature=0.2
         ).content
 
         # messages.append({"role": "assistant", "content": outputs["action"]})
@@ -1276,7 +1277,7 @@ class RulesSelectorActorCriticRAG(BaseAgent):
         tmp_messages = [{"role": "user", "content": action_prompt}]
 
         outputs["action"] = invoke_with_retries(
-            self.llm, tmp_messages, max_tokens=30, temperature=0.0
+            self.llm, tmp_messages, max_tokens=30, temperature=0.2
         ).content
 
         return outputs["action"]
