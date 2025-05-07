@@ -755,7 +755,7 @@ def main(args: Args):
 
         for j in range(num_rules):
             outputs_j = deepcopy(outputs)
-            
+
             # Overrrides the generated rules and the j-th rule.
             for k in range(args.num_envs):
                 outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
@@ -771,20 +771,24 @@ def main(args: Args):
             rules_actions = [action_parser(x["action"], n) for x in outputs_j]
             all_rule_actions.append(rules_actions)
 
-            # log the rules and actions fron environment 0
-            rule_action_table_rows.append(
-                {
-                    "step": i,
-                    "obs": obs[1][0],
-                    "rule": str(outputs_j[0]["rules"][0]),
-                    "llm_agent_action": rules_actions[0],
-                    "numeric_policy_action": actions[0],
-                    "rule_idx": j,
-                }
-            )
+            # log the rules and actions
+            for k in range(args.num_envs):
+                rule_action_table_rows.append(
+                    {
+                        "step": i,
+                        "obs": obs[1][k],
+                        "rule": str(outputs_j[k]["rules"][0]),
+                        "llm_agent_action": rules_actions[k],
+                        "numeric_policy_action": actions[k],
+                        "rule_idx": j,
+                        "env_id": k
+                    }
+                )
 
-        rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
-        wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
+        table = pd.DataFrame(rule_action_table_rows)
+        # sort by env_id and step and rule_idx
+        table = table.sort_values(by=["env_id", "step", "rule_idx"])
+        wandb.log({"rule_action_table": wandb.Table(dataframe=table)})
 
         all_rule_actions = np.array(all_rule_actions)
 
