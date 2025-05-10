@@ -63,7 +63,7 @@ class Args:
     """Only used for the heat alert environment."""
 
     # Algorithm
-    total_timesteps: int = 256
+    total_timesteps: int = 50000
     """Total timesteps of the experiments."""
     gamma: float = 0.95
     """The discount factor gamma."""
