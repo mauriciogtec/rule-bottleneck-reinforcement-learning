@@ -16,6 +16,8 @@ from langchain_core.language_models import BaseChatModel
 import layers
 from llm_apis import HFMetaWrapper, invoke_with_retries
 
+import warnings
+import random
 PureLanguageAgents = Literal[
     "base_agent", "llm_rules_agent", "no_thoughts_agent", "llm_rules_no_thoughts"
 ]
@@ -485,6 +487,20 @@ def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
     ).content
     # messages.append({"role": "assistant", "content": outputs["explanation"]})
 
+def deduplicate_rules(rules: List[str]) -> List[str]:
+    """Remove duplicate rules based on rule string."""
+    seen = set()
+    unique_rules = []
+    for rule_str in rules:
+        try:
+            rule = json.loads(rule_str)
+            key = rule.get("rule", "").strip().lower()
+            if key not in seen:
+                seen.add(key)
+                unique_rules.append(rule_str)
+        except Exception:
+            continue
+    return unique_rules
 
 def _gen_rules(
     outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True, 
@@ -500,9 +516,13 @@ def _gen_rules(
     if num_rules > 1:
         rules_prompt += (
             f"\n\n### Rule generation task\n\n"
-            f"Now, suggest a set of {num_rules} potential rules that could be applied to find the optimal decision in the current state.\n"
-            "There must be diversity among the candidate rules.\n"
-            "When the optimal action is not fully certain, it is better to suggest diverse rules leading to different actions.\n"
+            f"Now, suggest a set of {num_rules} diverse, self-contained, and actionable rules that could be applied to find the optimal decision in the current state.\n"
+            f"There must be diversity among the candidate rules. The rules should aim to select different actions based on different reasoning heuristics.  \n"
+            f"- Rules must NOT all use the same logic or focus (e.g., do not all prioritize the same feature).\n"
+            f"- Use diverse perspectives: safety, stability, fairness, urgency, long-term reward, resource utilization, etc.\n"
+            #f"- You must prioritize using free devices when available.\n"
+            f"- Each rule must be standalone and reusable across different states.\n"
+            f"When the optimal action is not fully certain, it is better to suggest diverse rules leading to different actions.\n"
         )
     else:
         rules_prompt += (
@@ -648,6 +668,7 @@ class LLMRulesAgent(BaseAgent):
         max_parse_attempts: int = 3,
         verbose: bool = False,
         use_thoughts: bool = True,
+        temperature: float = 1.2,
     ):
         super().__init__(
             task_text=task_text,
@@ -659,6 +680,8 @@ class LLMRulesAgent(BaseAgent):
         self.example_rules = example_rules
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
+        self.temperature = temperature
+
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         super().pre_action(outputs, messages)
@@ -688,20 +711,40 @@ class LLMRulesAgent(BaseAgent):
 
         action_prompt += (
             "### Action selection task\n\n"
-            "Now, choose the optimal action based only on the selected rule and the current problem state. "
+            "Now, choose the optimal actions based only on the selected rule and the current problem state. "
             f"\n\n### Possible actions:\n\n{self.action_space_text}"
-            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the action.\n"
-            "Answer in JSON format. For example: {'action': 0}."
+            "\n\nYou cannot refuse to respond. Do not provide additional information or context for your answer, only the actions.\n"
+            "If multiple actions are equally good, list them all as a list. If only one best action, just select that action.\n"
+            "Answer in JSON format. For example: {'actions': [0, 1]} for multiple actions or {'actions': 0} for single action."
         )
         # messages.append({"role": "user", "content": action_prompt})
 
+        # tmp_messages = [{"role": "user", "content": action_prompt}]
+        # outputs["action"] = invoke_with_retries(
+        #     self.llm, tmp_messages, max_tokens=30, temperature=0.2
+        # ).content
+        # messages.append({"role": "assistant", "content": outputs["action"]})
         tmp_messages = [{"role": "user", "content": action_prompt}]
-        outputs["action"] = invoke_with_retries(
-            self.llm, tmp_messages, max_tokens=30, temperature=0.2
+        raw_response = invoke_with_retries(
+            self.llm, tmp_messages, max_tokens=50, temperature=0.4
         ).content
-        messages.append({"role": "assistant", "content": outputs["action"]})
+        messages.append({"role": "assistant", "content": raw_response})
+        
+        try:
+            parsed = json.loads(raw_response)
+            if isinstance(parsed["action"], list):
+                outputs["action"] = random.choice(parsed["action"])
+            else:
+                outputs["action"] = parsed["action"]
+        except Exception as e:
+            warnings.warn(f"Failed to parse action: {raw_response}, error: {e}")
+            #outputs["action"] = random.randint(0, 5 - 1)  # fallback when healthcare domain
+            outputs["action"] = random.randint(0, 10 - 1)  # fallback when Binpacking domain
+            outputs["action"] = random.randint(0, 2 - 1)  # fallback when HeatAlert domain
 
         return outputs["action"]
+
+       
 
     def gen_rules(self, outputs: Dict, messages: List[Dict]):
         _gen_rules(outputs, messages, self.llm, self.num_rules, self.example_rules)

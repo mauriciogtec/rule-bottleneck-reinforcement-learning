@@ -591,7 +591,7 @@ class VitalSignsSimpleLang(LanguageWrapper):
         return (
             # "Choose the id of the device that will be reallocated to the new incoming patient."
             "The action is the device you will give to the new patient?"
-            f" Your answer should be a single integer i from 0 to {self.env.budget} (the number of devices)."
+            f" Your answer should be a single integer i from 0 to {self.env.budget-1} (the number of devices)."
             # "- Always choose a free device if available\n"
             # "- If no free device is available, then choose device i whose current patient is at least risk or"
             # " would benefit less from wearing the device."
@@ -654,25 +654,79 @@ class VitalSignsSimpleLang(LanguageWrapper):
         return desc
 
     @property
+    # def example_rules(self) -> List[str]:
+    #     rule_1 = (
+    #         '{"background": "Free devices are unused wasted resources. Selecting a free device keeps patients safe.",'
+    #         ' "rule": "Select the first free device."} *Note: you should always have one rule related to free devices.}"'
+    #         # ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
+    #     )
+
+    #     rule_2 = (
+    #         '{"background": "Selecting a free device keeps patients safe. Abnormal vital signs need keep device. High volatility vital signs, higher risk.",'
+    #         ' "rule": "Select the first free device. If none free, choose with one normal vital signs. If none, choose with no volatility history. Never select device with patient at risk.}"}'
+    #         # ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
+    #     )
+
+    #     rule_3 = (
+    #         '{"background": "Free devices are always the best choice. Mean and variance variance can help identify risk.",'
+    #         ' "rule": "Select the first free device. If none free, choose i = argmin_i mu_j = max_j (mean_ij + std_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}' \
+    #         # ' "state relevance": No devices are free, and mu_j = [0.5, 0.4, 0.3, 0.2, 0.6] so device #3 is the best most stable patient, so give device #3 to the new patient."}'
+    #     )
+    #     return [rule_1, rule_2, rule_3]
     def example_rules(self) -> List[str]:
         rule_1 = (
-            '{"background": "Free devices are unused wasted resources. Selecting a free device keeps patients safe.",'
-            ' "rule": "Select the first free device."} *Note: you should always have one rule related to free devices.}"'
-            # ' "state relevance": "Devices 0, 1 and 3 are currently free. Any of them are good actions."}'
+            '{"background": "Free devices are unused wasted resources. Assigning them immediately helps maximize coverage.", '
+            '"rule": "Select the first free device."}'
         )
 
         rule_2 = (
-            '{"background": "Selecting a free device keeps patients safe. Abnormal vital signs need keep device. High volatility vital signs, higher risk.",'
-            ' "rule": "Select the first free device. If none free, choose with one normal vital signs. If none, choose with no volatility history. Never select device with patient at risk.}"}'
-            # ' "state relevance": "No devices are free. Device #3 has a high blood pressure volatility (+- 30), so device #3 is not a good action."}'
+            '{"background": "Patients with stable vitals are safer to reassign. Vital sign volatility indicates risk.", '
+            '"rule": "Select the first free device. If none free, choose the device with no history of volatility and normal current vitals."}'
         )
 
         rule_3 = (
-            '{"background": "Free devices are always the best choice. Mean and variance variance can help identify risk.",'
-            ' "rule": "Select the first free device. If none free, choose i = argmin_i mu_j = max_j (mean_ij + std_ij) where i is the device id, mean_ij and std_ij are the mean and std of the "deviation" from normal sign of the j-th vital sign of patient on device i."}' \
-            # ' "state relevance": No devices are free, and mu_j = [0.5, 0.4, 0.3, 0.2, 0.6] so device #3 is the best most stable patient, so give device #3 to the new patient."}'
+            '{"background": "SpO2 below 90 indicates respiratory risk. Prioritize keeping devices on those patients.", '
+            '"rule": "Select the first free device. If none, choose the patient with the highest SpO2 above 90."}'
         )
-        return [rule_1, rule_2, rule_3]
+
+        rule_4 = (
+            '{"background": "Pulse over 120 suggests cardiovascular stress. Devices should stay with such patients.", '
+            '"rule": "If there are no free devices, reassign the one from a patient with the lowest pulse under 120 and temperature under 38.5."}'
+        )
+
+        rule_5 = (
+            '{"background": "Respiratory rate above 30 is abnormal. Prefer stable breathing rates.", '
+            '"rule": "Use free device if available. If not, pick device from a patient with respiratory rate below 25 and normal temperature."}'
+        )
+
+        rule_6 = (
+            '{"background": "Multiple abnormal vitals pose high risk. Avoid reassigning from such patients.", '
+            '"rule": "Free device first. Else, compute penalty over all vitals and reassign from lowest penalty patient with all vitals in safe range."}'
+        )
+
+        rule_7 = (
+            '{"background": "Lower temperature and higher SpO2 together suggest stable patient. Consider this combo.", '
+            '"rule": "Assign free device if available. Otherwise, select the device with patient SpO2 > 92 and temperature < 37.5."}'
+        )
+
+        rule_8 = (
+            '{"background": "Vital signs close to normal values imply stability. Use normalized deviation for selection.", '
+            '"rule": "Use a free device. If none free, remove from patient with smallest average deviation from normal across all vitals."}'
+        )
+
+        rule_9 = (
+            '{"background": "Frequent reassignment increases patient risk. Prefer reassigning from least recently used device.", '
+            '"rule": "If no free device exists, remove the device last reassigned, but only if patient vitals are stable."}'
+        )
+
+        rule_10 = (
+            '{"background": "All else equal, prioritize reassignment from patients with lower total risk score.", '
+            '"rule": "Free device takes priority. Else, compute total exponential penalty from vitals, reassign from the lowest scoring one with no critical sign."}'
+        )
+
+        return [rule_1, rule_2, rule_3, rule_4, rule_5, rule_6, rule_7, rule_8, rule_9, rule_10]
+
+
 
 
 if __name__ == "__main__":

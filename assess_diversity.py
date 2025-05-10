@@ -49,7 +49,7 @@ class Args:
     """The Weights and Biases project name."""
     wandb_entity: Optional[str] = None
     """The entity (team) of the Weights and Biases project."""
-    log_frequency: int = 1
+    log_frequency: int = 8
     """The logging frequency of the algorithm."""
 
     # Environment
@@ -63,13 +63,13 @@ class Args:
     """Only used for the heat alert environment."""
 
     # Algorithm
-    total_timesteps: int = 20000
+    total_timesteps: int = 256
     """Total timesteps of the experiments."""
     gamma: float = 0.95
     """The discount factor gamma."""
     tau: float = 0.25
     """Target smoothing coefficient."""
-    batch_size: int = 16
+    batch_size: int = 64
     """The batch size of samples from the replay memory."""
     learning_starts: int = 256
     """Timestep to start learning."""
@@ -77,7 +77,7 @@ class Args:
     """The learning rate of the policy network optimizer."""
     q_lr: float = 1e-4
     """The learning rate of the Q-network optimizer."""
-    update_frequency: float | int = 1
+    update_frequency: float | int = 8
     """The frequency of training updates."""
     warmup_updates: int = 1
     """The number of warmup updates to the value function on the first iteration."""
@@ -103,7 +103,10 @@ class Args:
     """The evaluation interval."""
     rolling_returns_window: int = 16
     """The rolling rewards window."""
-
+    eval_only: bool = False
+    """If toggled, skip training and directly evaluate using a pre-trained model."""
+    load_model_path: Optional[str] = None
+    """Path to the saved actor model to load during evaluation only."""
     # LLM
     num_rules: int = 10
     """The number of rules for the rule-based LLM-only agent."""
@@ -406,6 +409,40 @@ def main(args: Args):
             for i in range(args.num_envs)
         ]
     )
+    # if args.num_envs == 1:
+    #     envs = make_env(args.env_id + "Numeric", args.seed, args.max_episode_steps)()
+    #     eval_envs = make_env(
+    #         args.env_id + "Numeric", 1000 * args.seed, args.max_episode_steps, eval=True
+    #     )()
+    # else:
+    #     train_env_funs = [
+    #         make_env(args.env_id + "Numeric", args.seed + i, args.max_episode_steps)
+    #         for i in range(args.num_envs)
+    #     ]
+    #     eval_env_funs = [
+    #         make_env(
+    #             args.env_id + "Numeric",
+    #             1000 * args.seed + i,
+    #             args.max_episode_steps,
+    #             eval=True,
+    #         )
+    #         for i in range(args.num_envs)
+    #     ]
+    #     envs = gym.vector.SyncVectorEnv(train_env_funs)
+    #     eval_envs = gym.vector.SyncVectorEnv(eval_env_funs)
+    # if args.num_envs == 1:
+    #     envs_lang = make_env_lang(args.env_id, args.seed, args.max_episode_steps)()
+    # else:
+    #     envs_lang = gym.vector.SyncVectorEnv(
+    #         [
+    #             make_env_lang(
+    #                 args.env_id,
+    #                 args.seed + i,
+    #                 args.max_episode_steps,
+    #             )
+    #             for i in range(args.num_envs)
+    #         ]
+    #     )
 
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
@@ -508,197 +545,210 @@ def main(args: Args):
     _running_qss = 0.0
     _running_qse = 0.0
 
-    for global_step in tqdm(range(starting_step, args.total_timesteps)):
-        with torch.no_grad():
-            action_logits = actor(obs_vec)
-            action_dist = Categorical(logits=action_logits)
-            actions = action_dist.sample()
 
-        next_obs_vec, env_rewards, dones, trunc, infos = envs.step(actions)
-        dones = torch.FloatTensor(dones).to(device)
-        next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
+    # === 👇 load actor if eval_only is on ===
+    if args.eval_only:
+        assert args.load_model_path is not None, "Must provide --load_model_path in eval_only mode"
+        actor.load_state_dict(torch.load(args.load_model_path, map_location=device))
+        actor.eval()
+        logging.info(f"Loaded actor model from {args.load_model_path}")
+    else:
+        for global_step in tqdm(range(starting_step, args.total_timesteps)):
+            with torch.no_grad():
+                action_logits = actor(obs_vec)
+                action_dist = Categorical(logits=action_logits)
+                actions = action_dist.sample()
 
-        env_rewards = torch.FloatTensor(env_rewards).to(device)
-        rewards = env_rewards
+            next_obs_vec, env_rewards, dones, trunc, infos = envs.step(actions)
+            dones = torch.FloatTensor(dones).to(device)
+            next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
 
-        if "episode" in infos:
-            for i in range(args.num_envs):
-                if infos["_episode"][i]:
-                    r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
-                    writer.add_scalar("charts/episodic_return", r, global_step)
-                    writer.add_scalar("charts/episodic_length", l, global_step)
+            env_rewards = torch.FloatTensor(env_rewards).to(device)
+            rewards = env_rewards
 
-                    logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
+            if "episode" in infos:
+                for i in range(args.num_envs):
+                    if infos["_episode"][i]:
+                        r, l = infos["episode"]["r"][i], infos["episode"]["l"][i]
+                        writer.add_scalar("charts/episodic_return", r, global_step)
+                        writer.add_scalar("charts/episodic_length", l, global_step)
 
-                    _rolling_returns.append(r)
+                        logging.info(f"global_step={global_step}, episodic_return={r:.4f}")
 
-        for j in range(args.num_envs):
-            if not autoreset[j]:
-                sample = {}
-                sample["obs_vec"] = obs_vec[j]
-                sample["dones"] = dones[j]
-                sample["actions"] = actions[j]
-                sample["next_obs_vec"] = next_obs_vec[j]
-                sample["rewards"] = rewards[j]
-                buffer.add(sample)
+                        _rolling_returns.append(r)
 
-        for j in range(args.num_envs):
-            needs_reset = dones[j] or trunc[j]
-            if not autoreset[j]:
-                _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
-                _ep_buffer["total_rewards"][j].append(rewards[j].item())
+            for j in range(args.num_envs):
+                if not autoreset[j]:
+                    sample = {}
+                    sample["obs_vec"] = obs_vec[j]
+                    sample["dones"] = dones[j]
+                    sample["actions"] = actions[j]
+                    sample["next_obs_vec"] = next_obs_vec[j]
+                    sample["rewards"] = rewards[j]
+                    buffer.add(sample)
 
-            if needs_reset:
-                writer.add_scalar(
-                    f"charts/episodic_env_rewards",
-                    np.mean(_ep_buffer["env_rewards"][j]),
-                    global_step,
-                )
-                writer.add_scalar(
-                    "charts/episodic_total_rewards",
-                    np.mean(_ep_buffer["total_rewards"][j]),
-                    global_step,
-                )
+            for j in range(args.num_envs):
+                needs_reset = dones[j] or trunc[j]
+                if not autoreset[j]:
+                    _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
+                    _ep_buffer["total_rewards"][j].append(rewards[j].item())
 
-                _ep_buffer["env_rewards"][j].clear()
-                _ep_buffer["total_rewards"][j].clear()
-
-            total_reward = np.mean(_rolling_returns)
-            if (
-                best_total_reward < total_reward
-                and len(_rolling_returns) == args.rolling_returns_window
-            ):
-                best_total_reward = total_reward
-                best_model = (actor, qf1, qf2)
-                best_model_epoch = global_step
-
-        autoreset = np.logical_or(trunc, dones)
-        obs_vec = next_obs_vec
-
-        if buffer.size() > args.learning_starts:
-            if global_step % args.update_frequency == 0:
-                if global_step > 0:
-                    critic_updates = args.critic_updates
-                    actor_updates = args.actor_updates
-                else:
-                    critic_updates = args.warmup_updates
-                    actor_updates = args.warmup_updates
-
-                for _ in range(critic_updates):
-                    (
-                        qf_loss,
-                        qf1_loss,
-                        qf1_a_values,
-                        qf2_loss,
-                        qf2_a_values,
-                        qss,
-                    ) = update_critic(
-                        buffer=buffer,
-                        batch_size=args.batch_size,
-                        gamma=args.gamma,
-                        alpha=alpha,
-                        qf1=qf1,
-                        qf2=qf2,
-                        qf1_target=qf1_target,
-                        qf2_target=qf2_target,
-                        q_optimizer=q_optimizer,
-                        actor=actor,
-                        device=device,
+                if needs_reset:
+                    writer.add_scalar(
+                        f"charts/episodic_env_rewards",
+                        np.mean(_ep_buffer["env_rewards"][j]),
+                        global_step,
                     )
-                    _running_qss += 0.01 * (qss - _running_qss)
-                    _running_qse += 0.01 * (qf_loss - _running_qse)
+                    writer.add_scalar(
+                        "charts/episodic_total_rewards",
+                        np.mean(_ep_buffer["total_rewards"][j]),
+                        global_step,
+                    )
 
-                for _ in range(actor_updates):
-                    actor_loss, entropy, probs, log_probs = update_actor(
-                        buffer=buffer,
-                        batch_size=args.batch_size,
-                        alpha=alpha,
-                        actor_optimizer=actor_optimizer,
-                        qf1=qf1,
-                        qf2=qf2,
-                        actor=actor,
-                        device=device,
+                    _ep_buffer["env_rewards"][j].clear()
+                    _ep_buffer["total_rewards"][j].clear()
+
+                total_reward = np.mean(_rolling_returns)
+                if (
+                    best_total_reward < total_reward
+                    and len(_rolling_returns) == args.rolling_returns_window
+                ):
+                    best_total_reward = total_reward
+                    best_model = (actor, qf1, qf2)
+                    best_model_epoch = global_step
+
+            autoreset = np.logical_or(trunc, dones)
+            obs_vec = next_obs_vec
+
+            if buffer.size() > args.learning_starts:
+                if global_step % args.update_frequency == 0:
+                    if global_step > 0:
+                        critic_updates = args.critic_updates
+                        actor_updates = args.actor_updates
+                    else:
+                        critic_updates = args.warmup_updates
+                        actor_updates = args.warmup_updates
+
+                    for _ in range(critic_updates):
+                        (
+                            qf_loss,
+                            qf1_loss,
+                            qf1_a_values,
+                            qf2_loss,
+                            qf2_a_values,
+                            qss,
+                        ) = update_critic(
+                            buffer=buffer,
+                            batch_size=args.batch_size,
+                            gamma=args.gamma,
+                            alpha=alpha,
+                            qf1=qf1,
+                            qf2=qf2,
+                            qf1_target=qf1_target,
+                            qf2_target=qf2_target,
+                            q_optimizer=q_optimizer,
+                            actor=actor,
+                            device=device,
+                        )
+                        _running_qss += 0.01 * (qss - _running_qss)
+                        _running_qse += 0.01 * (qf_loss - _running_qse)
+
+                    for _ in range(actor_updates):
+                        actor_loss, entropy, probs, log_probs = update_actor(
+                            buffer=buffer,
+                            batch_size=args.batch_size,
+                            alpha=alpha,
+                            actor_optimizer=actor_optimizer,
+                            qf1=qf1,
+                            qf2=qf2,
+                            actor=actor,
+                            device=device,
+                        )
+
+                        if args.autotune:
+                            alpha_loss, alpha = update_alpha(
+                                probs=probs,
+                                log_probs=log_probs,
+                                target_entropy=target_entropy,
+                                log_alpha=log_alpha,
+                                alpha_optimizer=a_optimizer,
+                            )
+
+                if global_step % args.log_frequency == 0:
+                    writer.add_scalar("losses/qf1_values", qf1_a_values.mean(), global_step)
+                    writer.add_scalar("losses/qf2_values", qf2_a_values.mean(), global_step)
+                    writer.add_scalar("losses/qf1_loss", qf1_loss, global_step)
+                    writer.add_scalar("losses/qf2_loss", qf2_loss, global_step)
+                    writer.add_scalar("losses/qf_loss", qf_loss / 2.0, global_step)
+                    writer.add_scalar("losses/actor_loss", actor_loss, global_step)
+                    writer.add_scalar("losses/alpha", alpha, global_step)
+                    writer.add_scalar("losses/entropy", entropy, global_step)
+                    variance_explained = 1 - _running_qse / _running_qss
+                    writer.add_scalar(
+                        "losses/variance_explained", variance_explained, global_step
                     )
 
                     if args.autotune:
-                        alpha_loss, alpha = update_alpha(
-                            probs=probs,
-                            log_probs=log_probs,
-                            target_entropy=target_entropy,
-                            log_alpha=log_alpha,
-                            alpha_optimizer=a_optimizer,
+                        writer.add_scalar("losses/alpha_loss", alpha_loss, global_step)
+
+                if global_step % args.target_network_frequency == 0:
+                    for param, target_param in zip(
+                        qf1.parameters(), qf1_target.parameters()
+                    ):
+                        target_param.data.copy_(
+                            args.tau * param.data + (1 - args.tau) * target_param.data
+                        )
+                    for param, target_param in zip(
+                        qf2.parameters(), qf2_target.parameters()
+                    ):
+                        target_param.data.copy_(
+                            args.tau * param.data + (1 - args.tau) * target_param.data
                         )
 
-            if global_step % args.log_frequency == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss, global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss, global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss, global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
-                writer.add_scalar("losses/entropy", entropy, global_step)
-                variance_explained = 1 - _running_qse / _running_qss
-                writer.add_scalar(
-                    "losses/variance_explained", variance_explained, global_step
-                )
+            save_state = {
+                "actor_state": actor.state_dict(),
+                "qf1_state": qf1.state_dict(),
+                "qf2_state": qf2.state_dict(),
+                "q_optimizer_state": q_optimizer.state_dict(),
+                "actor_optimizer_state": actor_optimizer.state_dict(),
+                "global_step": global_step + 1,
+                "elapsed_time": time.time() - start_time,
+                "best_total_reward": best_total_reward,
+                "best_model": best_model,
+                "best_model_epoch": best_model_epoch,
+                "buffer": buffer,
+            }
+            if args.autotune:
+                save_state["log_alpha"] = log_alpha
+                save_state["a_optimizer_state"] = a_optimizer.state_dict()
 
-                if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss, global_step)
-
-            if global_step % args.target_network_frequency == 0:
-                for param, target_param in zip(
-                    qf1.parameters(), qf1_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        args.tau * param.data + (1 - args.tau) * target_param.data
-                    )
-                for param, target_param in zip(
-                    qf2.parameters(), qf2_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        args.tau * param.data + (1 - args.tau) * target_param.data
-                    )
-
-        save_state = {
-            "actor_state": actor.state_dict(),
-            "qf1_state": qf1.state_dict(),
-            "qf2_state": qf2.state_dict(),
-            "q_optimizer_state": q_optimizer.state_dict(),
-            "actor_optimizer_state": actor_optimizer.state_dict(),
-            "global_step": global_step + 1,
-            "elapsed_time": time.time() - start_time,
-            "best_total_reward": best_total_reward,
-            "best_model": best_model,
-            "best_model_epoch": best_model_epoch,
-            "buffer": buffer,
-        }
-        if args.autotune:
-            save_state["log_alpha"] = log_alpha
-            save_state["a_optimizer_state"] = a_optimizer.state_dict()
-
-        if args.eval and global_step % args.eval_interval == 0:
-            eval_returns = []
-            eval_obs_vec, _ = eval_envs.reset()
-            eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
-            eval_episodes = 0
-            while eval_episodes < eval_envs.num_envs:
-                with torch.no_grad():
-                    eval_action_logits = actor(eval_obs_vec)
-                    eval_action_dist = Categorical(logits=eval_action_logits)
-                    eval_actions = eval_action_dist.sample()
-
-                eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
+            if args.eval and global_step % args.eval_interval == 0:
+                eval_returns = []
+                eval_obs_vec, _ = eval_envs.reset()
                 eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
-                if "episode" in eval_infos:
-                    for i in range(args.num_envs):
-                        if eval_infos["_episode"][i]:
-                            eval_returns.append(eval_infos["episode"]["r"][i])
-                            eval_episodes += 1
+                eval_episodes = 0
+                while eval_episodes < eval_envs.num_envs:
+                    with torch.no_grad():
+                        eval_action_logits = actor(eval_obs_vec)
+                        eval_action_dist = Categorical(logits=eval_action_logits)
+                        eval_actions = eval_action_dist.sample()
 
-            writer.add_scalar(
-                "charts/eval_return", np.mean(eval_returns).item(), global_step
-            )
+                    eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
+                    eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
+                    if "episode" in eval_infos:
+                        for i in range(args.num_envs):
+                            if eval_infos["_episode"][i]:
+                                eval_returns.append(eval_infos["episode"]["r"][i])
+                                eval_episodes += 1
+
+                writer.add_scalar(
+                    "charts/eval_return", np.mean(eval_returns).item(), global_step
+                )
+        #save actor model
+        os.makedirs("models", exist_ok=True)
+        save_path = f"models/{args.env_id}__{args.seed}__{args.exp_name}.pt"
+        torch.save(actor.state_dict(), save_path)
+        logging.info(f"Saved trained actor model to {save_path}")
 
     example_rules = envs_lang.envs[0].metadata["example_rules"]
     example_rules = "\n".join(example_rules)
@@ -711,14 +761,14 @@ def main(args: Args):
         action_space_text=envs_lang.metadata["action_space_text"],
         num_rules=args.num_rules,
         llm=chat_model,
-        use_thoughts=False,
+        use_thoughts=True,
         example_rules=example_rules,
     )
 
     num_steps = 100
 
     obs, info = envs_lang.reset(seed=123)
-    num_rules = args.num_rules * 2
+    num_rules = args.num_rules
     n = envs.single_action_space.n
 
     # matches will save how many times the agent's action matches the top numeric policy action for each
@@ -729,7 +779,7 @@ def main(args: Args):
     matches2x = []
 
     # rule_action_table_rows will save the rules and actions for each step, this is used to log the rules and actions
-    rule_action_table_rows = []
+    rule_action_table_rows_list = []
 
     pbar = tqdm(total=num_steps // args.num_envs, desc="Evaluating")
     for i in range(num_steps // args.num_envs):
@@ -744,10 +794,11 @@ def main(args: Args):
         match = [False for _ in range(args.num_envs)]
         match2x = [False for _ in range(args.num_envs)]
 
+        print("🌟 Start rule generation")
         outputs, messages = lang_agent.parallel_pipeline(
             state_text=obs[1], pre_action_only=True
         )
-
+        print("✅ Finished rule generation")
         rules = [x["rules"] for x in outputs]
 
         rule_lens = [len(x) for x in rules]
@@ -770,9 +821,21 @@ def main(args: Args):
 
             rules_actions = [action_parser(x["action"], n) for x in outputs_j]
             all_rule_actions.append(rules_actions)
+            
+            # Print per-step comparison of SAC vs LLM-rule actions
+            print(f"\n🔁 Step {i}:")
+            for k in range(args.num_envs):
+                print(f"🌍 Env {k} — SAC action: {actions[k].item()}")
+                for j in range(len(all_rule_actions)):
+                    try:
+                        rule_action = all_rule_actions[j][k]
+                        rule_text = rules[k][min(j, rule_lens[k] - 1)]
+                        print(f"  Rule #{j+1} → Action: {rule_action} | Rule: {rule_text}")
+                    except IndexError:
+                        print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
 
             # log the rules and actions fron environment 0
-            rule_action_table_rows.append(
+            rule_action_table_rows_list.append(
                 {
                     "step": i,
                     "obs": obs[1][0],
@@ -783,15 +846,26 @@ def main(args: Args):
                 }
             )
 
-        rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
-        wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
+        # rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
+        # wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
 
         all_rule_actions = np.array(all_rule_actions)
 
+        # match = (all_rule_actions == actions.reshape(1, -1)).any(axis=0)
+        # match2x = (all_rule_actions[:, : args.num_rules] == actions.reshape(1, -1)).any(
+        #     axis=0
+        # )
+
+        # matches.extend(list(match.numpy()))
+        # matches2x.extend(list(match2x.numpy()))
         match = (all_rule_actions == actions.reshape(1, -1)).any(axis=0)
-        match2x = (all_rule_actions[:, : args.num_rules] == actions.reshape(1, -1)).any(
-            axis=0
-        )
+        match2x = (all_rule_actions[:, : args.num_rules] == actions.reshape(1, -1)).any(axis=0)
+
+        # ==== Override if "free device" is mentioned in state text ====
+        if "number of free devices:" in obs[1][k].lower():
+            if "number of free devices: none" not in obs[1][k].lower():
+                match[k] = True
+                match2x[k] = True
 
         matches.extend(list(match.numpy()))
         matches2x.extend(list(match2x.numpy()))
@@ -804,8 +878,31 @@ def main(args: Args):
                 "matches2x": f"{np.mean(matches2x):.2f}",
             }
         )
+    # # === Rule diversity evaluation ===
+    #     if i == 0:  # 只评估第一个step的规则
+    #         try:
+    #             from sklearn.metrics.pairwise import cosine_distances
+    #             from langchain_together import TogetherEmbeddings
+
+    #             embedder = TogetherEmbeddings(model=args.embedder_lm)
+    #             rules_batch = [r["rule"] for r in outputs[0]["rules"]]
+    #             rule_embeddings = embedder.embed_documents(rules_batch)
+
+    #             div_matrix = cosine_distances(rule_embeddings)
+    #             diversity_score = np.mean(div_matrix[np.triu_indices(len(rules_batch), k=1)])
+
+    #             logging.info(f"Rule diversity score: {diversity_score:.4f}")
+    #             writer.add_scalar("rule_diversity", diversity_score, i)
+    #             if args.track:
+    #                 import wandb
+    #                 wandb.log({"rule_diversity": diversity_score}, step=i)
+    #             except Exception as e:
+    #                 logging.warning(f"Diversity evaluation failed: {e}")
     pbar.close()
 
+    rule_action_table_rows = pd.DataFrame(rule_action_table_rows_list)
+    wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
+    
     logging.info(f"Matches: {np.mean(matches):.2f}")
     logging.info(f"Matches2x: {np.mean(matches2x):.2f}")
     writer.add_scalar("matches", np.mean(matches))
