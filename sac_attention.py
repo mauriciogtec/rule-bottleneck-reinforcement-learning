@@ -124,7 +124,7 @@ class Args:
     """if toggled, the agent will use random projection"""
 
     # LLM
-    num_rules: int = 5
+    num_rules: int = 10
     """The number of rules for rule-based LLM-only agent"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
@@ -170,15 +170,15 @@ def make_env(env_id, seed, max_episode_steps=None):
 
     def thunk():
         env = gym.make(env_id)
-        # if env_id == "HeatAlerts":
-        #     pass
-        #     # env = gym.wrappers.TransformReward(env, func=scale_reward)
-        #     # if eval:
-        #     #     env.penalty = 0.0  # no penalty during evaluation
-        # elif env_id in ("BinPacking", "BinPackingIncremental"):
-        #     def scale_reward(r):
-        #         return r / 100.0
-        #     env = gym.wrappers.TransformReward(env, func=scale_reward)
+        if env_id == "HeatAlerts":
+            pass
+            # env = gym.wrappers.TransformReward(env, func=scale_reward)
+            # if eval:
+            #     env.penalty = 0.0  # no penalty during evaluation
+        elif env_id in ("BinPacking", "BinPackingIncremental"):
+            def scale_reward(r):
+                return r / 100.0
+            env = gym.wrappers.TransformReward(env, func=scale_reward)
 
         if env_id not in ("BinPacking", "BinPackingIncremental"):
             env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -260,7 +260,7 @@ def update_critic(
             qf2_next_tgt = torch.nested.to_padded_tensor(qf2_next_tgt, 0.0)
 
         softmin_weights = torch.nn.functional.softmin(
-            5.0 * torch.stack([qf1_next_tgt, qf2_next_tgt], dim=-1), dim=-1
+            10.0 * torch.stack([qf1_next_tgt, qf2_next_tgt], dim=-1), dim=-1
         )
         min_qf_next_target = (
             softmin_weights * torch.stack([qf1_next_tgt, qf2_next_tgt], dim=-1)
