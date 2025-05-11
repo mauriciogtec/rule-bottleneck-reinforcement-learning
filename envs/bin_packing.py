@@ -382,7 +382,8 @@ class BinPackingLang(LanguageWrapper):
             f"You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
             "- 'action' = 0 means open a new bin and place the item there.\n"
             f"- 'action' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'action' many units.\n"
-            "Only place items where they will fit. For example, placing a size-3 item into a level-8 bin will overflow.\n"
+            "Only place items where they will fit."
+            " You will be penalized if action > bag_capacity - item_size, or if num_bins_levels[action] == 0.\n"
             'Return your action as a JSON dict: {"action": <int>}.'
         )
 
@@ -453,7 +454,7 @@ class BinPackingIncrementalLang(LanguageWrapper):
             f"You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
             "- 'action' = 0 means open a new bin and place the item there.\n"
             f"- 'action' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'action' many units.\n"
-            f"Only place items where they will fit. For example, placing a size=3 item into a level=8 bin will overflow when 8 + 3 > bag_capacity={self.env.bag_capacity}.\n"
+            "You will be penalized if action > bag_capacity - item_size, or if num_bins_levels[action] == 0.\n"
             'Return your action as a JSON dict: {"action": <int>}.'
         )
 
