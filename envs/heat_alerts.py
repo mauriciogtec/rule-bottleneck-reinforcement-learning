@@ -43,20 +43,20 @@ class HeatAlertsLang(LanguageWrapper):
             "A single integer value representing the decision:\n"
             "1 = issue a warning\n"
             "0 = do not issue a warning\n"
-            "Warning can only be issued if the 'Remaining number of warnings/budget' is positive. Respond in JSON format. Example: {'action': 1}"
+            "Warning can only be issued if the 'Remaining number of warnings (budget)' is positive. Respond in JSON format. Example: {'action': 1}"
         )
 
     @property
     def example_rules(self) -> List[str]:
         example1 = (
             '{"background": "Heat is more dangerous when unexpected. Heat is unexpected early in summer. Alert fatigue decreases effectiveness. Alerts might be needed in the future.", '
-            '"rule": "Issue an alert if it is early in the summer, extreme heat is expected soon, no more than 3 alerts last week, no worst heatwaves expected, there is enough budget for late summer."}'
+            '"rule": "If the budget allows, issue an alert if it is early in the summer, extreme heat is expected soon, no more than 3 alerts last week, no worst heatwaves expected, there is enough budget for late summer."}'
             # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
         example2 = (
             '{"background": "Heat is dangeroud late in summer. Alert fatigue decreases effectiveness. Temperature will decrease after summer. Future alerts are less needed.", '
-            '"rule": "Issue an alert it is late in the summer, extreme heat is expected, no more than 3 alerts last week."}'
+            '"rule": "If the budget allows, issue an alert it is late in the summer, extreme heat is expected, no more than 3 alerts last week."}'
             # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
@@ -90,7 +90,7 @@ class HeatAlertsLang(LanguageWrapper):
         """
         template = (
             "- Location [FIPS code]: {}"
-            "\n- Remaining warning budget: {} "
+            "\n- Remaining warnings (budget): {} "
             "\n- Current date and day of summer: {}"
             "\n- Current heat index: {} F"
             "\n- Quantile of current heat index relative to historical weather in current location: {} %"
@@ -144,22 +144,25 @@ class HeatAlertsLang(LanguageWrapper):
             [f"{k}: {v}" for k, v in hi_max_weekly.items()]
         )
 
-        obs_text = template.format(
-            env.location,
-            int(obs.remaining_budget) if obs.remaining_budget > 0 else "0",
-            date,
-            int(curr_hi),
-            int(heat_qi[env.t]),
-            int(fm7_mean),
-            f"{'+' if excess_fm7 > 0 else ''}{int(excess_fm7)}",
-            "yes" if obs.weekend else "no",
-            "yes" if obs.holiday else "no",
-            sum(env.actual_alert_buffer[-14:]) if env.t > 1 else 0,
-            sum(env.actual_alert_buffer[-7:]) if env.t > 1 else 0,
-            sum(env.actual_alert_buffer[-3:]) if env.t > 1 else 0,
-            env.alert_streak,
-            f14,
-            hi_max_weekly,
-        )
+        if obs.remaining_budget > 0:
+            obs_text = template.format(
+                env.location,
+                int(obs.remaining_budget) if obs.remaining_budget > 0 else "0",
+                date,
+                int(curr_hi),
+                int(heat_qi[env.t]),
+                int(fm7_mean),
+                f"{'+' if excess_fm7 > 0 else ''}{int(excess_fm7)}",
+                "yes" if obs.weekend else "no",
+                "yes" if obs.holiday else "no",
+                sum(env.actual_alert_buffer[-14:]) if env.t > 1 else 0,
+                sum(env.actual_alert_buffer[-7:]) if env.t > 1 else 0,
+                sum(env.actual_alert_buffer[-3:]) if env.t > 1 else 0,
+                env.alert_streak,
+                f14,
+                hi_max_weekly,
+            )
+        else:
+            obs_text = "The remaining budget is zero. No alert can be issued."
 
         return obs_text

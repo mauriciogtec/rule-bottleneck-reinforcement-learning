@@ -31,7 +31,7 @@ class BinPacking(gym.Env):
             "bag_capacity": 9,
             # "item_sizes": [2, 3],
             # "item_probabilities": [0.8, 0.2],
-            "item_sizes": [2, 3, 5],
+            "item_sizes": [2, 3, 6],
             "item_probabilities": [0.7, 0.2, 0.1],
             # "time_horizon": 1000,
             "time_horizon": 32,
@@ -379,11 +379,12 @@ class BinPackingLang(LanguageWrapper):
     @property
     def action_space_text(self) -> str:
         return (
-            "You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
-            "- 'target_level' = 0 means open a new bin and place the item there.\n"
-            f"- 'target_level' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'target_level' many units.\n"
-            "Only place items where they will fit. For example, placing a size-3 item into a level-8 bin will overflow.\n"
-            'Return your action as a JSON dict: {"target_level": <int>}.'
+            f"You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
+            "- 'action' = 0 means open a new bin and place the item there.\n"
+            f"- 'action' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'action' many units.\n"
+            "Only place items where they will fit."
+            " You will be penalized if action > bag_capacity - item_size, or if num_bins_levels[action] == 0.\n"
+            'Return your action as a JSON dict: {"action": <int>}.'
         )
 
     def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
@@ -451,10 +452,10 @@ class BinPackingIncrementalLang(LanguageWrapper):
     def action_space_text(self) -> str:
         return (
             f"You must return an integer between 0 and {self.env.bag_capacity - 1} representing the level:\n"
-            "- 'target_level' = 0 means open a new bin and place the item there.\n"
-            f"- 'target_level' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'target_level' many units.\n"
-            "Only place items where they will fit. For example, placing a size-3 item into a level-8 bin will overflow.\n"
-            'Return your action as a JSON dict: {"target_level": <int>}.'
+            "- 'action' = 0 means open a new bin and place the item there.\n"
+            f"- 'action' in 1 to {self.env.bag_capacity - 1} means place the item into a bin currently filled with 'action' many units.\n"
+            "You will be penalized if action > bag_capacity - item_size, or if num_bins_levels[action] == 0.\n"
+            'Return your action as a JSON dict: {"action": <int>}.'
         )
 
     def state_descriptor(self, obs: Any, info: Dict[str, Any]) -> str:
@@ -472,28 +473,28 @@ class BinPackingIncrementalLang(LanguageWrapper):
             f"Current item size: {current_item} unit(s).\n"
             f"Bin capacity: {self.env.bag_capacity} units.\n"
             f"Current bins:\n{bins_desc}\n\n"
-            "Decide which bin to place the item in. Opening a new bin adds waste equal to the remaining space. "
-            "Placing an item into an existing bin reduces waste only if it fills the bin or gets it closer to full. "
-            "Invalid placements (overflow or empty bin level) end the episode."
+            # "Decide which bin to place the item in. Opening a new bin adds waste equal to the remaining space. "
+            # "Placing an item into an existing bin reduces waste only if it fills the bin or gets it closer to full. "
+            # "Invalid placements (overflow or empty bin level) end the episode."
         )
 
     @property
     def example_rules(self) -> list[str]:
         example1 = (
             '{"background": "Opening a new bin is never better if you can fit in a current bin.", '
-            '"rule": "Pick the first target level such that `target_level + item_size` is minimized and it does not exceed the bin capacity."}'
+            '"rule": "Pick the first target level such that `action + item_size <= bin capacity"}'
             # '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
         )
 
         example2 = (
             '{"background": "We want to minimize wasted space. Thefore choose the target level that would reduce wasted space.", '
-            '"rule": "Pick the target level such that `bin_capacity - (target_level + item_size)` is minimized but nonegative."}'
+            '"rule": "Pick the target level such that `bin_capacity - (action + item_size)` is maximized to leave the most space free."}'
             # '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
         )
 
         example3 = (
             '{"background": "It is important to consider the expected probabilities of the upcoming object sizes.", '
-            '"rule": "If an item size is large and it is frequent to observe small sizes, then always open a new bin. This will allow you to fit smaller items later on."}'
+            '"rule": "If an item size is large and it is expected to observe small sizes, then always open a new bin with large object. This will allow you to fit smaller items later on."}'
             # '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
         )
 

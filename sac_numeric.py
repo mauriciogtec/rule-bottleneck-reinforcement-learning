@@ -63,7 +63,7 @@ class Args:
     """Only used for the heat alert environment"""
 
     # Algorithm
-    total_timesteps: int = 20000
+    total_timesteps: int = 10000
     """total timesteps of the experiments"""
     gamma: float = 0.95
     """the discount factor gamma"""
@@ -159,7 +159,7 @@ def make_env(env_id, seed, max_episode_steps=None, eval=False):
             env.min_temperature_threshold = args.min_temperature_threshold
             # if eval:
             #     env.penalty = 0.0  # no penalty during evaluation
-            env = gym.wrappers.TransformReward(env, func=scale_reward)
+            # env = gym.wrappers.TransformReward(env, func=scale_reward)
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
         elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
