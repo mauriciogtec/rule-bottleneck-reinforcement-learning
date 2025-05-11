@@ -147,6 +147,12 @@ class Args:
     conversation_history_in_explanation: bool = False
     """if toggled, the agent will use conversation history in explanation"""
 
+    # Heat Alerts
+    min_temperature_threshold: float = 0.0
+    """Only used for the heat alert environment"""
+    terminate_invalid: bool = False
+    """if toggled, the agent will terminate invalid actions. Only used for the heat alert environment"""
+
     # Buffer collection mode
     buffer_collection_steps: int = 64
     """the number of steps to collect data to the buffer"""
@@ -171,7 +177,7 @@ def make_env(env_id, seed, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
         if env_id == "HeatAlerts":
-            pass
+            env.min_temperature_threshold = args.min_temperature_threshold
             # env = gym.wrappers.TransformReward(env, func=scale_reward)
             # if eval:
             #     env.penalty = 0.0  # no penalty during evaluation
@@ -992,6 +998,10 @@ if __name__ == "__main__":
         args.agent += f"-expl-rew-{args.rule_reward_coef}"
     if args.optimize_thoughts_only:
         args.agent += "-oto"
+    if args.min_temperature_threshold > 0:
+        args.agent += f"-tresh-{str(args.min_temperature_threshold).replace('.', '_')}"
+    if args.terminate_invalid:
+        args.agent += "-terminval"
 
     args.agent += "--" + args.llm[:20]
 
