@@ -150,8 +150,8 @@ class Args:
 
 
 def make_env(env_id, seed, max_episode_steps=None, eval=False):
-    def scale_reward(r):
-        return r / max_episode_steps
+    # def scale_reward(r):
+    #     return r / max_episode_steps
 
     def thunk():
         env = gym.make(env_id)
@@ -163,6 +163,8 @@ def make_env(env_id, seed, max_episode_steps=None, eval=False):
         elif env_id in ("UgandaNumeric", "MimicIIINumeric", "MimicIVNumeric"):
             env = gym.wrappers.FlattenObservation(env)
         elif env_id in ("BinPackingNumeric", "BinPackingIncrementalNumeric"):
+            def scale_reward(r):
+                return r / 100.0
             env = gym.wrappers.TransformReward(env, func=scale_reward)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
