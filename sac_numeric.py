@@ -638,6 +638,7 @@ def main(args: Args):
                 # sample["next_rules_emb"] = next_rules_emb[j]
                 # sample["next_rules"] = next_rules[j]
                 sample["rewards"] = rewards[j]
+                sample["env_id"] = j
                 # sample["sel_rewards"] = sel_rewards[j]
                 # sample["env_rewards"] = env_rewards[j]
                 buffer.add(sample)
@@ -646,13 +647,15 @@ def main(args: Args):
         for j in range(args.num_envs):
             needs_reset = dones[j] or trunc[j]
             if not autoreset[j]:
+                _ep_buffer["obs_vec"][j].append(obs_vec[j].cpu().numpy())
+                _ep_buffer["actions"][j].append(actions[j].item())
                 _ep_buffer["env_rewards"][j].append(env_rewards[j].item())
                 # _ep_buffer["sel_rewards_scores"][j].append(sel_reward_scores[j])
                 # _ep_buffer["sel_rewards_total"][j].append(sel_rewards[j].item())
                 _ep_buffer["total_rewards"][j].append(rewards[j].item())
                 # _ep_buffer["entropy"][j].append(entropy[j].item())
                 # _ep_buffer["sel_probs"][j].append(sel_probs[j].item())
-            
+
             if needs_reset:
                 # log the rewards
                 writer.add_scalar(
@@ -688,6 +691,8 @@ def main(args: Args):
                 # _ep_buffer["entropy"][j].clear()
                 # _ep_buffer["sel_probs"][j].clear()
                 _ep_buffer["total_rewards"][j].clear()
+                _ep_buffer["obs_vec"][j].clear()
+                _ep_buffer["actions"][j].clear()
 
             # save best model
             total_reward = np.mean(_rolling_returns)
