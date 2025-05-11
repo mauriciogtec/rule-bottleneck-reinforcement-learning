@@ -102,11 +102,11 @@ class Args:
     """the frequency of updates for the target networks"""
     alpha: float = 0.1
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    dropout: float = 0.05
+    dropout: float = 0.0
     """the dropout rate"""
 
     # Eval
@@ -177,7 +177,8 @@ def make_env(env_id, seed, max_episode_steps=None):
     def thunk():
         env = gym.make(env_id)
         if env_id == "HeatAlerts":
-            env.min_temperature_threshold = args.min_temperature_threshold
+            env.env.min_temperature_threshold = args.min_temperature_threshold
+            env.env.termination_invalid_action = args.terminate_invalid
             # env = gym.wrappers.TransformReward(env, func=scale_reward)
             # if eval:
             #     env.penalty = 0.0  # no penalty during evaluation

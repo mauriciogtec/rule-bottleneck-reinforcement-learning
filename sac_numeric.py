@@ -59,8 +59,12 @@ class Args:
     """the number of parallel game environments"""
     max_episode_steps: Optional[int] = 32
     """the maximum number of steps per episode"""
+
+    # Heat Alerts
     min_temperature_threshold: float = 0.0
     """Only used for the heat alert environment"""
+    terminate_invalid: bool = False
+    """if toggled, the agent will terminate invalid actions. Only used for the heat alert environment"""
 
     # Algorithm
     total_timesteps: int = 10000
@@ -89,12 +93,10 @@ class Args:
     """the frequency of updates for the target networks"""
     alpha: float = 0.01
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    dropout: float = 0.05
-    """the dropout rate"""
     reinit: bool = False
     """if toggled, the experiment will be reinitialized"""
 
@@ -156,7 +158,8 @@ def make_env(env_id, seed, max_episode_steps=None, eval=False):
     def thunk():
         env = gym.make(env_id)
         if env_id == "HeatAlertsNumeric":
-            env.min_temperature_threshold = args.min_temperature_threshold
+            env.env.min_temperature_threshold = args.min_temperature_threshold
+            env.env.termination_invalid_action = args.terminate_invalid
             # if eval:
             #     env.penalty = 0.0  # no penalty during evaluation
             # env = gym.wrappers.TransformReward(env, func=scale_reward)
@@ -880,4 +883,7 @@ if __name__ == "__main__":
     # if the min theshold, add to the agent name
     if args.min_temperature_threshold > 0:
         args.agent = f"{args.agent}__mintresh_{str(args.min_temperature_threshold).replace('.', '_')}"
+    if args.terminate_invalid:
+        args.agent += "-terminval"
+
     main(args)
