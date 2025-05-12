@@ -205,6 +205,7 @@ class BinPackingIncremental(BinPacking):
             raise
         elif action > (self.bag_capacity - self.item_size):
             reward = BIG_NEG_REWARD - self.waste
+            done = True
         elif action == 0:
             self.num_bins_levels[self.item_size] += 1
             self.waste = self.bag_capacity - self.item_size
@@ -213,6 +214,7 @@ class BinPackingIncremental(BinPacking):
         elif self.num_bins_levels[action] == 0:
             # print("cannot insert item because bin of this level does not exist")
             reward = BIG_NEG_REWARD - self.waste
+            done = True
         else:
             if action + self.item_size == self.bag_capacity:
                 self.num_full_bags += 1

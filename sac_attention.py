@@ -992,17 +992,19 @@ if __name__ == "__main__":
 
     args.agent = "rbrl"
     if not args.thoughts:
-        args.agent += "-no-thoughts"
+        args.agent += "-nothoughts"
     if not args.in_context_learning:
-        args.agent += "-no-cl"
+        args.agent += "-nocl"
     if args.rule_reward_coef != 1.0:
-        args.agent += f"-expl-rew-{args.rule_reward_coef}"
+        args.agent += f"-explrew{args.rule_reward_coef}"
     if args.optimize_thoughts_only:
         args.agent += "-oto"
     if args.min_temperature_threshold > 0:
-        args.agent += f"-tresh-{str(args.min_temperature_threshold).replace('.', '_')}"
+        args.agent += f"-tresh{str(args.min_temperature_threshold).replace('.', '_')}"
     if args.terminate_invalid:
         args.agent += "-terminval"
+    if args.dropout > 0:
+        args.agent += f"-dout{args.dropout}"
 
     args.agent += "--" + args.llm[:20]
 
