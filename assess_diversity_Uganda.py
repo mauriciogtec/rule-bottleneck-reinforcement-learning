@@ -815,7 +815,7 @@ def main(args: Args):
         action_space_text=envs_lang.metadata["action_space_text"],
         num_rules=args.num_rules,
         llm=chat_model,
-        use_thoughts=True,
+        use_thoughts=False,
         example_rules=example_rules,
     )
 
@@ -958,7 +958,7 @@ def main(args: Args):
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
 
-        for j in tqdm(range(num_rules), desc="Generating rules", leave=False):
+        for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
             # rules_j = rules[j]
             # outputs_j = deepcopy(outputs)
 
@@ -1009,12 +1009,12 @@ def main(args: Args):
                 #             print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
 
                 # Check if there was a free device to check for ties
-                tie = False
+                free_device = False
                 if (
                     "Number of free devices:" in obs[1][j]
                     and "Number of free devices: none" not in obs[1][j]
                 ):
-                    tie = True
+                    free_device = True
 
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
@@ -1024,9 +1024,9 @@ def main(args: Args):
                         "obs": obs[1][j],
                         "rule": x,
                         "llm_agent_action": rules_actions[-1],  # last action in the list
-                        "numeric_policy_action": actions[0],
+                        "numeric_policy_action": int(actions[0]),
                         "rule_idx": j,
-                        "tie": tie,
+                        "free_device": free_device,
                     }
                 )
 

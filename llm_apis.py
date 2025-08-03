@@ -343,11 +343,11 @@ class HFMetaWrapper:
     def __init__(
         self,
         model_name: str,
-        use_vllm: bool = False,
+        use_vllm: bool = True,
         gpu_memory_utilization: float = 0.9,
         max_model_len: int = 4096,
         dtype: str = "auto",
-        enable_thinking: bool = True,
+        enable_thinking: bool = False,
     ):
         """
         Wrapper for Hugging Face models with vLLM optimization support.
@@ -379,7 +379,7 @@ class HFMetaWrapper:
 
     def _init_transformers(self):
         """Fallback initialization using transformers."""
-        self.llm = transformers.AutoModelForCausalLM.from_pretrained(self.model_name)
+        self.llm = transformers.AutoModelForCausalLM.from_pretrained(self.model_name, device_map="auto", trust_remote_code=True)
         if not hasattr(self, 'tokenizer'):
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name)
         self.device = next(self.llm.parameters()).device
@@ -455,7 +455,7 @@ class HFMetaWrapper:
     def _invoke_transformers(
         self,
         messages: List[Dict[Literal["role", "content"], str]],
-        max_tokens: int = 100,
+        max_tokens: int = 1024,
         temperature: float = 0.0,
         top_p: float = 0.9,
         n: int = 1,
