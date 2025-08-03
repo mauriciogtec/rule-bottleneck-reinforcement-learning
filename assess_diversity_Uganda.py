@@ -815,7 +815,7 @@ def main(args: Args):
         action_space_text=envs_lang.metadata["action_space_text"],
         num_rules=args.num_rules,
         llm=chat_model,
-        use_thoughts=True,
+        use_thoughts=False,
         example_rules=example_rules,
     )
 
