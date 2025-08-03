@@ -51,6 +51,8 @@ class Args:
     """The entity (team) of the Weights and Biases project."""
     log_frequency: int = 128
     """The logging frequency of the algorithm."""
+    num_steps = 200
+    """The number of steps of the diversity experiment"""
 
     # Environment
     env_id: str = "UgandaNumeric"
@@ -819,7 +821,6 @@ def main(args: Args):
         example_rules=example_rules,
     )
 
-    num_steps = 100
 
     obs, info = envs_lang.reset(seed=123)
     num_rules = args.num_rules
@@ -958,7 +959,7 @@ def main(args: Args):
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
 
-        for j in tqdm(range(num_rules), desc="Generating rules", leave=False):
+        for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
             # rules_j = rules[j]
             # outputs_j = deepcopy(outputs)
 
@@ -1009,12 +1010,12 @@ def main(args: Args):
                 #             print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
 
                 # Check if there was a free device to check for ties
-                tie = False
+                free_device = False
                 if (
                     "Number of free devices:" in obs[1][j]
                     and "Number of free devices: none" not in obs[1][j]
                 ):
-                    tie = True
+                    free_device = True
 
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
@@ -1023,10 +1024,10 @@ def main(args: Args):
                         "step": i,
                         "obs": obs[1][j],
                         "rule": x,
-                        "llm_agent_action": rules_actions[-1],  # last action in the list
-                        "numeric_policy_action": actions[0],
+                        "llm_agent_action": [int(u) for u in rules_actions[-1]],  
+                        "numeric_policy_action": int(actions[0]),
                         "rule_idx": j,
-                        "tie": tie,
+                        "free_device": free_device,
                     }
                 )
 
