@@ -26,6 +26,12 @@ buffers*/
 # cluster jobs
 slurm_scripts/
 slurm_logs/
+scripts/
 
 # envs
 weather2alert
+vllm
+models/ddts
+models/dtpo
+
+# baselines
