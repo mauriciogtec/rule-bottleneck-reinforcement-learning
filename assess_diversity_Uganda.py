@@ -936,8 +936,8 @@ def main(args: Args):
     #         }
     #     )
 
-    pbar = tqdm(total=num_steps // args.num_envs, desc="Evaluating")
-    for i in range(num_steps // args.num_envs):
+    pbar = tqdm(total=args.num_steps // args.num_envs, desc="Evaluating")
+    for i in range(args.num_steps // args.num_envs):
         with torch.no_grad():
             obs_vec = torch.FloatTensor(obs[0].reshape(args.num_envs, -1)).to(device)
             action_logits = actor(obs_vec)
