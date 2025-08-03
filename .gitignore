@@ -4,9 +4,13 @@
 # macOS
 **/.DS_Store
 
-# vscode
+# vscode / env / colab
 .vscode/
 .env
+.conda
+code
+vscode_cli.tar.gz
+condacolab_install.log
 
 # hydra / wandb / tensorboard / other logging
 multirun/
