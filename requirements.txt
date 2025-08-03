@@ -14,7 +14,7 @@ tyro
 trl
 jsonlines
 wandb
-sklearn
+scikit-learn
 minigrid
 vllm
 # git+https://github.com/NSAPH-Projects/weather2alert@dev

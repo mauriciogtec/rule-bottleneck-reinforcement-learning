@@ -343,10 +343,11 @@ class HFMetaWrapper:
     def __init__(
         self,
         model_name: str,
-        use_vllm: bool = True,
+        use_vllm: bool = False,
         gpu_memory_utilization: float = 0.9,
         max_model_len: int = 4096,
         dtype: str = "auto",
+        enable_thinking: bool = True,
     ):
         """
         Wrapper for Hugging Face models with vLLM optimization support.
@@ -360,6 +361,7 @@ class HFMetaWrapper:
         """
         self.model_name = model_name
         self.use_vllm = use_vllm and VLLM_AVAILABLE
+        self.enable_thinking = enable_thinking
 
         # Load tokenizer for prompt formatting (needed regardless of vLLM vs transformers)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
@@ -393,7 +395,7 @@ class HFMetaWrapper:
             # Use the model's own tokenizer to format the prompt
             kwargs = {'add_generation_prompt': True, 'tokenize': False}
             if "Qwen3" in self.model_name:
-                kwargs["enable_thinking"] = False
+                kwargs["enable_thinking"] = self.enable_thinking
 
             prompt = self.tokenizer.apply_chat_template(messages, **kwargs)
             return prompt
