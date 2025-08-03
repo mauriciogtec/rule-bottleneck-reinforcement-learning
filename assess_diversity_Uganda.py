@@ -117,6 +117,9 @@ class Args:
     hidden_dim: int = 64
     """The hidden dimension of the networks."""
 
+    gpu_memory_utilization: float = 0.22
+    """GPU memory to reserve per process"""
+
     # Buffer collection mode
     load_buffer: bool = False
     """If toggled, the agent will load the buffer from the pickle file if it exists."""
@@ -804,7 +807,7 @@ def main(args: Args):
     example_rules = envs_lang.envs[0].metadata["example_rules"]
     example_rules = "\n".join(example_rules)
 
-    chat_model = get_llm_api(args.llm)
+    chat_model = get_llm_api(args.llm, gpu_memory_utilization=args.gpu_memory_utilization)
     # embed_model = TogetherEmbeddings(model=args.embedder_lm)
 
     lang_agent = LLMRulesAgent(
