@@ -526,6 +526,8 @@ def _gen_rules(
         tmp_messages = [{"role": "user", "content": rules_prompt}]
         response = invoke_with_retries(llm, tmp_messages, max_tokens=512, temperature=0.9, n=num_rules).content
         # rules = parse_rules(response)
+        # for each rlue eliminate all thoughts in form <think></think>
+        rules = [re.sub(r"<think>.*?</think>", "", l) for l in response]
         rules = [l.replace("```json", "").replace("```", "").strip() for l in response]
     else:
         rules_prompt = outputs["initial_prompt"] 

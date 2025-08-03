@@ -117,7 +117,7 @@ class Args:
     hidden_dim: int = 64
     """The hidden dimension of the networks."""
 
-    gpu_memory_utilization: float = 0.22
+    gpu_memory_utilization: float = 0.9
     """GPU memory to reserve per process"""
 
     # Buffer collection mode
