@@ -49,13 +49,13 @@ class Args:
     """The Weights and Biases project name."""
     wandb_entity: Optional[str] = None
     """The entity (team) of the Weights and Biases project."""
-    log_frequency: int = 8
+    log_frequency: int = 128
     """The logging frequency of the algorithm."""
 
     # Environment
     env_id: str = "UgandaNumeric"
     """The ID of the environment."""
-    num_envs: int = 4
+    num_envs: int = 1
     """The number of parallel game environments."""
     max_episode_steps: Optional[int] = 32
     """The maximum number of steps per episode."""
@@ -63,7 +63,7 @@ class Args:
     """Only used for the heat alert environment."""
 
     # Algorithm
-    total_timesteps: int = 100_000
+    total_timesteps: int = 200_000
     """Total timesteps of the experiments."""
     gamma: float = 0.95
     """The discount factor gamma."""
@@ -71,13 +71,13 @@ class Args:
     """Target smoothing coefficient."""
     batch_size: int = 64
     """The batch size of samples from the replay memory."""
-    learning_starts: int = 256
+    learning_starts: int = 512
     """Timestep to start learning."""
     policy_lr: float = 1e-4
     """The learning rate of the policy network optimizer."""
     q_lr: float = 1e-4
     """The learning rate of the Q-network optimizer."""
-    update_frequency: float | int = 8
+    update_frequency: float | int = 32
     """The frequency of training updates."""
     warmup_updates: int = 1
     """The number of warmup updates to the value function on the first iteration."""
@@ -85,7 +85,7 @@ class Args:
     """The number of updates to the actor per update cycle."""
     critic_updates: int = 1
     """The number of updates to the critic per update cycle."""
-    target_network_frequency: int = 64
+    target_network_frequency: int = 256
     """The frequency of updates for the target networks."""
     alpha: float = 0.01
     """Entropy regularization coefficient."""
