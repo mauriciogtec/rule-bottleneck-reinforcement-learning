@@ -987,11 +987,9 @@ class RulesSelectorActorCritic(BaseAgent):
         action = None
         try:
             sel_rule_json = json.loads(sel_rule)
-            for key in ["action", "actions"]
-            if "action" in sel_rule_json:
-                action = sel_rule_json["action"]
-            elif "actions" in sel_rule_json:
-                action = sel_rule_json["actions"]
+            for key in ["action", "actions"]:
+                if key in sel_rule_json:
+                    action = sel_rule_json[key]
             outputs["action"] = action
         except:
             # if it fails, try to find the action in the string
