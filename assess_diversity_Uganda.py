@@ -51,7 +51,7 @@ class Args:
     """The entity (team) of the Weights and Biases project."""
     log_frequency: int = 128
     """The logging frequency of the algorithm."""
-    num_steps = 200
+    num_diversity_steps = 200
     """The number of steps of the diversity experiment"""
 
     # Environment
@@ -936,8 +936,8 @@ def main(args: Args):
     #         }
     #     )
 
-    pbar = tqdm(total=num_steps // args.num_envs, desc="Evaluating")
-    for i in range(num_steps // args.num_envs):
+    pbar = tqdm(total=args.num_diversity_steps // args.num_envs, desc="Evaluating")
+    for i in range(args.num_diversity_steps // args.num_envs):
         with torch.no_grad():
             obs_vec = torch.FloatTensor(obs[0].reshape(args.num_envs, -1)).to(device)
             action_logits = actor(obs_vec)
