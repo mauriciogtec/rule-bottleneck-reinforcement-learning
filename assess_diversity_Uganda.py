@@ -41,7 +41,7 @@ class Args:
     """Seed of the experiment."""
     torch_deterministic: bool = True
     """If toggled, `torch.backends.cudnn.deterministic=True`."""
-    cuda: bool = False
+    cuda: bool = True
     """If toggled, CUDA will be enabled by default."""
     track: bool = False
     """If toggled, this experiment will be tracked with Weights and Biases."""
@@ -55,7 +55,7 @@ class Args:
     # Environment
     env_id: str = "UgandaNumeric"
     """The ID of the environment."""
-    num_envs: int = 1
+    num_envs: int = 4
     """The number of parallel game environments."""
     max_episode_steps: Optional[int] = 32
     """The maximum number of steps per episode."""
@@ -63,7 +63,7 @@ class Args:
     """Only used for the heat alert environment."""
 
     # Algorithm
-    total_timesteps: int = 100
+    total_timesteps: int = 100_000
     """Total timesteps of the experiments."""
     gamma: float = 0.95
     """The discount factor gamma."""
@@ -99,7 +99,7 @@ class Args:
     # Eval
     eval: bool = True
     """If toggled, the agent will be evaluated."""
-    eval_interval: int = 1
+    eval_interval: int = 5_000
     """The evaluation interval."""
     rolling_returns_window: int = 16
     """The rolling rewards window."""
@@ -114,7 +114,7 @@ class Args:
     """The language model to use."""
     embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
     """The embedding model to use."""
-    hidden_dim: int = 16
+    hidden_dim: int = 64
     """The hidden dimension of the networks."""
 
     # Buffer collection mode
@@ -125,7 +125,7 @@ class Args:
 
     agent: Optional[str] = "sac_numeric"
     """The agent to use."""
-    thoughts: bool = True
+    thoughts: bool = False
     """If toggled, the agent will use thoughts."""
 
     # Torch compile
@@ -399,6 +399,7 @@ def main(args: Args):
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    logging.info(f"Using device: {device}")
 
     # env setup
     train_env_funs = [
@@ -504,6 +505,11 @@ def main(args: Args):
         layer_init(nn.Linear(args.hidden_dim, envs.single_action_space.n), 0.01),
     )
 
+    # Move networks to device (GPU if available and cuda=True)
+    actor = actor.to(device)
+    qf1 = qf1.to(device)
+    qf2 = qf2.to(device)
+
     actor.eval()
     qf1.eval()
     qf2.eval()
@@ -526,7 +532,7 @@ def main(args: Args):
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(
             1 / torch.tensor(envs.single_action_space.n)
-        )
+        ).to(device)
         log_alpha = torch.scalar_tensor(
             np.log(args.alpha), requires_grad=True, device=device
         )
@@ -545,6 +551,10 @@ def main(args: Args):
 
     qf1_target = deepcopy(qf1)
     qf2_target = deepcopy(qf2)
+    
+    # Move target networks to device
+    qf1_target = qf1_target.to(device)
+    qf2_target = qf2_target.to(device)
 
     if args.compile_torch:
         actor = torch.compile(actor)
@@ -658,7 +668,7 @@ def main(args: Args):
                     best_model = (actor, qf1, qf2)
                     best_model_epoch = global_step
 
-            autoreset = np.logical_or(trunc, dones)
+            autoreset = np.logical_or(trunc, dones.cpu().numpy())
             obs_vec = next_obs_vec
 
             if buffer.size() > args.learning_starts:
@@ -1024,22 +1034,22 @@ def main(args: Args):
 
         # all_rule_actions = np.array(all_rule_actions)
 
-        for k in range(args.num_envs):
-            sac_action = actions[k].item()
-            rule_actions_k = set()
-            for j in range(num_rules):
-                rule_actions_k.update(all_rule_actions[j][k])  # merge all rule 的actions
+        # for k in range(args.num_envs):
+        #     sac_action = actions[k].item()
+        #     rule_actions_k = set()
+        #     for j in range(num_rules):
+        #         rule_actions_k.update(all_rule_actions[j][k])  # merge all rule 的actions
 
-            obs_text = obs[1][k].lower()
+        #     obs_text = obs[1][k].lower()
 
-            # Free device override
-            if "number of free devices:" in obs_text and "none" not in obs_text:
-                matches.append(True)
-            # Rule action match
-            elif sac_action in rule_actions_k:
-                matches.append(True)
-            else:
-                matches.append(False)
+        #     # Free device override
+        #     if "number of free devices:" in obs_text and "none" not in obs_text:
+        #         matches.append(True)
+        #     # Rule action match
+        #     elif sac_action in rule_actions_k:
+        #         matches.append(True)
+        #     else:
+        #         matches.append(False)
 
         obs = next_obs
         # info = next_info
@@ -1075,6 +1085,7 @@ def main(args: Args):
 
     rule_action_table_rows = pd.DataFrame(rule_action_table_rows_list)
     wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
+    rule_action_table_rows.to_parquet(f"logs/diversity/{run_name}.parquet")
 
     logging.info(f"Matches: {np.mean(matches):.2f}")
     logging.info(f"Matches2x: {np.mean(matches2x):.2f}")
