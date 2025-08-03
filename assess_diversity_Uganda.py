@@ -55,7 +55,7 @@ class Args:
     # Environment
     env_id: str = "UgandaNumeric"
     """The ID of the environment."""
-    num_envs: int = 4
+    num_envs: int = 1
     """The number of parallel game environments."""
     max_episode_steps: Optional[int] = 32
     """The maximum number of steps per episode."""
@@ -131,6 +131,10 @@ class Args:
     # Torch compile
     compile_torch: bool = False
     """If toggled, the models will be compiled with Torch."""
+    
+    # Model persistence
+    overwrite_model: bool = False
+    """If toggled, the agent will overwrite existing saved models and retrain from scratch."""
 
 
 def make_env(env_id, seed, max_episode_steps=None, eval=False):
@@ -174,6 +178,20 @@ def action_parser(s: str, n: int) -> int:
         warnings.warn(f"Invalid action: {s}, returning a random action")
         act = random.randint(0, n - 1)
         return int(act)
+
+
+def get_default_model_path(args: Args) -> str:
+    """
+    Generate the default model path based on experiment parameters.
+    """
+    return f"models/{args.env_id}__{args.seed}__{args.exp_name}.pt"
+
+
+def model_exists(model_path: str) -> bool:
+    """
+    Check if a model file exists.
+    """
+    return os.path.exists(model_path)
 
 
 def update_critic(
@@ -545,14 +563,37 @@ def main(args: Args):
     _running_qss = 0.0
     _running_qse = 0.0
 
+    # Get default model path
+    default_model_path = get_default_model_path(args)
+
+    # Check if we should load an existing model or train from scratch
+    should_train = True
+    if not args.overwrite_model and model_exists(default_model_path):
+        try:
+            actor.load_state_dict(torch.load(default_model_path, map_location=device))
+            actor.eval()
+            logging.info(f"Loaded existing actor model from {default_model_path}")
+            should_train = False
+        except Exception as e:
+            logging.warning(f"Failed to load existing model: {e}. Will train from scratch.")
+            should_train = True
 
     # === 👇 load actor if eval_only is on ===
     if args.eval_only:
-        assert args.load_model_path is not None, "Must provide --load_model_path in eval_only mode"
-        actor.load_state_dict(torch.load(args.load_model_path, map_location=device))
+        if args.load_model_path is not None:
+            model_path = args.load_model_path
+        else:
+            model_path = default_model_path
+
+        if not model_exists(model_path):
+            raise FileNotFoundError(f"Model not found at {model_path}. Either train the model first or provide a valid --load_model_path.")
+
+        actor.load_state_dict(torch.load(model_path, map_location=device))
         actor.eval()
-        logging.info(f"Loaded actor model from {args.load_model_path}")
-    else:
+        logging.info(f"Loaded actor model from {model_path}")
+        should_train = False
+
+    if should_train:
         for global_step in tqdm(range(starting_step, args.total_timesteps)):
             with torch.no_grad():
                 action_logits = actor(obs_vec)
@@ -744,11 +785,11 @@ def main(args: Args):
                 writer.add_scalar(
                     "charts/eval_return", np.mean(eval_returns).item(), global_step
                 )
-        #save actor model
+
+        # Save actor model
         os.makedirs("models", exist_ok=True)
-        save_path = f"models/{args.env_id}__{args.seed}__{args.exp_name}.pt"
-        torch.save(actor.state_dict(), save_path)
-        logging.info(f"Saved trained actor model to {save_path}")
+        torch.save(actor.state_dict(), default_model_path)
+        logging.info(f"Saved trained actor model to {default_model_path}")
 
     example_rules = envs_lang.envs[0].metadata["example_rules"]
     example_rules = "\n".join(example_rules)
@@ -780,7 +821,7 @@ def main(args: Args):
 
     # rule_action_table_rows will save the rules and actions for each step, this is used to log the rules and actions
     rule_action_table_rows_list = []
-    
+
     ##### HeatAlert and Healthcare ######
     # pbar = tqdm(total=num_steps // args.num_envs, desc="Evaluating")
     # for i in range(num_steps // args.num_envs):
@@ -798,8 +839,6 @@ def main(args: Args):
 
     #     match = [False for _ in range(args.num_envs)]
     #     match2x = [False for _ in range(args.num_envs)]
- 
-        
 
     #     print("🌟 Start rule generation")
     #     outputs, messages = lang_agent.parallel_pipeline(
@@ -813,7 +852,7 @@ def main(args: Args):
 
     #     for j in range(num_rules):
     #         outputs_j = deepcopy(outputs)
-            
+
     #         # Overrrides the generated rules and the j-th rule.
     #         for k in range(args.num_envs):
     #             outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
@@ -828,7 +867,7 @@ def main(args: Args):
 
     #         rules_actions = [action_parser(x["action"], n) for x in outputs_j]
     #         all_rule_actions.append(rules_actions)
-            
+
     #         # Print per-step comparison of SAC vs LLM-rule actions
     #         print(f"\n🔁 Step {i}:")
     #         for k in range(args.num_envs):
@@ -857,8 +896,6 @@ def main(args: Args):
     #     # wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
 
     #     all_rule_actions = np.array(all_rule_actions)
-
-
 
     #     for k in range(args.num_envs):
     #         sac_action = actions[k].item()
@@ -892,15 +929,11 @@ def main(args: Args):
             action_logits = actor(obs_vec)
             action_dist = Categorical(logits=action_logits)
             actions = action_dist.sample()
-        
+
         next_obs, env_rewards, dones, trunc, next_info = envs_lang.step(actions)
 
-        
-
-        match = [False for _ in range(args.num_envs)]
-        match2x = [False for _ in range(args.num_envs)]
- 
-        
+        # match = [False for _ in range(args.num_envs)]
+        # match2x = [False for _ in range(args.num_envs)]
 
         print("🌟 Start rule generation")
         outputs, messages = lang_agent.parallel_pipeline(
@@ -912,63 +945,84 @@ def main(args: Args):
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
 
-        for j in range(num_rules):
-            outputs_j = deepcopy(outputs)
-            
-            # Overrrides the generated rules and the j-th rule.
-            for k in range(args.num_envs):
-                outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
+        for j in tqdm(range(num_rules), desc="Generating rules", leave=False):
+            # rules_j = rules[j]
+            # outputs_j = deepcopy(outputs)
 
-            outputs_j, _ = lang_agent.parallel_pipeline(
-                state_text=obs[1],
-                pre_action_messages=messages,
-                pre_action_outputs=outputs_j,
-                include_post_action=False,
-                post_action=False,
-            )
+            # # Overrrides the generated rules and the j-th rule.
+            # for k in range(args.num_envs):
+            #     outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
+
+            # outputs_j, _ = lang_agent.parallel_pipeline(
+            #     state_text=obs[1],
+            #     pre_action_messages=messages,
+            #     pre_action_outputs=outputs_j,
+            #     include_post_action=False,
+            #     post_action=False,
+            # )
 
             rules_actions = []
-            for x in outputs_j:
-                raw = x.get("action", [])
+            for x in rules[j]:
+                # use re to find the first integer after the word "action", ther ecould be other characters in between
+                try:
+                    import json
+                    raw = json.loads(x)
+                    raw = raw["action"] if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
+                except:
+                    # Search for 'action' or 'actions' with quotes and a number after the colon
+                    raw = re.search(r'["\']actions?["\']\s*:\s*(\d+)', x, re.IGNORECASE)
+                    if raw:
+                        raw = raw.group(1)
+                    else:
+                        raw = re.findall(r"\d+", str(x))
+
                 if isinstance(raw, list):
                     rules_actions.append(raw)
                 else:
                     # fallback: 解析成 list[int]
                     extracted = [int(i) for i in re.findall(r"\d+", str(raw))]
                     rules_actions.append(extracted)
+
+                # Print per-step comparison of SAC vs LLM-rule actions
+                # print(f"\n🔁 Step {i}:")
+                # for k in range(args.num_envs):
+                #     print(f"🌍 Env {k} — SAC action: {corrected_actions[k].item()}")
+                #     for j in range(len(all_rule_actions)):
+                #         try:
+                #             rule_action = all_rule_actions[j][k]
+                #             rule_text = rules[k][min(j, rule_lens[k] - 1)]
+                #             print(f"  Rule #{j+1} → Action: {rule_action} | Rule: {rule_text}")
+                #         except IndexError:
+                #             print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
+
+                # Check if there was a free device to check for ties
+                tie = False
+                if (
+                    "Number of free devices:" in obs[1][j]
+                    and "Number of free devices: none" not in obs[1][j]
+                ):
+                    tie = True
+
+                # log the rules and actions from environment j
+                rule_action_table_rows_list.append(
+                    {
+                        "environment": j,
+                        "step": i,
+                        "obs": obs[1][j],
+                        "rule": x,
+                        "llm_agent_action": rules_actions[-1],  # last action in the list
+                        "numeric_policy_action": actions[0],
+                        "rule_idx": j,
+                        "tie": tie,
+                    }
+                )
+
             all_rule_actions.append(rules_actions)
-
-            
-            # Print per-step comparison of SAC vs LLM-rule actions
-            # print(f"\n🔁 Step {i}:")
-            # for k in range(args.num_envs):
-            #     print(f"🌍 Env {k} — SAC action: {corrected_actions[k].item()}")
-            #     for j in range(len(all_rule_actions)):
-            #         try:
-            #             rule_action = all_rule_actions[j][k]
-            #             rule_text = rules[k][min(j, rule_lens[k] - 1)]
-            #             print(f"  Rule #{j+1} → Action: {rule_action} | Rule: {rule_text}")
-            #         except IndexError:
-            #             print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
-
-            # log the rules and actions fron environment 0
-            rule_action_table_rows_list.append(
-                {
-                    "step": i,
-                    "obs": obs[1][0],
-                    "rule": str(outputs_j[0]["rules"][0]),
-                    "llm_agent_action": rules_actions[0],
-                    "numeric_policy_action": actions[0],
-                    "rule_idx": j,
-                }
-            )
 
         # rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
         # wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
 
-        #all_rule_actions = np.array(all_rule_actions)
-
-
+        # all_rule_actions = np.array(all_rule_actions)
 
         for k in range(args.num_envs):
             sac_action = actions[k].item()
@@ -977,7 +1031,7 @@ def main(args: Args):
                 rule_actions_k.update(all_rule_actions[j][k])  # merge all rule 的actions
 
             obs_text = obs[1][k].lower()
-            
+
             # Free device override
             if "number of free devices:" in obs_text and "none" not in obs_text:
                 matches.append(True)
@@ -996,8 +1050,6 @@ def main(args: Args):
                 "matches2x": f"{np.mean(matches2x):.2f}",
             }
         )
-
-
 
     # # === Rule diversity evaluation ===
     #     if i == 0:  # 只评估第一个step的规则
@@ -1023,7 +1075,7 @@ def main(args: Args):
 
     rule_action_table_rows = pd.DataFrame(rule_action_table_rows_list)
     wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
-    
+
     logging.info(f"Matches: {np.mean(matches):.2f}")
     logging.info(f"Matches2x: {np.mean(matches2x):.2f}")
     writer.add_scalar("matches", np.mean(matches))

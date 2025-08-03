@@ -489,68 +489,107 @@ def _gen_explanation_rules(outputs, messages, llm, use_thoughts=True):
 def _gen_rules(
     outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True, 
 ):
-    
-    rules_prompt = outputs["initial_prompt"] 
-    if "thoughts" in outputs:
+
+    if hasattr(llm, "supports_multi_response") and llm.supports_multi_response:
+        rules_prompt = outputs["initial_prompt"] 
+        if "thoughts" in outputs:
+            rules_prompt += (
+                f"\n\n### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
         rules_prompt += (
-            f"\n\n### Thoughts\n\n"
-            f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            f"\n\n### Rule generation and action selection task\n\n"
+            f"Now, suggest one set that can be used to determine the optimal decision in the current state.\n"
+            "The rule must have the following JSON format\n\n"
+            # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
+            # " {'background' <str>, 'rule': <str>, 'state relevance': <str>}\n\n"
+            "{'background' <str>, 'rule': <str>, 'action': <int>|<list[int]>}\n\n"
+            # " - {'rule': str, 'background': str}\n\n"
+            "- The 'background' should be a rationale to determine an optimal action explicitly reasoning about future"
+            " the sequential nature of the problem and how each action would allow maximizing cumulative reward/minimizing cost."
+            " It must consist of up to 4 sentences of at most 6 words each.\n"
+            "- The rule should describe a prioriztion statement with a recipe to determine the optimal action as a function of the current problem state\n"
+            "Usually for the form if [condition(s)] then [priotization/action].\n"
+            "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
+            " However, the rule must allow to determine the optimal action in the current state.\n"
+            "Your response should be wrapped in a JSON code block ```json ``` without additional text.\n"
+            "Lastly, 'action' should include the action that should be taken in the current state.\n"
+            "You should ALWAYS include the key 'action' in the response with single quotes. When there is a tie, return a list of actions.\n"
         )
 
-    if num_rules > 1:
-        rules_prompt += (
-            f"\n\n### Rule generation task\n\n"
-            f"Now, suggest a set of {num_rules} potential rules that could be applied to find the optimal decision in the current state.\n"
-            "There must be diversity among the candidate rules.\n"
-            "When the optimal action is not fully certain, it is better to suggest diverse rules leading to different actions.\n"
-        )
+        if example_rules is not None:
+            rules_prompt += (
+                f"\n\n### Example rules\n\n"
+                f"\n\n{example_rules}\n\n"
+            )
+
+        tmp_messages = [{"role": "user", "content": rules_prompt}]
+        response = invoke_with_retries(llm, tmp_messages, max_tokens=512, temperature=0.9, n=num_rules).content
+        # rules = parse_rules(response)
+        rules = [l.replace("```json", "").replace("```", "").strip() for l in response]
     else:
+        rules_prompt = outputs["initial_prompt"] 
+        if "thoughts" in outputs:
+            rules_prompt += (
+                f"\n\n### Thoughts\n\n"
+                f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
+            )
+
+        if num_rules > 1:
+            rules_prompt += (
+                f"\n\n### Rule generation task\n\n"
+                f"Now, suggest a set of {num_rules} potential rules that could be applied to find the optimal decision in the current state.\n"
+                "There must be diversity among the candidate rules.\n"
+                "When the optimal action is not fully certain, it is better to suggest diverse rules leading to different actions.\n"
+            )
+        else:
+            rules_prompt += (
+                f"\n\n### Rule generation task\n\n"
+                f"Now, suggest a rule that can be applied to make optimal decision in the current state."
+            )
+
         rules_prompt += (
-            f"\n\n### Rule generation task\n\n"
-            f"Now, suggest a rule that can be applied to make optimal decision in the current state."
+            " Provide one line per rule in the following JSON schema:\n\n"
+            # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
+            # " {'background' <str>, 'rule': <str>, 'state relevance': <str>}\n\n"
+            " {'background' <str>, 'rule': <str>}\n\n"
+            # " - {'rule': str, 'background': str}\n\n"
+            "- The 'background' should be a rationale to determine an optimal action explicitly reasoning about future"
+            " the sequential nature of the problem and how each action would allow maximizing cumulative reward/minimizing cost."
+            " It must consist of up to 4 sentences of at most 6 words each.\n"
+            "- The rule should describe an explicit recipe to determine the optimal action as a function of the current problem state\n"
+            "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
+            " However, the rule must allow to determine the optimal action in the current state.\n"
+            # "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
+            # "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
+            # "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
         )
 
-    rules_prompt += (
-        " Provide one line per rule in the following JSON schema:\n\n"
-        # " {'background' str, 'rule': str, 'state relevance': str, 'goal relevance': str}\n\n"
-        # " {'background' <str>, 'rule': <str>, 'state relevance': <str>}\n\n"
-        " {'background' <str>, 'rule': <str>}\n\n"
-        # " - {'rule': str, 'background': str}\n\n"
-        "- The 'background' should be a rationale to determine an optimal action explicitly reasoning about future"
-        " the sequential nature of the problem and how each action would allow maximizing cumulative reward/minimizing cost."
-        " It must consist of up to 4 sentences of at most 6 words each.\n"
-        "- The rule should describe an explicit recipe to determine the optimal action as a function of the current problem state\n"
-        "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
-        " However, the rule must allow to determine the optimal action in the current state.\n"
-        # "- The 'state relevance' should explain why the rule applies to the current problem state.\n"
-        # "- The 'goal relevance' should explain why the rule is important to achieve the agent's goals.\n"
-        # "- The rule alone should be sufficient to deduce the optimal action that should be taken in the current problem state."
-    )
+        # if num_rules > 1:
+        #     rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
 
-    # if num_rules > 1:
-    #     rules_prompt += "- Rules should be self-contained and not depend on other rules. The best rule will be selected later.\n"
-    
-    rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
+        rules_prompt += "- Each line of the response should start with the characters '```- {\"'.\n"
 
-    if example_rules is not None:
-        rules_prompt += (
-            f"\n\n### Example rules\n\n"
-            f"\n\n{example_rules}\n\n"
-        )
-    
+        if example_rules is not None:
+            rules_prompt += (
+                f"\n\n### Example rules\n\n"
+                f"\n\n{example_rules}\n\n"
+            )
 
-    tmp_messages = [{"role": "user", "content": rules_prompt}]
-    response = invoke_with_retries(llm, tmp_messages, max_tokens=1024, temperature=2.0).content
-    rules = parse_rules(response)
+        tmp_messages = [{"role": "user", "content": rules_prompt}]
+        response = invoke_with_retries(llm, tmp_messages, max_tokens=1024, temperature=0.9).content
+        rules = parse_rules(response)
+        rules = response
+
     outputs["rules"] = rules
     outputs["rules_str"] = response
 
     # send second call using the OpenAI API
-    if save_prompts:
-        # messages.append({"role": "user", "content": rules_prompt})
-        rules_str = "\n".join(outputs["rules"])
-        # messages.append({"role": "assistant", "content": rules_str})
-        # outputs["rules"] = rules_str
+    # if save_prompts:
+    # messages.append({"role": "user", "content": rules_prompt})
+    # rules_str = "\n".join(outputs["rules"])
+    # messages.append({"role": "assistant", "content": rules_str})
+    # outputs["rules"] = rules_str
 
     return rules
 
