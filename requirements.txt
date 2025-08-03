@@ -16,4 +16,5 @@ jsonlines
 wandb
 sklearn
 minigrid
+vllm
 # git+https://github.com/NSAPH-Projects/weather2alert@dev
