@@ -957,6 +957,7 @@ class RulesSelectorActorCritic(BaseAgent):
         # get actions
         action_prompt = outputs["initial_prompt"] + "\n\n"
 
+
         if "thoughts" in outputs:
             action_prompt += (
                 f"### Thoughts\n\n"
@@ -978,9 +979,33 @@ class RulesSelectorActorCritic(BaseAgent):
 
         tmp_messages = [{"role": "user", "content": action_prompt}]
 
-        outputs["action"] = invoke_with_retries(
-            self.llm, tmp_messages, max_tokens=30, temperature=0.2
-        ).content
+        # First check that 'sel_rules' does not already contain the action
+        sel_rule = outputs["sel_rule"]
+        # try parsing the rule as json, if it fails, try finding the integer after either 'action',  "action", 'actions',or "actions"
+        action = None
+        try:
+            sel_rule_json = json.loads(sel_rule)
+            for key in ["action", "actions"]
+            if "action" in sel_rule_json:
+                action = sel_rule_json["action"]
+            elif "actions" in sel_rule_json:
+                action = sel_rule_json["actions"]
+            outputs["action"] = action
+        except:
+            # if it fails, try to find the action in the string
+            keys = ["'action'",  '"action"', "'actions'", '"actions"']
+            for key in keys:
+                if key in sel_rule:
+                    # find the first integer after the key
+                    action = re.search(rf"{key}\s*:\s*(\d+)", sel_rule)
+                    if action:
+                        outputs["action"] = action
+                        break
+        
+        if action is None:
+            outputs["action"] = invoke_with_retries(
+                self.llm, tmp_messages, max_tokens=30, temperature=0.2
+            ).content
 
         # messages.append({"role": "assistant", "content": outputs["action"]})
 
