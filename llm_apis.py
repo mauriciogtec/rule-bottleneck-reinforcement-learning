@@ -345,7 +345,7 @@ class HFMetaWrapper:
         model_name: str,
         use_vllm: bool = True,
         gpu_memory_utilization: float = 0.9,
-        max_model_len: int = 4096,
+        max_model_len: int = 8192,
         dtype: str = "auto",
         enable_thinking: bool = True,
     ):
@@ -767,6 +767,7 @@ ModelAPIDict = {
     "Qwen/Qwen2.5-0.5B-Instruct": HFMetaWrapper,
     "Qwen/Qwen3-0.6B": HFMetaWrapper,
     "Qwen/Qwen3-1.7B": HFMetaWrapper,
+    "Qwen/Qwen3-4B": HFMetaWrapper,
     "meta-llama/Llama-3.2-1B-Instruct": HFMetaWrapper,
     "meta-llama/Llama-3.2-3B-Instruct": HFMetaWrapper,
     "meta-llama/Llama-3.1-8B-Instruct": HFMetaWrapper,
@@ -803,6 +804,7 @@ ValidLLMs = Literal[
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen3-4B",
     "meta-llama/Llama-3.2-1B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
     "meta-llama/Llama-3.1-8B-Instruct",
@@ -860,7 +862,7 @@ def get_llm_api(model: ValidLLMs, **kwargs) -> Any:
 if __name__ == "__main__":
     messages = [
         {"role": "system", "content": "Be helpful and concise."},
-        {"role": "user", "content": "Count the number of x in the following text: 'xxxxx xxxx xxx xxx44x xx x8x'."},
+        {"role": "user", "content": "Count the number of x in the following text: 'xxxxx xxxx xxx xxx44x xx x8x'. Thinking should be only 6 short sentences at most."},
     ]
 
     # Test Qwen3 0.6B with Ollama
@@ -874,9 +876,10 @@ if __name__ == "__main__":
     # try:
     # model = "meta-llama/Llama-3.2-1B-Instruct"
     # model = "meta-llama/Llama-3.2-1B-Instruct"
-    model="Qwen/Qwen3-0.6B"
+    # model="Qwen/Qwen3-0.6B"
+    model="Qwen/Qwen3-4B"
     llm = get_llm_api(model, use_vllm=True)
-    result = llm.invoke(messages, max_tokens=100, temperature=1.0)
+    result = llm.invoke(messages, max_tokens=2000, temperature=1.0)
     print(f"Result: {result.content}")
     # except Exception as e:
     #     print(f"Error testing HFMetaWrapper: {e}")

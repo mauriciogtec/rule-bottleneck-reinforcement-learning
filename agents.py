@@ -516,6 +516,7 @@ def _gen_rules(
             "You should ALWAYS include the key 'action' in the response with single quotes. \n"
             "The action should be a single integer (e.g., 0) or a list of integers if there are ties (e.g., [0,1]) without additional information.\n"
             "Your response should be wrapped in a JSON code block ```json ``` without additional text.\n"
+            "Thinking should be only 10 short sentences or less."
         )
 
         if example_rules is not None:
@@ -525,11 +526,30 @@ def _gen_rules(
             )
 
         tmp_messages = [{"role": "user", "content": rules_prompt}]
-        response = invoke_with_retries(llm, tmp_messages, max_tokens=512, temperature=1.0, n=num_rules).content
+        response = invoke_with_retries(llm, tmp_messages, max_tokens=8192, temperature=1.0, n=num_rules).content
         # rules = parse_rules(response)
         # for each rlue eliminate all thoughts in form <think></think>
-        rules = [re.sub(r"<think>.*?</think>", "", l) for l in response]
-        rules = [l.replace("```json", "").replace("```", "").strip() for l in response]
+        # rules = [re.sub(r"<think>.*?</think>", "", l) for l in response]
+        # select everything inside ```json ** ```, then remove the ```json``` delimeters
+        rules = []
+        for r in response:
+            results = re.findall(r"```json(.*?)```", r, re.DOTALL)
+            if not results:  # try to find without json
+                results = re.findall(r"```(.*?)```", r, re.DOTALL)
+            if not results:  # try to find without delimeters and add them back
+                results = re.findall(r"\{.*?\}", r, re.DOTALL)
+                if results:
+                    results = "{" + results[0] + "}"
+                else:
+                    results = None
+            if not results:
+                continue
+            results = results[0]  # take the first match
+            results = results.strip()
+            results = re.sub(r" +", " ", results)  # remove multiple spaces
+            results = re.sub(r"\n+", "", results)  # remove new lines
+            rules.append(results)
+
     else:
         rules_prompt = outputs["initial_prompt"] 
         if "thoughts" in outputs:
