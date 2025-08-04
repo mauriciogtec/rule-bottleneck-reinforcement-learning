@@ -32,6 +32,10 @@ import envs as E
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 @dataclass
 class Args:
@@ -41,7 +45,7 @@ class Args:
     """Seed of the experiment."""
     torch_deterministic: bool = True
     """If toggled, `torch.backends.cudnn.deterministic=True`."""
-    cuda: bool = True
+    cuda: bool = False
     """If toggled, CUDA will be enabled by default."""
     track: bool = False
     """If toggled, this experiment will be tracked with Weights and Biases."""
@@ -140,6 +144,8 @@ class Args:
     # Model persistence
     overwrite_model: bool = False
     """If toggled, the agent will overwrite existing saved models and retrain from scratch."""
+    overwrite_results: bool = False
+    """If toggled, the agent will overwrite existing results and retrain from scratch."""
 
 
 def make_env(env_id, seed, max_episode_steps=None, eval=False):
@@ -380,9 +386,14 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_name = f"{args.env_id}__{args.seed}__{args.exp_name}__{args.llm}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.seed}__{args.exp_name}__{args.llm}"
     # normalize run name
     run_name = run_name.replace("/", "_").replace(" ", "_").replace(".", "_")
+
+    if not args.overwrite_results and os.path.exists(f"results/diversity/{run_name}.parquet"):
+        logging.info(f"Results for {run_name} already exist. Skipping...")
+        return
+
     if args.track:
         import wandb
 
@@ -394,7 +405,7 @@ def main(args: Args):
             name=run_name,
             id=run_name,
             resume=False,
-            # reinit=args.reinit,
+            reinit=True,
             monitor_gym=True,
             save_code=True,
         )
@@ -813,6 +824,9 @@ def main(args: Args):
             action_logits = actor(obs_vec)
             action_dist = Categorical(logits=action_logits)
             actions = action_dist.sample()
+            
+            # Clear intermediate tensors to prevent GPU memory accumulation
+            del obs_vec, action_logits, action_dist
 
         # 输出当前 step 的文本描述
         print(f"\n📋 Step {i} | Env State Texts:")
@@ -846,12 +860,11 @@ def main(args: Args):
 
         next_obs, env_rewards, dones, trunc, next_info = envs_lang.step(corrected_actions)
 
+        # Vector environments with autoreset handle resets automatically
+        # Just log when environments reset for debugging
         for k in range(args.num_envs):
             if dones[k] or trunc[k]:
-                print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → resetting...")
-                obs, _ = envs_lang.envs[k].reset()
-                # obs[0][k] = obs_single  # numeric obs
-                # obs[1][k] = obs_text  # text obs
+                print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → autoreset")
 
         # match = [False for _ in range(args.num_envs)]
         # match2x = [False for _ in range(args.num_envs)]
@@ -862,6 +875,7 @@ def main(args: Args):
         )
         print("✅ Finished rule generation")
         rules = [x["rules"] for x in outputs]
+        logging.info(f"Generated rules: {rules[0]}")
 
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
@@ -890,7 +904,7 @@ def main(args: Args):
                 try:
                     import json
                     raw = json.loads(x)
-                    raw = raw["action"] if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
+                    raw = re.findall(r"\d+", str(raw["action"])) if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
                 except:
                     # Search for 'action' or 'actions' with quotes and a number after the colon
                     raw = re.search(r'["\']actions?["\']\s*:\s*(\d+)', x, re.IGNORECASE)
@@ -922,7 +936,7 @@ def main(args: Args):
                     if sac_action in rule_action_set:
                         found_match = True
 
-                # log the rules and actions from environment j
+                
                 rule_action_table_rows_list.append(
                     {
                         "environment": j,
@@ -981,6 +995,7 @@ def main(args: Args):
 
         obs = next_obs
         # info = next_info
+        
         pbar.update(1)
         pbar.set_postfix(
             {
