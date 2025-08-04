@@ -32,6 +32,12 @@ import envs as E
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
+# set logging to print info
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
 
 @dataclass
 class Args:
@@ -41,7 +47,7 @@ class Args:
     """Seed of the experiment."""
     torch_deterministic: bool = True
     """If toggled, `torch.backends.cudnn.deterministic=True`."""
-    cuda: bool = True
+    cuda: bool = False
     """If toggled, CUDA will be enabled by default."""
     track: bool = False
     """If toggled, this experiment will be tracked with Weights and Biases."""
@@ -141,6 +147,8 @@ class Args:
     # Model persistence
     overwrite_model: bool = False
     """If toggled, the agent will overwrite existing saved models and retrain from scratch."""
+    overwrite_results: bool = False
+    """If toggled, the agent will overwrite existing results and retrain from scratch."""
 
 
 def make_env(env_id, seed, max_episode_steps=None, eval=False):
@@ -381,9 +389,14 @@ def update_alpha(
 
 
 def main(args: Args):
-    run_name = f"{args.env_id}__{args.seed}__{args.exp_name}__{args.llm}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.seed}__{args.exp_name}__{args.llm}"
     # normalize run name
     run_name = run_name.replace("/", "_").replace(" ", "_").replace(".", "_")
+
+    if not args.overwrite_results and os.path.exists(f"results/diversity/{run_name}.parquet"):
+        logging.info(f"Results for {run_name} already exist. Skipping...")
+        return
+
     if args.track:
         import wandb
 
@@ -395,7 +408,7 @@ def main(args: Args):
             name=run_name,
             id=run_name,
             resume=False,
-            # reinit=args.reinit,
+            reinit=True,
             monitor_gym=True,
             save_code=True,
         )
@@ -957,11 +970,12 @@ def main(args: Args):
         )
         print("✅ Finished rule generation")
         rules = [x["rules"] for x in outputs]
+        logging.info(f"Generated rules: {rules[0]}")
 
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
 
-        for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
+        for j in tqdm(range(args.num_envs), desc="Parsing rules", leave=False):
             # Check if there's a free device for this environment (once per environment)
             obs_text = obs[1][j].lower()
             free_device = (
@@ -982,7 +996,7 @@ def main(args: Args):
                 try:
                     import json
                     raw = json.loads(x)
-                    raw = raw["action"] if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
+                    raw = re.findall(r"\d+", str(raw["action"])) if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
                     # now try parsing to integer or integer list
                 except:
                     # Search for 'action' or 'actions' with quotes and a number after the colon

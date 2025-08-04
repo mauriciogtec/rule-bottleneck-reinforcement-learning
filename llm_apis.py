@@ -347,7 +347,7 @@ class HFMetaWrapper:
         gpu_memory_utilization: float = 0.9,
         max_model_len: int = 4096,
         dtype: str = "auto",
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
     ):
         """
         Wrapper for Hugging Face models with vLLM optimization support.
@@ -764,6 +764,7 @@ ModelAPIDict = {
     # New models with vLLM support
     "Qwen/Qwen2.5-0.5B-Instruct": HFMetaWrapper,
     "Qwen/Qwen3-0.6B": HFMetaWrapper,
+    "Qwen/Qwen3-1.7B": HFMetaWrapper,
     "meta-llama/Llama-3.2-1B-Instruct": HFMetaWrapper,
     "meta-llama/Llama-3.2-3B-Instruct": HFMetaWrapper,
     "meta-llama/Llama-3.1-8B-Instruct": HFMetaWrapper,
@@ -799,6 +800,7 @@ ValidLLMs = Literal[
     # New models with vLLM support
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-1.7B",
     "meta-llama/Llama-3.2-1B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
     "meta-llama/Llama-3.1-8B-Instruct",
@@ -860,18 +862,20 @@ if __name__ == "__main__":
     ]
 
     # Test Qwen3 0.6B with Ollama
-    model = "qwen3:0.6b"
-    llm = get_llm_api(model)
-    result = llm.invoke(messages, max_tokens=100, temperature=0.7, n=10)
-    print(f"Qwen3 0.6B Result: {result.content}")
+    # model = "qwen3:0.6b"
+    # llm = get_llm_api(model)
+    # result = llm.invoke(messages, max_tokens=100, temperature=0.7, n=10)
+    # print(f"Qwen3 0.6B Result: {result.content}")
 
     # Test the vLLM-based wrapper with Hugging Face model
     # print("\nTesting vLLM-based HFMetaWrapper...")
     # try:
-    #     model = "meta-llama/Llama-3.2-1B-Instruct"
-    #     llm = get_llm_api(model, use_vllm=True)
-    #     result = llm.invoke(messages, max_tokens=100, temperature=0.7)
-    #     print(f"Llama 3.2 1B Result: {result.content}")
+    # model = "meta-llama/Llama-3.2-1B-Instruct"
+    # model = "meta-llama/Llama-3.2-1B-Instruct"
+    model="Qwen/Qwen3-0.6B"
+    llm = get_llm_api(model, use_vllm=True)
+    result = llm.invoke(messages, max_tokens=100, temperature=1.0)
+    print(f"Result: {result.content}")
     # except Exception as e:
     #     print(f"Error testing HFMetaWrapper: {e}")
 

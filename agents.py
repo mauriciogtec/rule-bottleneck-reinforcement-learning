@@ -512,9 +512,10 @@ def _gen_rules(
             "Usually for the form if [condition(s)] then [priotization/action].\n"
             "- A rule must be reusable in different states, so it should contain specific values of the problem state. But a recipe instead"
             " However, the rule must allow to determine the optimal action in the current state.\n"
+            "- 'action' should be the action **from the valid list of actions**  resulting from applying the rule in the current state.\n"
+            "You should ALWAYS include the key 'action' in the response with single quotes. \n"
+            "The action should be a single integer (e.g., 0) or a list of integers if there are ties (e.g., [0,1]) without additional information.\n"
             "Your response should be wrapped in a JSON code block ```json ``` without additional text.\n"
-            "Lastly, 'action' should include the action that should be taken in the current state.\n"
-            "You should ALWAYS include the key 'action' in the response with single quotes. When there is a tie, return a list of actions.\n"
         )
 
         if example_rules is not None:
@@ -524,7 +525,7 @@ def _gen_rules(
             )
 
         tmp_messages = [{"role": "user", "content": rules_prompt}]
-        response = invoke_with_retries(llm, tmp_messages, max_tokens=512, temperature=2.0, n=num_rules).content
+        response = invoke_with_retries(llm, tmp_messages, max_tokens=512, temperature=1.0, n=num_rules).content
         # rules = parse_rules(response)
         # for each rlue eliminate all thoughts in form <think></think>
         rules = [re.sub(r"<think>.*?</think>", "", l) for l in response]
