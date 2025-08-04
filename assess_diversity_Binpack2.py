@@ -899,12 +899,22 @@ def main(args: Args):
                     else:
                         raw = re.findall(r"\d+", str(x))
 
+                try:
+                    if not isinstance(raw, list):
+                        raw = int(raw)
+                    else:
+                        raw = [int(i) for i in raw]
+                except Exception as e:
+                    logging.warning(f"Failed to parse action from rule: {x} | Error: {e}")
+                    raw = []
+
                 if isinstance(raw, list):
                     rules_actions.append(raw)
                 else:
                     # fallback: 解析成 list[int]
                     extracted = [int(i) for i in re.findall(r"\d+", str(raw))]
                     rules_actions.append(extracted)
+
 
                 # Check if this rule matches the SAC action (only if not already found)
                 if not found_match and not illegal_action_corrected:
