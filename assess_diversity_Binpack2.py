@@ -850,7 +850,7 @@ def main(args: Args):
         for k in range(args.num_envs):
             if dones[k] or trunc[k]:
                 print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → resetting...")
-                (obs_single, ), _ = envs_lang.envs[k].reset()
+                (obs_single, _), _ = envs_lang.envs[k].reset()
                 obs[0][k] = obs_single  # numeric obs
                 obs[1][k] = envs_lang.envs[k].state_descriptor(obs_single, {})  # text obs
 
@@ -868,6 +868,19 @@ def main(args: Args):
         all_rule_actions = []
 
         for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
+            # Check if SAC action was illegal for this environment
+            item_size = float(obs[0][j][-1])
+            num_bins_levels = obs[0][j][:-1] 
+            original_action = actions[j].item()
+            is_overflow = original_action > (9 - item_size)
+            is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
+            illegal_action_corrected = is_overflow or is_empty_level
+            
+            if illegal_action_corrected:
+                print(f"✅ Env {j}: SAC action was illegal and corrected → force match = True "
+                    f"(overflow: {is_overflow}, empty_level: {is_empty_level})")
+                matches.append(True)
+            
             rules_actions = []
             for m, x in enumerate(rules[j]):
                 # use re to find the first integer after the word "action", there could be other characters in between
@@ -890,14 +903,6 @@ def main(args: Args):
                     extracted = [int(i) for i in re.findall(r"\d+", str(raw))]
                     rules_actions.append(extracted)
 
-                # Check if there was a free device to check for ties (BinPacking specific logic)
-                free_device = False
-                if (
-                    "Number of free devices:" in obs[1][j]
-                    and "Number of free devices: none" not in obs[1][j]
-                ):
-                    free_device = True
-
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
                     {
@@ -906,36 +911,34 @@ def main(args: Args):
                         "obs": obs[1][j],
                         "rule": x,
                         "llm_agent_action": [int(u) for u in rules_actions[-1]],  
-                        "numeric_policy_action": int(actions[0]),
+                        "numeric_policy_action": int(corrected_actions[j]),
                         "rule_idx": m,
-                        "free_device": free_device,
+                        "free_device": illegal_action_corrected,
                     }
                 )
 
             all_rule_actions.append(rules_actions)
 
         for k in range(args.num_envs):
+            # Skip if this environment already had an illegal action (already processed above)
+            item_size = float(obs[0][k][-1])
+            num_bins_levels = obs[0][k][:-1] 
+            original_action = actions[k].item()
+            is_overflow = original_action > (9 - item_size)
+            is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
+            
+            if is_overflow or is_empty_level:
+                # Already handled above, skip
+                continue
+                
+            # Handle legal actions - check for actual matches with LLM rules
             sac_action = corrected_actions[k].item()
             rule_actions_k = set()
             for j in range(len(all_rule_actions[k])):
                 rule_actions_k.update(all_rule_actions[k][j])  # merge all rule actions
 
-            obs_text = obs[1][k].lower()
-
-            item_size = float(obs[0][k][-1])
-            num_bins_levels = obs[0][k][:-1] 
-    
-            # 如果 SAC 原始动作非法（即 fallback 到其他动作），则强制 match = True
-            original_action = actions[k].item()
-            is_overflow = original_action > (9 - item_size)
-            is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
-
-            if is_overflow or is_empty_level:
-                print(f"✅ Env {k}: SAC action was illegal and corrected → force match = True "
-                    f"(overflow: {is_overflow}, empty_level: {is_empty_level})")
-                matches.append(True)
             # ✅ 只在 rule_actions 覆盖 corrected_action 时才算 match
-            elif sac_action in rule_actions_k:
+            if sac_action in rule_actions_k:
                 matches.append(True)
             else:
                 matches.append(False)
