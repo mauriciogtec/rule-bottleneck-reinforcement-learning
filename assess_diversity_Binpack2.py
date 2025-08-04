@@ -923,6 +923,7 @@ def main(args: Args):
                         "numeric_policy_action": int(corrected_actions[j]),
                         "rule_idx": m,
                         "free_device": illegal_action_corrected,
+                        "found_match": found_match,
                     }
                 )
 

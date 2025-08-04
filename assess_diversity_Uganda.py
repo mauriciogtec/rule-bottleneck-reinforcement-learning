@@ -1025,6 +1025,7 @@ def main(args: Args):
                         "numeric_policy_action": int(actions[j]),
                         "rule_idx": m,
                         "free_device": free_device,
+                        "found_match": found_match,
                     }
                 )
 
