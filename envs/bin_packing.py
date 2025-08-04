@@ -411,19 +411,22 @@ class BinPackingLang(LanguageWrapper):
     def example_rules(self) -> list[str]:
         example1 = (
             '{"background": "Opening a new bin incurs more waste, especially for small items.", '
-            '"rule": "If the current item is small and there are partially filled bins where it fits, prefer placing it in an existing bin."}'
+            '"rule": "If the current item is small and there are partially filled bins where it fits, prefer placing it in an existing bin.", '
+            '"action": 1}'
             # '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
         )
 
         example2 = (
             '{"background": "Larger items are harder to fit later on, so bins with exact fit should be prioritized.", '
-            '"rule": "If a bin can exactly fit the current item, choose that bin over others to minimize fragmentation."}'
+            '"rule": "If a bin can exactly fit the current item, choose that bin over others to minimize fragmentation.", '
+            '"action": 2}'
             # '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
         )
 
         example3 = (
             '{"background": "It is sometimes better to open a new bin if existing bins do not have enough room or would create too much waste.", '
-            '"rule": "If placing an item in an existing bin would leave too much unused space or would overflow, start a new bin."}'
+            '"rule": "If placing an item in an existing bin would leave too much unused space or would overflow, start a new bin.", '
+            '"action": 0}'
             # '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
         )
 
@@ -482,19 +485,22 @@ class BinPackingIncrementalLang(LanguageWrapper):
     def example_rules(self) -> list[str]:
         example1 = (
             '{"background": "Opening a new bin is never better if you can fit in a current bin.", '
-            '"rule": "Pick the first target level such that `action + item_size <= bin capacity"}'
+            '"rule": "Pick the first target level such that `action + item_size <= bin capacity", '
+            '"action": 1}'
             # '"state relevance": "Current item size is 2. There are 3 bins at level 7 with 2 units of space remaining. Opening a new bin would waste 7 units."}'
         )
 
         example2 = (
             '{"background": "We want to minimize wasted space. Thefore choose the target level that would reduce wasted space.", '
-            '"rule": "Pick the target level such that `bin_capacity - (action + item_size)` is maximized to leave the most space free."}'
+            '"rule": "Pick the target level such that `bin_capacity - (action + item_size)` is maximized to leave the most space free.", '
+            '"action": 2}'
             # '"state relevance": "Current item size is 3. There is one bin at level 6 (3 units left), which fits perfectly. Other bins have more space but would leave 1+ units unused."}'
         )
 
         example3 = (
             '{"background": "It is important to consider the expected probabilities of the upcoming object sizes.", '
-            '"rule": "If an item size is large and it is expected to observe small sizes, then always open a new bin with large object. This will allow you to fit smaller items later on."}'
+            '"rule": "If an item size is large and it is expected to observe small sizes, then always open a new bin with large object. This will allow you to fit smaller items later on.", '
+            '"action": 0}'
             # '"state relevance": "Current item size is 4. All existing bins have 2 or fewer units of space. Attempting to fit it would fail or result in -100 penalty."}'
         )
 

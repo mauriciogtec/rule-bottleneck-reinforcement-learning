@@ -50,19 +50,22 @@ class HeatAlertsLang(LanguageWrapper):
     def example_rules(self) -> List[str]:
         example1 = (
             '{"background": "Heat is more dangerous when unexpected. Heat is unexpected early in summer. Alert fatigue decreases effectiveness. Alerts might be needed in the future.", '
-            '"rule": "If the budget allows, issue an alert if it is early in the summer, extreme heat is expected soon, no more than 3 alerts last week, no worst heatwaves expected, there is enough budget for late summer."}'
+            '"rule": "If the budget allows, issue an alert if it is early in the summer, extreme heat is expected soon, no more than 3 alerts last week, no worst heatwaves expected, there is enough budget for late summer.", '
+            '"action": 1}'
             # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
         example2 = (
-            '{"background": "Heat is dangeroud late in summer. Alert fatigue decreases effectiveness. Temperature will decrease after summer. Future alerts are less needed.", '
-            '"rule": "If the budget allows, issue an alert it is late in the summer, extreme heat is expected, no more than 3 alerts last week."}'
+            '{"background": "Heat is dangerous late in summer. Alert fatigue decreases effectiveness. Temperature will decrease after summer. Future alerts are less needed.", '
+            '"rule": "If the budget allows, issue an alert it is late in the summer, extreme heat is expected, no more than 3 alerts last week.", '
+            '"action": 1}'
             # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
         example3 = (
             '{"background": "Alerts cannot be issued if the remaining budget is zero.", '
-            '"rule": "If the remaining budget is zero, do not issue an alert."}'
+            '"rule": "If the remaining budget is zero, do not issue an alert.", '
+            '"action": 0}'
             # '"state relevance": "The current heat index is 95 F and it is early in the summer, which is unexpected."}'
         )
 
