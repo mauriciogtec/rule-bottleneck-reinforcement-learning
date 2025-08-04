@@ -379,7 +379,9 @@ class HFMetaWrapper:
 
     def _init_transformers(self):
         """Fallback initialization using transformers."""
-        self.llm = transformers.AutoModelForCausalLM.from_pretrained(self.model_name, device_map="auto", trust_remote_code=True)
+        import torch
+        target_device = "cpu" if not torch.cuda.is_available() else "cuda"
+        self.llm = transformers.AutoModelForCausalLM.from_pretrained(self.model_name, device_map={"": target_device}, trust_remote_code=True)
         if not hasattr(self, 'tokenizer'):
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name)
         self.device = next(self.llm.parameters()).device
