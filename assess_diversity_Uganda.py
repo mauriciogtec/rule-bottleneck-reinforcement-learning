@@ -970,7 +970,7 @@ def main(args: Args):
         )
         print("✅ Finished rule generation")
         rules = [x["rules"] for x in outputs]
-        logging.info(f"Generated rules: {rules[0]}")
+        logging.info(f"Generated rules: {rules[0][0]}")
 
         rule_lens = [len(x) for x in rules]
         all_rule_actions = []
