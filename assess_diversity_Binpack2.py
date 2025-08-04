@@ -849,9 +849,9 @@ def main(args: Args):
         for k in range(args.num_envs):
             if dones[k] or trunc[k]:
                 print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → resetting...")
-                (obs_single, _), _ = envs_lang.envs[k].reset()
-                obs[0][k] = obs_single  # numeric obs
-                obs[1][k] = envs_lang.envs[k].env.env.state_descriptor(obs_single, {})  # text obs
+                obs, _ = envs_lang.envs[k].reset()
+                # obs[0][k] = obs_single  # numeric obs
+                # obs[1][k] = obs_text  # text obs
 
         # match = [False for _ in range(args.num_envs)]
         # match2x = [False for _ in range(args.num_envs)]
