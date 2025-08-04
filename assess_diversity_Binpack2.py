@@ -851,7 +851,7 @@ def main(args: Args):
                 print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → resetting...")
                 (obs_single, _), _ = envs_lang.envs[k].reset()
                 obs[0][k] = obs_single  # numeric obs
-                obs[1][k] = envs_lang.envs[k].state_descriptor(obs_single, {})  # text obs
+                obs[1][k] = envs_lang.envs[k].env.env.state_descriptor(obs_single, {})  # text obs
 
         # match = [False for _ in range(args.num_envs)]
         # match2x = [False for _ in range(args.num_envs)]
@@ -867,7 +867,7 @@ def main(args: Args):
         all_rule_actions = []
 
         for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
-            # Check if SAC action was illegal for this environment
+            # Check if SAC action was illegal for this environment (once per environment)
             item_size = float(obs[0][j][-1])
             num_bins_levels = obs[0][j][:-1] 
             original_action = actions[j].item()
@@ -875,10 +875,14 @@ def main(args: Args):
             is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
             illegal_action_corrected = is_overflow or is_empty_level
             
+            # Track if any rule matches the SAC action
+            found_match = False
+            sac_action = corrected_actions[j].item()
+            
             if illegal_action_corrected:
                 print(f"✅ Env {j}: SAC action was illegal and corrected → force match = True "
                     f"(overflow: {is_overflow}, empty_level: {is_empty_level})")
-                matches.append(True)
+                found_match = True
             
             rules_actions = []
             for m, x in enumerate(rules[j]):
@@ -902,6 +906,12 @@ def main(args: Args):
                     extracted = [int(i) for i in re.findall(r"\d+", str(raw))]
                     rules_actions.append(extracted)
 
+                # Check if this rule matches the SAC action (only if not already found)
+                if not found_match and not illegal_action_corrected:
+                    rule_action_set = set(rules_actions[-1])
+                    if sac_action in rule_action_set:
+                        found_match = True
+
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
                     {
@@ -916,6 +926,8 @@ def main(args: Args):
                     }
                 )
 
+            # Append match result once per environment
+            matches.append(found_match)
             all_rule_actions.append(rules_actions)
 
         # for k in range(args.num_envs):

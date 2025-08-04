@@ -962,25 +962,23 @@ def main(args: Args):
         all_rule_actions = []
 
         for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
-            # rules_j = rules[j]
-            # outputs_j = deepcopy(outputs)
-
-            # # Overrrides the generated rules and the j-th rule.
-            # for k in range(args.num_envs):
-            #     outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
-
-            # outputs_j, _ = lang_agent.parallel_pipeline(
-            #     state_text=obs[1],
-            #     pre_action_messages=messages,
-            #     pre_action_outputs=outputs_j,
-            #     include_post_action=False,
-            #     post_action=False,
-            # )
-
+            # Check if there's a free device for this environment (once per environment)
+            obs_text = obs[1][j].lower()
+            free_device = (
+                "number of free devices:" in obs_text 
+                and "number of free devices: none" not in obs_text
+            )
+            
+            # Track if any rule matches the SAC action
+            found_match = False
+            sac_action = actions[j].item()
+            
+            if free_device:
+                found_match = True
+            
             rules_actions = []
-            has_match = False
             for m, x in enumerate(rules[j]):
-                # use re to find the first integer after the word "action", ther ecould be other characters in between
+                # use re to find the first integer after the word "action", there could be other characters in between
                 try:
                     import json
                     raw = json.loads(x)
@@ -1010,27 +1008,11 @@ def main(args: Args):
                     extracted = [int(i) for i in re.findall(r"\d+", str(raw))]
                     rules_actions.append(extracted)
 
-                # Print per-step comparison of SAC vs LLM-rule actions
-                # print(f"\n🔁 Step {i}:")
-                # for k in range(args.num_envs):
-                #     print(f"🌍 Env {k} — SAC action: {corrected_actions[k].item()}")
-                #     for j in range(len(all_rule_actions)):
-                #         try:
-                #             rule_action = all_rule_actions[j][k]
-                #             rule_text = rules[k][min(j, rule_lens[k] - 1)]
-                #             print(f"  Rule #{j+1} → Action: {rule_action} | Rule: {rule_text}")
-                #         except IndexError:
-                #             print(f"  Rule #{j+1} → Action: [MISSING] | Rule: [MISSING]")
-
-                # Check if there was a free device to check for ties
-                free_device = False
-                if (
-                    "Number of free devices:" in obs[1][j]
-                    and "Number of free devices: none" not in obs[1][j]
-                ):
-                    free_device = True
-
-                has_match ^= free_device or (int(actions[0]) in rules_actions[-1])
+                # Check if this rule matches the SAC action (only if not already found)
+                if not found_match and not free_device:
+                    rule_action_set = set(rules_actions[-1])
+                    if sac_action in rule_action_set:
+                        found_match = True
 
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
@@ -1046,25 +1028,9 @@ def main(args: Args):
                     }
                 )
 
+            # Append match result once per environment
+            matches.append(found_match)
             all_rule_actions.append(rules_actions)
-
-        # Calculate matches for this step
-        for k in range(args.num_envs):
-            sac_action = actions[k].item()
-            obs_text = obs[1][k].lower()
-
-            # Check if there's a free device (special case)
-            if "number of free devices:" in obs_text and "number of free devices: none" not in obs_text:
-                matches.append(True)
-            else:
-                # Check if SAC action matches any rule action for this environment
-                env_has_match = False
-                if k < len(all_rule_actions):
-                    for rule_action_list in all_rule_actions[k]:
-                        if sac_action in rule_action_list:
-                            env_has_match = True
-                            break
-                matches.append(env_has_match)
 
         # rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
         # wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
