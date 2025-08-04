@@ -35,7 +35,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 @dataclass
 class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    exp_name: str = "assess_diversity"
     """The name of this experiment."""
     seed: int = 1
     """Seed of the experiment."""
@@ -51,7 +51,7 @@ class Args:
     """The entity (team) of the Weights and Biases project."""
     log_frequency: int = 128
     """The logging frequency of the algorithm."""
-    num_diversity_steps = 200
+    num_diversity_steps: int = 200
     """The number of steps of the diversity experiment"""
 
     # Environment
@@ -199,32 +199,6 @@ def model_exists(model_path: str) -> bool:
     return os.path.exists(model_path)
 
 
-def apply_action_mask(action_logits, action_mask, mask_value=-1e8):
-    """
-    Apply action mask to logits by setting invalid actions to a very low value.
-    
-    Args:
-        action_logits: Raw action logits from the actor
-        action_mask: Binary mask where 1 indicates valid actions, 0 invalid
-        mask_value: Value to set for invalid actions
-    
-    Returns:
-        Masked action logits
-    """
-    if action_mask is None:
-        return action_logits
-    
-    # Convert action_mask to same device and dtype as logits
-    if isinstance(action_mask, np.ndarray):
-        action_mask = torch.from_numpy(action_mask).to(action_logits.device)
-    
-    # Set invalid actions to very low value
-    masked_logits = action_logits.clone()
-    masked_logits[action_mask == 0] = mask_value
-    
-    return masked_logits
-
-
 def update_critic(
     buffer,
     batch_size,
@@ -240,7 +214,6 @@ def update_critic(
 ):
     """
     Update the critic networks (qf1 and qf2) using the sampled data from the replay buffer.
-    Modified to handle action masking for BinPacking environment.
 
     Args:
         buffer: Replay buffer containing training samples.
@@ -267,15 +240,7 @@ def update_critic(
     dones = data["dones"]
 
     with torch.no_grad():
-        # Handle action masking for next state
-        if "action_mask" in data and "next_action_mask" in data:
-            next_action_mask = data["next_action_mask"]
-            raw_logits = actor(next_obs_vec)
-            masked_logits = apply_action_mask(raw_logits, next_action_mask)
-            dist = Categorical(logits=masked_logits)
-        else:
-            dist = Categorical(logits=actor(next_obs_vec))
-            
+        dist = Categorical(logits=actor(next_obs_vec))
         next_action_probs = F.softmax(dist.logits, dim=-1)
         next_state_log_pi = F.log_softmax(dist.logits, dim=-1)
 
@@ -332,7 +297,6 @@ def update_actor(
 ):
     """
     Update the actor network using the sampled data from the replay buffer.
-    Modified to handle action masking for BinPacking environment.
 
     Args:
         buffer: Replay buffer containing training samples.
@@ -350,15 +314,7 @@ def update_actor(
     data = buffer.sample(batch_size)
     obs_vec = data["obs_vec"]
 
-    # Handle action masking
-    if "action_mask" in data:
-        action_mask = data["action_mask"]
-        raw_logits = actor(obs_vec)
-        masked_logits = apply_action_mask(raw_logits, action_mask)
-        dist = Categorical(logits=masked_logits)
-    else:
-        dist = Categorical(logits=actor(obs_vec))
-        
+    dist = Categorical(logits=actor(obs_vec))
     log_probs = F.log_softmax(dist.logits, dim=-1)
     probs = dist.probs
 
@@ -421,18 +377,6 @@ def update_alpha(
     alpha = log_alpha.exp().item()
 
     return alpha_loss.item(), alpha
-
-
-def extract_observation_and_mask(obs):
-    """
-    Extract observation and action mask from environment observation.
-    For BinPacking with action masking, obs is a dict with 'real_obs' and 'action_mask'.
-    For other environments, obs is just the observation vector.
-    """
-    if isinstance(obs, dict) and 'real_obs' in obs:
-        return obs['real_obs'], obs.get('action_mask', None)
-    else:
-        return obs, None
 
 
 def main(args: Args):
@@ -501,15 +445,10 @@ def main(args: Args):
         torch.nn.init.constant_(layer.bias, bias_const)
         return layer
 
-    # For BinPacking environment, we need to handle the observation shape differently
-    # depending on whether action masking is used
-    sample_obs, _ = envs.reset()
-    sample_obs_vec, sample_action_mask = extract_observation_and_mask(sample_obs[0])
-    obs_shape = sample_obs_vec.shape[-1] if hasattr(sample_obs_vec, 'shape') else len(sample_obs_vec)
-
+    # For BinPacking environment, we need to handle the observation shape
     actor = nn.Sequential(
-        nn.LayerNorm(obs_shape),
-        layer_init(nn.Linear(obs_shape, args.hidden_dim)),
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
         nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
@@ -519,8 +458,8 @@ def main(args: Args):
     )
 
     qf1 = nn.Sequential(
-        nn.LayerNorm(obs_shape),
-        layer_init(nn.Linear(obs_shape, args.hidden_dim)),
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
         nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
@@ -530,8 +469,8 @@ def main(args: Args):
     )
 
     qf2 = nn.Sequential(
-        nn.LayerNorm(obs_shape),
-        layer_init(nn.Linear(obs_shape, args.hidden_dim)),
+        nn.LayerNorm(envs.single_observation_space.shape[-1]),
+        layer_init(nn.Linear(envs.single_observation_space.shape[-1], args.hidden_dim)),
         nn.SiLU(),
         nn.LayerNorm(args.hidden_dim),
         layer_init(nn.Linear(args.hidden_dim, args.hidden_dim)),
@@ -599,8 +538,7 @@ def main(args: Args):
         qf2_target = torch.compile(qf2_target)
 
     obs, _ = envs.reset()
-    obs_vec, action_mask = extract_observation_and_mask(obs)
-    obs_vec = torch.FloatTensor(obs_vec).to(device)
+    obs_vec = torch.FloatTensor(obs).to(device)
     autoreset = np.zeros(args.num_envs, dtype=bool)
 
     _ep_buffer = defaultdict(lambda: [[] for _ in range(args.num_envs)])
@@ -614,6 +552,7 @@ def main(args: Args):
 
     # Check if we should load an existing model or train from scratch
     should_train = True
+
     if not args.overwrite_model and model_exists(default_model_path):
         try:
             actor.load_state_dict(torch.load(default_model_path, map_location=device))
@@ -642,23 +581,14 @@ def main(args: Args):
     if should_train:
         for global_step in tqdm(range(starting_step, args.total_timesteps)):
             with torch.no_grad():
-                # Apply action masking if available
-                if action_mask is not None:
-                    raw_logits = actor(obs_vec)
-                    masked_logits = apply_action_mask(raw_logits, action_mask)
-                    action_dist = Categorical(logits=masked_logits)
-                else:
-                    action_logits = actor(obs_vec)
-                    action_dist = Categorical(logits=action_logits)
+                action_logits = actor(obs_vec)
+                action_dist = Categorical(logits=action_logits)
                 actions = action_dist.sample()
 
             next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
             
-            # Extract observation and mask for next state
-            next_obs_vec, next_action_mask = extract_observation_and_mask(next_obs)
-            
             dones = torch.FloatTensor(dones).to(device)
-            next_obs_vec = torch.FloatTensor(next_obs_vec).to(device)
+            next_obs_vec = torch.FloatTensor(next_obs).to(device)
 
             env_rewards = torch.FloatTensor(env_rewards).to(device)
             rewards = env_rewards
@@ -682,13 +612,6 @@ def main(args: Args):
                     sample["actions"] = actions[j]
                     sample["next_obs_vec"] = next_obs_vec[j]
                     sample["rewards"] = rewards[j]
-                    
-                    # Add action masks to buffer if available
-                    if action_mask is not None:
-                        sample["action_mask"] = torch.FloatTensor(action_mask[j]).to(device)
-                    if next_action_mask is not None:
-                        sample["next_action_mask"] = torch.FloatTensor(next_action_mask[j]).to(device)
-                        
                     buffer.add(sample)
 
             for j in range(args.num_envs):
@@ -723,7 +646,6 @@ def main(args: Args):
 
             autoreset = np.logical_or(trunc, dones.cpu().numpy())
             obs_vec = next_obs_vec
-            action_mask = next_action_mask
 
             if buffer.size() > args.learning_starts:
                 if global_step % args.update_frequency == 0:
@@ -829,23 +751,16 @@ def main(args: Args):
 
             if args.eval and global_step % args.eval_interval == 0:
                 eval_returns = []
-                eval_obs, _ = eval_envs.reset()
-                eval_obs_vec, eval_action_mask = extract_observation_and_mask(eval_obs)
+                eval_obs_vec, _ = eval_envs.reset()
                 eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
                 eval_episodes = 0
                 while eval_episodes < eval_envs.num_envs:
                     with torch.no_grad():
-                        if eval_action_mask is not None:
-                            eval_raw_logits = actor(eval_obs_vec)
-                            eval_masked_logits = apply_action_mask(eval_raw_logits, eval_action_mask)
-                            eval_action_dist = Categorical(logits=eval_masked_logits)
-                        else:
-                            eval_action_logits = actor(eval_obs_vec)
-                            eval_action_dist = Categorical(logits=eval_action_logits)
+                        eval_action_logits = actor(eval_obs_vec)
+                        eval_action_dist = Categorical(logits=eval_action_logits)
                         eval_actions = eval_action_dist.sample()
 
-                    eval_next_obs, _, _, _, eval_infos = eval_envs.step(eval_actions)
-                    eval_obs_vec, eval_action_mask = extract_observation_and_mask(eval_next_obs)
+                    eval_obs_vec, _, _, _, eval_infos = eval_envs.step(eval_actions)
                     eval_obs_vec = torch.FloatTensor(eval_obs_vec).to(device)
                     if "episode" in eval_infos:
                         for i in range(args.num_envs):
@@ -865,7 +780,7 @@ def main(args: Args):
     example_rules = envs_lang.envs[0].metadata["example_rules"]
     example_rules = "\n".join(example_rules)
 
-    chat_model = get_llm_api(args.llm, gpu_memory_utilization=args.gpu_memory_utilization)
+    chat_model = get_llm_api(args.llm)
     # embed_model = TogetherEmbeddings(model=args.embedder_lm)
 
     lang_agent = LLMRulesAgent(
@@ -894,23 +809,50 @@ def main(args: Args):
 
     pbar = tqdm(total=args.num_diversity_steps // args.num_envs, desc="Evaluating")
     for i in range(args.num_diversity_steps // args.num_envs):
-        # Extract observation vector and action mask for the numeric environment
-        obs_vec_lang, action_mask_lang = extract_observation_and_mask(obs[0])
-        
         with torch.no_grad():
-            obs_vec = torch.FloatTensor(obs_vec_lang.reshape(args.num_envs, -1)).to(device)
-            
-            # Apply action masking if available
-            if action_mask_lang is not None:
-                raw_logits = actor(obs_vec)
-                masked_logits = apply_action_mask(raw_logits, action_mask_lang)
-                action_dist = Categorical(logits=masked_logits)
-            else:
-                action_logits = actor(obs_vec)
-                action_dist = Categorical(logits=action_logits)
+            obs_vec = torch.FloatTensor(obs[0].reshape(args.num_envs, -1)).to(device)
+            action_logits = actor(obs_vec)
+            action_dist = Categorical(logits=action_logits)
             actions = action_dist.sample()
+        
+        # 输出当前 step 的文本描述
+        print(f"\n📋 Step {i} | Env State Texts:")
+        for k in range(args.num_envs):
+            print(f"Env {k}: {obs[1][k]}")
 
-        next_obs, env_rewards, dones, trunc, next_info = envs_lang.step(actions)
+        # ✅ Patch: override illegal actions before env step
+        corrected_actions = actions.clone()
+        for k in range(args.num_envs):
+            item_size = float(obs[0][k][-1])
+            sac_action = actions[k].item()
+            num_bins_levels = obs[0][k][:-1]  # length == bag_capacity
+
+            # Check for overflow
+            overflow = sac_action + item_size > 9
+            # Check for nonexistent bin level
+            nonexistent = (sac_action != 0) and (num_bins_levels[sac_action] == 0)
+            bin_levels = obs[0][k][:9]
+            
+            if overflow or nonexistent:
+                # ✅ Valid action set: satisfies capacity constraint and has that level bin
+                valid_actions = [
+                    lvl for lvl in range(1, 9)
+                    if lvl <= (9 - item_size) and bin_levels[lvl] > 0
+                ]
+                valid_actions.append(0)  # Opening new bin is always legal
+
+                fallback = random.choice(valid_actions)
+                print(f"⚠️ Env {k}: Illegal SAC action {sac_action} (item size {item_size}) → fallback to {fallback}")
+                corrected_actions[k] = fallback
+
+        next_obs, env_rewards, dones, trunc, next_info = envs_lang.step(corrected_actions)
+
+        for k in range(args.num_envs):
+            if dones[k] or trunc[k]:
+                print(f"🔄 Env {k} done after action {corrected_actions[k].item()} → resetting...")
+                (obs_single, ), _ = envs_lang.envs[k].reset()
+                obs[0][k] = obs_single  # numeric obs
+                obs[1][k] = envs_lang.envs[k].state_descriptor(obs_single, {})  # text obs
 
         # match = [False for _ in range(args.num_envs)]
         # match2x = [False for _ in range(args.num_envs)]
@@ -926,24 +868,9 @@ def main(args: Args):
         all_rule_actions = []
 
         for j in tqdm(range(args.num_envs), desc="Generating rules", leave=False):
-            # rules_j = rules[j]
-            # outputs_j = deepcopy(outputs)
-
-            # # Overrrides the generated rules and the j-th rule.
-            # for k in range(args.num_envs):
-            #     outputs_j[k]["rules"] = [rules[k][min(j, rule_lens[k] - 1)]]
-
-            # outputs_j, _ = lang_agent.parallel_pipeline(
-            #     state_text=obs[1],
-            #     pre_action_messages=messages,
-            #     pre_action_outputs=outputs_j,
-            #     include_post_action=False,
-            #     post_action=False,
-            # )
-
             rules_actions = []
             for m, x in enumerate(rules[j]):
-                # use re to find the first integer after the word "action", ther ecould be other characters in between
+                # use re to find the first integer after the word "action", there could be other characters in between
                 try:
                     import json
                     raw = json.loads(x)
@@ -986,6 +913,32 @@ def main(args: Args):
                 )
 
             all_rule_actions.append(rules_actions)
+
+        for k in range(args.num_envs):
+            sac_action = corrected_actions[k].item()
+            rule_actions_k = set()
+            for j in range(len(all_rule_actions[k])):
+                rule_actions_k.update(all_rule_actions[k][j])  # merge all rule actions
+
+            obs_text = obs[1][k].lower()
+
+            item_size = float(obs[0][k][-1])
+            num_bins_levels = obs[0][k][:-1] 
+    
+            # 如果 SAC 原始动作非法（即 fallback 到其他动作），则强制 match = True
+            original_action = actions[k].item()
+            is_overflow = original_action > (9 - item_size)
+            is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
+
+            if is_overflow or is_empty_level:
+                print(f"✅ Env {k}: SAC action was illegal and corrected → force match = True "
+                    f"(overflow: {is_overflow}, empty_level: {is_empty_level})")
+                matches.append(True)
+            # ✅ 只在 rule_actions 覆盖 corrected_action 时才算 match
+            elif sac_action in rule_actions_k:
+                matches.append(True)
+            else:
+                matches.append(False)
 
         obs = next_obs
         # info = next_info

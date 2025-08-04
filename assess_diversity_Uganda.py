@@ -35,7 +35,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 @dataclass
 class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    exp_name: str = "assess_diversity"
     """The name of this experiment."""
     seed: int = 1
     """Seed of the experiment."""
@@ -51,7 +51,8 @@ class Args:
     """The entity (team) of the Weights and Biases project."""
     log_frequency: int = 128
     """The logging frequency of the algorithm."""
-    num_diversity_steps = 200
+
+    num_diversity_steps: int = 200
     """The number of steps of the diversity experiment"""
 
     # Environment
@@ -984,6 +985,7 @@ def main(args: Args):
                     import json
                     raw = json.loads(x)
                     raw = raw["action"] if "action" in raw else re.findall(r"\d+", str(raw["actions"]))
+                    # now try parsing to integer or integer list
                 except:
                     # Search for 'action' or 'actions' with quotes and a number after the colon
                     raw = re.search(r'["\']actions?["\']\s*:\s*(\d+)', x, re.IGNORECASE)
@@ -991,6 +993,15 @@ def main(args: Args):
                         raw = raw.group(1)
                     else:
                         raw = re.findall(r"\d+", str(x))
+
+                try:
+                    if not isinstance(raw, list):
+                        raw = int(raw)
+                    else:
+                        raw = [int(i) for i in raw]
+                except Exception as e:
+                    logging.warning(f"Failed to parse action from rule: {x} | Error: {e}")
+                    raw = []
 
                 if isinstance(raw, list):
                     rules_actions.append(raw)
