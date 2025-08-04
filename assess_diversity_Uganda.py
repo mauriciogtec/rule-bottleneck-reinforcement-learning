@@ -559,7 +559,7 @@ def main(args: Args):
 
     qf1_target = deepcopy(qf1)
     qf2_target = deepcopy(qf2)
-    
+
     # Move target networks to device
     qf1_target = qf1_target.to(device)
     qf2_target = qf2_target.to(device)
@@ -812,7 +812,7 @@ def main(args: Args):
     example_rules = envs_lang.envs[0].metadata["example_rules"]
     example_rules = "\n".join(example_rules)
 
-    chat_model = get_llm_api(args.llm, gpu_memory_utilization=args.gpu_memory_utilization)
+    chat_model = get_llm_api(args.llm)
     # embed_model = TogetherEmbeddings(model=args.embedder_lm)
 
     lang_agent = LLMRulesAgent(
@@ -823,7 +823,6 @@ def main(args: Args):
         use_thoughts=False,
         example_rules=example_rules,
     )
-
 
     obs, info = envs_lang.reset(seed=123)
     num_rules = args.num_rules
@@ -979,6 +978,7 @@ def main(args: Args):
             # )
 
             rules_actions = []
+            has_match = False
             for m, x in enumerate(rules[j]):
                 # use re to find the first integer after the word "action", ther ecould be other characters in between
                 try:
@@ -1030,6 +1030,8 @@ def main(args: Args):
                 ):
                     free_device = True
 
+                has_match ^= free_device or (int(actions[0]) in rules_actions[-1])
+
                 # log the rules and actions from environment j
                 rule_action_table_rows_list.append(
                     {
@@ -1038,13 +1040,31 @@ def main(args: Args):
                         "obs": obs[1][j],
                         "rule": x,
                         "llm_agent_action": [int(u) for u in rules_actions[-1]],  
-                        "numeric_policy_action": int(actions[0]),
+                        "numeric_policy_action": int(actions[j]),
                         "rule_idx": m,
                         "free_device": free_device,
                     }
                 )
 
             all_rule_actions.append(rules_actions)
+
+        # Calculate matches for this step
+        for k in range(args.num_envs):
+            sac_action = actions[k].item()
+            obs_text = obs[1][k].lower()
+
+            # Check if there's a free device (special case)
+            if "number of free devices:" in obs_text and "number of free devices: none" not in obs_text:
+                matches.append(True)
+            else:
+                # Check if SAC action matches any rule action for this environment
+                env_has_match = False
+                if k < len(all_rule_actions):
+                    for rule_action_list in all_rule_actions[k]:
+                        if sac_action in rule_action_list:
+                            env_has_match = True
+                            break
+                matches.append(env_has_match)
 
         # rule_action_table_rows = pd.DataFrame(rule_action_table_rows)
         # wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
@@ -1071,10 +1091,15 @@ def main(args: Args):
         obs = next_obs
         # info = next_info
         pbar.update(1)
+
+        # Calculate current match percentage
+        current_match_rate = np.mean(matches) if matches else 0.0
+        match2x_rate = np.mean(matches2x) if matches2x else 0.0
+
         pbar.set_postfix(
             {
-                "matches": f"{np.mean(matches):.2f}",
-                "matches2x": f"{np.mean(matches2x):.2f}",
+                "matches": f"{current_match_rate:.3f}",
+                "matches2x": f"{match2x_rate:.3f}",
             }
         )
 
@@ -1101,13 +1126,20 @@ def main(args: Args):
     pbar.close()
 
     rule_action_table_rows = pd.DataFrame(rule_action_table_rows_list)
-    wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
-    rule_action_table_rows.to_parquet(f"logs/diversity/{run_name}.parquet")
+    if args.track:
+        wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
 
-    logging.info(f"Matches: {np.mean(matches):.2f}")
-    logging.info(f"Matches2x: {np.mean(matches2x):.2f}")
-    writer.add_scalar("matches", np.mean(matches))
-    writer.add_scalar("matches2x", np.mean(matches2x))
+    # Ensure logs directory exists
+    os.makedirs("results/diversity", exist_ok=True)
+    rule_action_table_rows.to_parquet(f"results/diversity/{run_name}.parquet")
+
+    final_match_rate = np.mean(matches) if matches else 0.0
+    final_match2x_rate = np.mean(matches2x) if matches2x else 0.0
+
+    logging.info(f"Matches: {final_match_rate:.3f}")
+    logging.info(f"Matches2x: {final_match2x_rate:.3f}")
+    writer.add_scalar("matches", final_match_rate)
+    writer.add_scalar("matches2x", final_match2x_rate)
 
     envs.close()
     eval_envs.close()

@@ -525,7 +525,7 @@ def main(args: Args):
 
     qf1_target = deepcopy(qf1)
     qf2_target = deepcopy(qf2)
-    
+
     # Move target networks to device
     qf1_target = qf1_target.to(device)
     qf2_target = qf2_target.to(device)
@@ -586,7 +586,7 @@ def main(args: Args):
                 actions = action_dist.sample()
 
             next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
-            
+
             dones = torch.FloatTensor(dones).to(device)
             next_obs_vec = torch.FloatTensor(next_obs).to(device)
 
@@ -792,7 +792,6 @@ def main(args: Args):
         example_rules=example_rules,
     )
 
-
     obs, info = envs_lang.reset(seed=123)
     num_rules = args.num_rules
     n = envs.single_action_space.n
@@ -814,7 +813,7 @@ def main(args: Args):
             action_logits = actor(obs_vec)
             action_dist = Categorical(logits=action_logits)
             actions = action_dist.sample()
-        
+
         # 输出当前 step 的文本描述
         print(f"\n📋 Step {i} | Env State Texts:")
         for k in range(args.num_envs):
@@ -832,7 +831,7 @@ def main(args: Args):
             # Check for nonexistent bin level
             nonexistent = (sac_action != 0) and (num_bins_levels[sac_action] == 0)
             bin_levels = obs[0][k][:9]
-            
+
             if overflow or nonexistent:
                 # ✅ Valid action set: satisfies capacity constraint and has that level bin
                 valid_actions = [
@@ -919,29 +918,43 @@ def main(args: Args):
 
             all_rule_actions.append(rules_actions)
 
-        for k in range(args.num_envs):
-            # Skip if this environment already had an illegal action (already processed above)
-            item_size = float(obs[0][k][-1])
-            num_bins_levels = obs[0][k][:-1] 
-            original_action = actions[k].item()
-            is_overflow = original_action > (9 - item_size)
-            is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
+        # for k in range(args.num_envs):
+        #     # Skip if this environment already had an illegal action (already processed above)
+        #     item_size = float(obs[0][k][-1])
+        #     num_bins_levels = obs[0][k][:-1] 
+        #     original_action = actions[k].item()
+        #     is_overflow = original_action > (9 - item_size)
+        #     is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
             
-            if is_overflow or is_empty_level:
-                # Already handled above, skip
-                continue
+        #     if is_overflow or is_empty_level:
+        #         # Already handled above, skip
+        #         continue
                 
-            # Handle legal actions - check for actual matches with LLM rules
-            sac_action = corrected_actions[k].item()
-            rule_actions_k = set()
-            for j in range(len(all_rule_actions[k])):
-                rule_actions_k.update(all_rule_actions[k][j])  # merge all rule actions
+        #     # Handle legal actions - check for actual matches with LLM rules
+        #     sac_action = corrected_actions[k].item()
+        #     rule_actions_k = set()
+        #     for j in range(len(all_rule_actions[k])):
+        #         rule_actions_k.update(all_rule_actions[k][j])  # merge all rule actions
 
-            # ✅ 只在 rule_actions 覆盖 corrected_action 时才算 match
-            if sac_action in rule_actions_k:
-                matches.append(True)
-            else:
-                matches.append(False)
+        #     obs_text = obs[1][k].lower()
+
+        #     item_size = float(obs[0][k][-1])
+        #     num_bins_levels = obs[0][k][:-1] 
+
+        #     # 如果 SAC 原始动作非法（即 fallback 到其他动作），则强制 match = True
+        #     original_action = actions[k].item()
+        #     is_overflow = original_action > (9 - item_size)
+        #     is_empty_level = (original_action > 0) and (num_bins_levels[original_action] == 0)
+
+        #     if is_overflow or is_empty_level:
+        #         print(f"✅ Env {k}: SAC action was illegal and corrected → force match = True "
+        #             f"(overflow: {is_overflow}, empty_level: {is_empty_level})")
+        #         matches.append(True)
+        #     # ✅ 只在 rule_actions 覆盖 corrected_action 时才算 match
+        #     if sac_action in rule_actions_k:
+        #         matches.append(True)
+        #     else:
+        #         matches.append(False)
 
         obs = next_obs
         # info = next_info
@@ -957,7 +970,7 @@ def main(args: Args):
 
     rule_action_table_rows = pd.DataFrame(rule_action_table_rows_list)
     wandb.log({"rule_action_table": wandb.Table(dataframe=rule_action_table_rows)})
-    rule_action_table_rows.to_parquet(f"logs/diversity/{run_name}.parquet")
+    rule_action_table_rows.to_parquet(f"results/diversity/{run_name}.parquet")
 
     logging.info(f"Matches: {np.mean(matches):.2f}")
     logging.info(f"Matches2x: {np.mean(matches2x):.2f}")
