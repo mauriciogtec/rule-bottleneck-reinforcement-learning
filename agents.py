@@ -404,7 +404,7 @@ def _gen_rule_scores(outputs, messages, llm, rules, system_prompt):
 
 #     return response
 
-def _gen_explanation(outputs, messages, llm, use_thoughts=True):
+def _gen_explanation(outputs, messages, llm, use_thoughts=False):
     explanation_prompt = ""
 
     if use_thoughts:
@@ -490,7 +490,7 @@ def _gen_rules(
     outputs, messages, llm, num_rules=5, example_rules=None, save_prompts: bool = True, 
 ):
 
-    if hasattr(llm, "supports_multi_response") and llm.supports_multi_response:
+    if isinstance(llm, BaseChatModel) or hasattr(llm, "supports_multi_response") and llm.supports_multi_response:
         rules_prompt = outputs["initial_prompt"] 
         if "thoughts" in outputs:
             rules_prompt += (
@@ -710,6 +710,7 @@ class LLMRulesAgent(BaseAgent):
         max_parse_attempts: int = 3,
         verbose: bool = False,
         use_thoughts: bool = True,
+        eval_reasoning_masked_rule: bool = False
     ):
         super().__init__(
             task_text=task_text,
@@ -721,6 +722,8 @@ class LLMRulesAgent(BaseAgent):
         self.example_rules = example_rules
         self.max_parse_attempts = max_parse_attempts
         self.verbose = verbose
+        self.eval_reasoning_masked_rule = eval_reasoning_masked_rule
+
 
     def pre_action(self, outputs: Dict, messages: List[Dict]):
         super().pre_action(outputs, messages)
@@ -742,7 +745,7 @@ class LLMRulesAgent(BaseAgent):
                 f"### Thoughts\n\n"
                 f"Given the problem state, below are your previous thoughts used to make a decision\n: {outputs['thoughts']}\n\n"
             )
-        
+
         action_prompt += (
             f"\n\n### Selected rules\n\n"
             f"Given your previous reasoning, you selected the following rules to make a decision\n:{outputs['rules']}\n\n"
@@ -772,7 +775,7 @@ class LLMRulesAgent(BaseAgent):
         system_prompt = self.system_prompt_with_state(outputs["state_text"])
         rules = outputs["rules"]
         return _gen_rule_scores(outputs, messages, self.llm, rules, system_prompt)
-    
+
     def gen_explanation(self, outputs: Dict, messages: List[Dict]):
         """Generate explanation and update message list"""
         _gen_explanation_rules(outputs, messages, self.llm, use_thoughts=self.use_thoughts)
