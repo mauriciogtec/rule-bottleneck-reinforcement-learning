@@ -128,7 +128,7 @@ class Args:
     """The number of rules for rule-based LLM-only agent"""
     llm: ValidLLMs = "gpt-4o-mini-huit"
     """the language model to use"""
-    embedder_lm: str = "togethercomputer/m2-bert-80M-8k-retrieval"
+    embedder_lm: str = "BAAI/bge-base-en-v1.5"
     """the language model to use for embeddings"""
     embed_dim: int = 768
     """the dimension of the embeddings"""
@@ -140,6 +140,12 @@ class Args:
     """if toggled, the agent will learn in context"""
     optimize_thoughts_only: bool = False
     """if toggled, the agent will optimize thoughts only, not structured rules"""
+    explanations: bool = True
+    """if toggled, the agent will provide explanations for its actions"""
+    vllm_endpoint: str | None = None
+    """the endpoint of the vLLM server, if None, it will use local vLLM"""
+    thoughts: bool = True
+    """if toggled, the agent will use thoughts in its actions"""
 
     # Options
     rule_type: Literal["rule", "free"] = "rule"
@@ -157,8 +163,6 @@ class Args:
 
     agent: Optional[str] = None  # to be set by the agent
     """the agent to use"""
-    thoughts: bool = True
-    """if toggled, the agent will use thoughts"""
 
     # Torch compile
     compile_torch: bool = False  # needs fix
@@ -484,7 +488,7 @@ def main(args: Args):
     eval_envs = gym.vector.SyncVectorEnv(eval_env_funs)
 
     # setup language model
-    chat_model = get_llm_api(args.llm)
+    chat_model = get_llm_api(args.llm, vllm_endpoint=args.vllm_endpoint)
     embed_model = TogetherEmbeddings(model=args.embedder_lm)
 
     # problem dimensions
@@ -654,8 +658,17 @@ def main(args: Args):
                 state_vector=obs_vec,
                 pre_action_outputs=outputs,
                 pre_action_messages=messages,
+                include_post_action=args.explanations,
             )
         actions = [x["action"] for x in outputs]
+
+        if not args.explanations:
+            for i, x in enumerate(outputs):
+                x['sel_reward'] = 0.0
+                x['sel_reward_scores'] = [0.0]
+                x['sel_reward_scores_raw'] = {f"Q{d + 1}": 0.0 for d in range(num_rules)}
+                x['explanation'] = ""
+                x['sel_reward_probs'] = [0.0]
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, env_rewards, dones, trunc, infos = envs.step(actions)
