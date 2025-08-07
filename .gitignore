@@ -7,6 +7,7 @@
 # vscode / env / colab
 .vscode/
 .env
+venv/
 .conda
 code
 vscode_cli.tar.gz

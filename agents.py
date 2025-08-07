@@ -1022,6 +1022,7 @@ class RulesSelectorActorCritic(BaseAgent):
                 if key in sel_rule:
                     # find the first integer after the key
                     action = re.search(rf"{key}\s*:\s*(\d+)", sel_rule)
+                    action = action.group(1) if action else None
                     if action:
                         outputs["action"] = action
                         break

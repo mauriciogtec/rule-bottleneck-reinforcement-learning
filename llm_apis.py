@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, NamedTuple
 import warnings
 
 import requests
+from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain_together import ChatTogether
 
@@ -345,9 +346,13 @@ class HFMetaWrapper:
         model_name: str,
         use_vllm: bool = True,
         gpu_memory_utilization: float = 0.9,
-        max_model_len: int = 8192,
+        max_model_len: int = 2048,
         dtype: str = "auto",
         enable_thinking: bool = True,
+        vllm_endpoint: str = None,
+        api_key: str = None,
+        max_attempts: int = 3,
+        wait_time_between_attempts: int = 60,
     ):
         """
         Wrapper for Hugging Face models with vLLM optimization support.
@@ -358,15 +363,30 @@ class HFMetaWrapper:
             gpu_memory_utilization: GPU memory utilization for vLLM
             max_model_len: Maximum model length for vLLM
             dtype: Data type for model weights
+            enable_thinking: Whether to enable thinking for compatible models
+            vllm_endpoint: URL to a running vLLM server (e.g., "http://localhost:8000")
+            api_key: API key for vLLM server (if required)
+            max_attempts: Maximum retry attempts for server requests
+            wait_time_between_attempts: Wait time between retry attempts
         """
         self.model_name = model_name
         self.use_vllm = use_vllm and VLLM_AVAILABLE
         self.enable_thinking = enable_thinking
+        self.vllm_endpoint = vllm_endpoint
+        self.api_key = api_key
+        self.max_attempts = max_attempts
+        self.wait_time_between_attempts = wait_time_between_attempts
+        
+        # If vLLM endpoint is provided, use server mode
+        self.use_server = vllm_endpoint is not None
 
-        # Load tokenizer for prompt formatting (needed regardless of vLLM vs transformers)
+        # Load tokenizer for prompt formatting (needed regardless of vLLM vs transformers vs server)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
 
-        if self.use_vllm:
+        if self.use_server:
+            # Server mode - no local model loading needed
+            pass
+        elif self.use_vllm:
             self.llm = LLM(
                 model=model_name,
                 gpu_memory_utilization=gpu_memory_utilization,
@@ -419,7 +439,9 @@ class HFMetaWrapper:
         n: int = 1,  # Number of generations per prompt
         **kwargs: Any,
     ) -> NamedTuple:
-        if self.use_vllm:
+        if self.use_server:
+            return self._invoke_server(messages, max_tokens, temperature, top_p, n, **kwargs)
+        elif self.use_vllm:
             return self._invoke_vllm(messages, max_tokens, temperature, top_p, n, **kwargs)
         else:
             return self._invoke_transformers(messages, max_tokens, temperature, top_p, n, **kwargs)
@@ -490,6 +512,65 @@ class HFMetaWrapper:
             # Multiple generations - return list of strings
             content = [self.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
 
+        return Response(content=content)
+
+    def _invoke_server(
+        self,
+        messages: List[Dict[Literal["role", "content"], str]],
+        max_tokens: int = 100,
+        temperature: float = 0.0,
+        top_p: float = 0.9,
+        n: int = 1,
+        **kwargs: Any,
+    ) -> NamedTuple:
+        """Server-based inference using vLLM OpenAI-compatible API with OpenAI v1.0+ client."""
+        # Configure OpenAI client for vLLM server
+        # Ensure endpoint ends with /v1
+        if self.vllm_endpoint.endswith('/v1/chat/completions'):
+            api_base = self.vllm_endpoint.replace('/v1/chat/completions', '/v1')
+        elif self.vllm_endpoint.endswith('/v1'):
+            api_base = self.vllm_endpoint
+        else:
+            api_base = self.vllm_endpoint.rstrip('/') + '/v1'
+        
+        # Create OpenAI client configured for vLLM server
+        client = OpenAI(
+            api_key=self.api_key or "placeholder",  # vLLM doesn't require real key
+            base_url=api_base,
+        )
+        
+        # Make the request with retries
+        attempts = 0
+        while True:
+            attempts += 1
+            if attempts > self.max_attempts:
+                raise RuntimeError(f"Failed to get a response from vLLM server at {api_base}")
+            try:
+                response = client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    n=n,
+                    timeout=300.0,  # 5 minute timeout for long generations
+                )
+                break
+            except Exception as e:
+                warnings.warn(f"Attempt {attempts} failed: {e}")
+                if attempts < self.max_attempts:
+                    time.sleep(self.wait_time_between_attempts)
+                else:
+                    raise e
+        
+        # Parse the response
+        if n == 1:
+            # Single generation - return content as string for backward compatibility
+            content = response.choices[0].message.content
+        else:
+            # Multiple generations - return list of strings
+            content = [choice.message.content for choice in response.choices]
+        
         return Response(content=content)
 
 
@@ -865,6 +946,9 @@ if __name__ == "__main__":
         {"role": "user", "content": "Count the number of x in the following text: 'xxxxx xxxx xxx xxx44x xx x8x'. Thinking should be only 6 short sentences at most."},
     ]
 
+    # python3 -m vllm.entrypoints.api_server --model Qwen/Qwen3-0.6B --dtype auto --gpu-memory-utilization 0.9  --trust-remote-code --tensor-parallel-size 8 --max-model-len 8192
+
+
     # Test Qwen3 0.6B with Ollama
     # model = "qwen3:0.6b"
     # llm = get_llm_api(model)
@@ -876,8 +960,8 @@ if __name__ == "__main__":
     # try:
     # model = "meta-llama/Llama-3.2-1B-Instruct"
     # model = "meta-llama/Llama-3.2-1B-Instruct"
-    # model="Qwen/Qwen3-0.6B"
-    model="Qwen/Qwen3-4B"
+    model="Qwen/Qwen3-0.6B"
+    # model="Qwen/Qwen3-4B"
     llm = get_llm_api(model, use_vllm=True)
     result = llm.invoke(messages, max_tokens=2000, temperature=1.0)
     print(f"Result: {result.content}")
